@@ -1,0 +1,56 @@
+{
+  "name": "lainos",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "LainOS — a small, hackable framework for autonomous AI agents.",
+  "license": "BUSL-1.1",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "lain": "./dist/scripts/tui.js",
+    "lain-cli": "./dist/scripts/chat.js",
+    "lain-serve": "./dist/scripts/serve.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/fix-shebangs.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "chat": "tsx scripts/chat.ts",
+    "tui": "tsx scripts/tui.ts",
+    "serve": "tsx scripts/serve.ts",
+    "provider": "tsx scripts/provider.ts",
+    "serve:wired": "tsx scripts/serve-wired.ts",
+    "portfolio:pnl": "tsx scripts/portfolio-pnl.ts",
+    "analyze:transcripts": "tsx scripts/analyze-transcripts.ts",
+    "smoke": "tsx scripts/smoke.ts",
+    "wired:smoke": "tsx scripts/wired-smoke.ts",
+    "test": "npm run typecheck && npm run keys:smoke && npm run markdown:smoke && npm run tasks:smoke && npm run press:smoke && npm run crm:smoke && npm run tui:smoke",
+    "dev": "tsx watch scripts/chat.ts",
+    "tui:smoke": "FORCE_COLOR=3 tsx scripts/tui-smoke.tsx",
+    "keys:smoke": "tsx scripts/keys-smoke.ts",
+    "markdown:smoke": "tsx scripts/markdown-smoke.ts",
+    "tasks:smoke": "tsx scripts/tasks-smoke.ts",
+    "press:smoke": "tsx scripts/press-smoke.ts",
+    "crm:smoke": "tsx scripts/crm-smoke.ts",
+    "tasks": "tsx scripts/tasks.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "dotenv": "^16.4.5",
+    "highlight.js": "^11.11.1",
+    "ink": "^5.2.1",
+    "ink-spinner": "^5.0.0",
+    "marked": "^18.0.9",
+    "react": "^18.3.1",
+    "string-width": "^7.2.0",
+    "undici": "^8.7.0",
+    "viem": "^2.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.0",
+    "@types/react": "^18.3.31",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

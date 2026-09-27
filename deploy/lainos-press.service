@@ -1,0 +1,49 @@
+# The always-on half of LainOS: it writes and delivers the day's post and
+# nothing else. See README "Two instances: the desk and the always-on host".
+#
+# This is a SYSTEM unit on purpose. root on a server usually has Linger=no, and
+# a --user unit under a no-linger account dies with the session that started
+# it — which is the failure this instance exists to remove.
+#
+#   ln -sfn /root/lainos/deploy/lainos-press.service \
+#           /etc/systemd/system/lainos-press.service
+#   systemctl daemon-reload && systemctl enable --now lainos-press
+[Unit]
+Description=LainOS press room (the day's public post)
+Documentation=file:///root/lainos/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/lainos
+Environment=NODE_ENV=production
+# LAINOS_PRESS_HOUR and the plan's day boundary are host-local, and this host
+# is not where the operator lives. Pin the clock to the operator's day so
+# "11:00" and "today" mean what the calendar meant when it was written.
+Environment=TZ=UTC
+# ~/.local/bin and /usr/local/bin hold the writer's CLI (codex).
+Environment=PATH=/root/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStartPre=/usr/bin/npm run build
+ExecStart=/usr/bin/node --enable-source-maps dist/scripts/serve.js
+Restart=always
+RestartSec=15s
+TimeoutStopSec=20s
+KillSignal=SIGTERM
+UMask=0077
+
+# Unlike the desk unit this one runs no forge and edits no repository, so it
+# gets a strictly read-only view of everything outside its own directory.
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=false
+ReadWritePaths=/root/lainos/data /root/lainos/dist /root/lainos/workspace /root/.codex
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

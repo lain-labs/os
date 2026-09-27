@@ -1,0 +1,35 @@
+[Unit]
+Description=LainOS agent (HTTP + Telegram + sentinel + forge)
+Documentation=file:///home/lain/lainos/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/lain/lainos
+Environment=NODE_ENV=production
+# ~/.local/bin holds the forge's coding agents (claude, codex); ~/.opencode/bin
+# is where the opencode installer drops the binary.
+Environment=PATH=/home/lain/.local/bin:/home/lain/.opencode/bin:/home/lain/.nvm/versions/node/v24.10.0/bin:/usr/local/bin:/usr/bin:/bin
+ExecStartPre=/home/lain/.nvm/versions/node/v24.10.0/bin/npm run build
+ExecStart=/home/lain/.nvm/versions/node/v24.10.0/bin/node --enable-source-maps dist/scripts/serve.js
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=20s
+KillSignal=SIGTERM
+UMask=0077
+
+# The forge spawns coding agents that edit the repo and need
+# ~/.claude / ~/.codex, so the home directory must be writable. System dirs
+# (/usr, /boot, /efi, /etc) stay read-only.
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=default.target
