@@ -7,7 +7,12 @@
  *   const agent = await createAgent({ character: lain });
  *   const { text } = await agent.handleMessage({ roomId: "cli", userId: "me", text: "hi" });
  */
-import "dotenv/config";
+// Must be the very first import: it's a side-effecting module that loads
+// .env into process.env, and every other import below (plus their own
+// transitive imports) needs it to have already run in case any of them read
+// process.env at their own module top level. See src/env.ts for why this
+// can't just be `import "dotenv/config"`.
+import "./env.js";
 import { createLogger } from "./logger.js";
 import { createEmbeddingProvider } from "./memory/embeddings.js";
 import { SessionStore } from "./memory/sessions.js";
