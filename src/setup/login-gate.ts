@@ -1,13 +1,15 @@
 /**
  * Required login gate for the interactive entrypoints (TUI, CLI REPL).
  *
- * LainOS answers nothing real without a model provider. Rather than let a
- * fresh install quietly fall back to the offline mock model (which looks
- * like it's working but never actually reasons about anything), the
- * interactive entrypoints block here until either a Lain OS API key is
- * entered or *some* other provider is already configured — deliberately not
- * skippable, by product decision, even though nothing downstream technically
- * requires it.
+ * Every run blocks here until a Lain OS API key is on record — by product
+ * decision, unconditionally, even if the operator has their own Anthropic
+ * key or a claude/codex/opencode CLI already sitting on PATH. Those remain
+ * valid choices *after* login (via /model, or explicit env vars for anyone
+ * scripting around this deliberately), but they do not satisfy the gate
+ * itself: the first version of this let any of them skip the prompt
+ * entirely, which defeated the point on any machine that already happens to
+ * have e.g. `claude` installed (common on dev machines) — reported back
+ * immediately as "I typed a prompt and nothing asked me to log in."
  *
  * Never call this from the daemon (serve.ts): a background process with no
  * human attached must not block on stdin. It already no-ops without a TTY.
@@ -19,7 +21,6 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { fileURLToPath } from "node:url";
-import { resolveClaudeBin, resolveCodexBin, resolveOpenCodeBin } from "../models/index.js";
 
 const LAIN_OS_URL = "https://lain.cyberia.church";
 
@@ -39,14 +40,14 @@ export function openUrl(url: string): void {
   }
 }
 
-function hasAnyProvider(): boolean {
-  if (process.env.LAINOS_MODEL_PROVIDER?.trim()) return true;
-  if (process.env.OPENROUTER_API_KEY?.trim()) return true;
-  if (process.env.ANTHROPIC_API_KEY?.trim()) return true;
-  if (resolveClaudeBin(process.env.LAINOS_CLAUDE_BIN)) return true;
-  if (resolveCodexBin(process.env.LAINOS_CODEX_BIN)) return true;
-  if (resolveOpenCodeBin(process.env.LAINOS_OPENCODE_BIN)) return true;
-  return false;
+/**
+ * Only a Lain OS key (ours, or the operator's own real OpenRouter.ai key —
+ * same env var, same wire format) satisfies the gate. Deliberately NOT
+ * checking ANTHROPIC_API_KEY or the claude/codex/opencode CLIs here: those
+ * are legitimate post-login choices, not legitimate ways to dodge login.
+ */
+function hasLoggedIn(): boolean {
+  return Boolean(process.env.OPENROUTER_API_KEY?.trim());
 }
 
 /** Walk up from `from` to the nearest directory containing a package.json. */
@@ -91,7 +92,7 @@ function persistKey(key: string): void {
 }
 
 export async function ensureLogin(): Promise<void> {
-  if (hasAnyProvider()) return;
+  if (hasLoggedIn()) return;
   if (!stdin.isTTY) return; // nothing to block on — let provider resolution fall to mock
 
   console.log();
