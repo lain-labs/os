@@ -18,6 +18,9 @@ import type { ForgeService } from "../../plugins/forge/index.js";
 import type { ScoutService } from "../../plugins/scout/index.js";
 import type { SentinelService } from "../../plugins/sentinel/index.js";
 
+/** Where /login points — same host install.sh offers a free API key from. */
+const LAIN_OS_URL = "https://lain.cyberia.church";
+
 /** Everything a command body may reach. Nothing else is in scope. */
 export type CommandCtx = {
   /** The first word after the command name, exactly as typed. */
@@ -97,6 +100,12 @@ export const COMMANDS: readonly Command[] = [
     desc: "show commands",
     help: "this list",
     run: (ctx) => ctx.say(helpText()),
+  },
+  {
+    name: "/login",
+    desc: "get/manage your Lain OS API key",
+    help: "open the Lain OS dashboard to sign in and grab an API key",
+    run: (ctx) => ctx.say(`sign in (or create an account) at:\n  ${LAIN_OS_URL}/login`),
   },
   {
     name: "/skills",

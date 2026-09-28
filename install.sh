@@ -216,6 +216,89 @@ else
   log "$SRC_DIR/.env already exists — leaving it as is"
 fi
 
+# ------------------------------------------------------------- Lain API key
+#
+# LainOS needs a model provider to actually answer anything. Lain OS
+# (https://lain.cyberia.church) is an OpenAI-compatible gateway with its own
+# API keys and free signup credits, so it's the fastest path from "just
+# installed" to "actually works" — prompt for one unless the operator has
+# already configured *some* provider (their own OpenRouter/Anthropic key, or
+# an explicit LAINOS_MODEL_PROVIDER for a subscription-CLI route).
+prompt_lain_api_key() {
+  if grep -qE '^(OPENROUTER_API_KEY|ANTHROPIC_API_KEY)=.+' "$SRC_DIR/.env" 2>/dev/null \
+     || grep -qE '^LAINOS_MODEL_PROVIDER=.+' "$SRC_DIR/.env" 2>/dev/null; then
+    return 0
+  fi
+
+  # `curl | sh` has no stdin of its own (that's the pipe), so we read from the
+  # controlling terminal on fd 3 instead. Opening it can fail even when
+  # /dev/tty exists (no controlling terminal at all, CI runners, etc.), and
+  # POSIX makes a redirection error in a non-interactive shell fatal
+  # unconditionally — `set +e`/`||`/`if` around the failing redirection
+  # itself do NOT save it, it kills the whole script regardless. So the probe
+  # happens in a subshell first: if *that* dies from the redirection error,
+  # only the subshell exits, and its failure reaches us as an ordinary
+  # non-zero status. Only once the probe succeeds do we open fd 3 for real in
+  # this (parent) shell, where it's now known to work.
+  if ! (exec 3< /dev/tty) 2>/dev/null; then
+    log "non-interactive install — skipping API key setup"
+    log "set OPENROUTER_API_KEY (and OPENROUTER_BASE_URL=https://lain.cyberia.church/v1) in $SRC_DIR/.env before running lain"
+    return 0
+  fi
+  exec 3< /dev/tty
+
+  echo
+  log "LainOS needs a model provider. Get a free Lain OS API key (with free signup credits) at:"
+  log "  https://lain.cyberia.church/register"
+  echo
+
+  key=""
+  while true; do
+    printf 'Paste your Lain API key (or type "skip" to set one up later): '
+    set +e
+    read -r key <&3
+    read_ok=$?
+    set -e
+    if [ "$read_ok" -ne 0 ]; then
+      echo
+      log "no terminal input — skipping API key setup"
+      exec 3<&- 2>/dev/null || true
+      return 0
+    fi
+    case "$key" in
+      skip|SKIP)
+        log "skipped — set OPENROUTER_API_KEY / OPENROUTER_BASE_URL in $SRC_DIR/.env before running lain"
+        exec 3<&- 2>/dev/null || true
+        return 0
+        ;;
+      lain_*)
+        break
+        ;;
+      "")
+        echo 'no key entered.'
+        ;;
+      *)
+        echo 'that does not look like a Lain API key (should start with "lain_"). Try again, or type "skip".'
+        ;;
+    esac
+  done
+  exec 3<&- 2>/dev/null || true
+
+  tmp="$SRC_DIR/.env.tmp.$$"
+  grep -vE '^(LAINOS_MODEL_PROVIDER|OPENROUTER_API_KEY|OPENROUTER_BASE_URL)=' "$SRC_DIR/.env" > "$tmp" 2>/dev/null || true
+  {
+    cat "$tmp"
+    echo "LAINOS_MODEL_PROVIDER=openrouter"
+    echo "OPENROUTER_API_KEY=$key"
+    echo "OPENROUTER_BASE_URL=https://lain.cyberia.church/v1"
+  } > "$SRC_DIR/.env"
+  rm -f "$tmp"
+
+  log "saved your Lain API key to $SRC_DIR/.env — LainOS will use https://lain.cyberia.church by default"
+}
+
+prompt_lain_api_key
+
 # ------------------------------------------------------------- done
 
 echo

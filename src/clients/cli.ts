@@ -9,7 +9,10 @@ import type { IAgentRuntime } from "../types.js";
 
 const log = createLogger("cli");
 
+const LAIN_OS_URL = "https://lain.cyberia.church";
+
 const HELP = [
+  "/login          get/manage your Lain OS API key",
   "/new            start a fresh session (aliases: /clear, /reset)",
   "/resume <id|n>  reopen an earlier session",
   "/sessions       list recent sessions, newest first",
@@ -46,6 +49,10 @@ export async function runCli(runtime: IAgentRuntime, roomId?: string): Promise<v
     if (line === "/exit" || line === "/quit") break;
     if (cmd === "/help") {
       say(HELP);
+      continue;
+    }
+    if (cmd === "/login") {
+      say(`sign in (or create an account) at:\n  ${LAIN_OS_URL}/login`);
       continue;
     }
     if (cmd === "/new" || cmd === "/reset" || cmd === "/clear") {

@@ -323,6 +323,21 @@ export function createModelProvider(
     assembled = assemble("mock")!;
   }
 
+  // envKind resolves to "mock" by itself only when nothing else was found
+  // (no explicit override, no key, no CLI on PATH) -- as opposed to landing
+  // on the mock model above because something explicit failed to build, or
+  // an operator deliberately set LAINOS_MODEL_PROVIDER=mock. That specific
+  // "nothing configured" case is the common one right after a fresh install
+  // that skipped (or never ran) install.sh's API key prompt, so point at the
+  // fastest fix instead of leaving the operator to dig through env var docs.
+  if (baseKind === "mock" && envKind === "mock" && !explicit) {
+    log.warn(
+      "no model provider configured. Get a free Lain OS API key at " +
+        "https://lain.cyberia.church/register, then set OPENROUTER_API_KEY " +
+        "(and OPENROUTER_BASE_URL=https://lain.cyberia.church/v1) in your .env.",
+    );
+  }
+
   // Per-task routing: what the environment says, plus whatever the operator
   // pointed elsewhere in an earlier run (data/task-routes.json wins).
   const routesFile = taskRoutesFile(getSetting);
