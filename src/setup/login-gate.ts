@@ -62,15 +62,19 @@ function packageRoot(from: string): string {
 }
 
 /**
- * Same candidate search as src/env.ts for reading. For *writing* (when no
- * .env exists anywhere yet — install.sh normally creates one first, so this
- * is the rare fallback), depth-guessing breaks between tsx (src/setup/) and
- * a build (dist/src/setup/), so it finds the package root instead, which is
+ * Same candidate search as src/env.ts for reading — deliberately NOT
+ * including process.cwd() (see the comment in src/env.ts for exactly why:
+ * this file's own writer is what turned that into a real incident, writing
+ * a test key into an unrelated project's .env because that happened to be
+ * the working directory at the time). For *writing* when no .env exists
+ * anywhere yet (install.sh normally creates one first, so this is the rare
+ * fallback), depth-guessing also breaks between tsx (src/setup/) and a
+ * build (dist/src/setup/), so it finds the package root instead, which is
  * correct either way.
  */
 function envFilePath(): string {
   const here = dirname(fileURLToPath(import.meta.url));
-  const candidates = [resolve(".env"), resolve(here, "../../.env"), resolve(here, "../../../.env")];
+  const candidates = [resolve(here, "../../.env"), resolve(here, "../../../.env")];
   const existing = candidates.find(existsSync);
   return existing ?? resolve(packageRoot(here), ".env");
 }
