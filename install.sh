@@ -250,7 +250,15 @@ prompt_lain_api_key() {
   echo
   log "LainOS needs a model provider. Get a free Lain OS API key (with free signup credits) at:"
   log "  https://lain.cyberia.church/register"
+  log "opening it in your browser (if nothing opens, visit the link above yourself)…"
   echo
+  if command -v open >/dev/null 2>&1; then
+    open "https://lain.cyberia.church/register" >/dev/null 2>&1 &
+  elif command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "https://lain.cyberia.church/register" >/dev/null 2>&1 &
+  elif command -v cmd.exe >/dev/null 2>&1; then
+    cmd.exe /c start "" "https://lain.cyberia.church/register" >/dev/null 2>&1 &
+  fi
 
   key=""
   while true; do

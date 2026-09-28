@@ -5,6 +5,7 @@ import { buildRecap } from "../memory/recap.js";
 import { newRoomId } from "../memory/sessions.js";
 import { answerStamp, SwitchableModelProvider } from "../models/routing.js";
 import { TASKS, TASK_ORDER, isTaskKind } from "../models/tasks.js";
+import { openUrl } from "../setup/login-gate.js";
 import type { IAgentRuntime } from "../types.js";
 
 const log = createLogger("cli");
@@ -52,7 +53,8 @@ export async function runCli(runtime: IAgentRuntime, roomId?: string): Promise<v
       continue;
     }
     if (cmd === "/login") {
-      say(`sign in (or create an account) at:\n  ${LAIN_OS_URL}/login`);
+      openUrl(`${LAIN_OS_URL}/login`);
+      say(`opening your browser to:\n  ${LAIN_OS_URL}/login`);
       continue;
     }
     if (cmd === "/new" || cmd === "/reset" || cmd === "/clear") {

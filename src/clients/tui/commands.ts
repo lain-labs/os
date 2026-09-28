@@ -17,6 +17,7 @@ import type { ChainService } from "../../plugins/chain/index.js";
 import type { ForgeService } from "../../plugins/forge/index.js";
 import type { ScoutService } from "../../plugins/scout/index.js";
 import type { SentinelService } from "../../plugins/sentinel/index.js";
+import { openUrl } from "../../setup/login-gate.js";
 
 /** Where /login points — same host install.sh offers a free API key from. */
 const LAIN_OS_URL = "https://lain.cyberia.church";
@@ -105,7 +106,10 @@ export const COMMANDS: readonly Command[] = [
     name: "/login",
     desc: "get/manage your Lain OS API key",
     help: "open the Lain OS dashboard to sign in and grab an API key",
-    run: (ctx) => ctx.say(`sign in (or create an account) at:\n  ${LAIN_OS_URL}/login`),
+    run: (ctx) => {
+      openUrl(`${LAIN_OS_URL}/login`);
+      ctx.say(`opening your browser to:\n  ${LAIN_OS_URL}/login`);
+    },
   },
   {
     name: "/skills",

@@ -5,9 +5,14 @@ import { render } from "ink";
 import { createAgent } from "../src/index.js";
 import { lain } from "../src/characters/lain.js";
 import { setLogMuted } from "../src/logger.js";
+import { ensureLogin } from "../src/setup/login-gate.js";
 import { App } from "../src/clients/tui/App.js";
 
 async function main() {
+  // Required before the TUI takes over the screen, so the prompt (and any
+  // opened browser) behaves like a normal terminal interaction.
+  await ensureLogin();
+
   // The TUI owns the screen — keep stray console output from corrupting it.
   setLogMuted(true);
   const agent = await createAgent({ character: lain });

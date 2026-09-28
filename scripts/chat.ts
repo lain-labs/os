@@ -3,8 +3,10 @@
 import { runCli } from "../src/clients/cli.js";
 import { createAgent } from "../src/index.js";
 import { lain } from "../src/characters/lain.js";
+import { ensureLogin } from "../src/setup/login-gate.js";
 
 async function main() {
+  await ensureLogin();
   const agent = await createAgent({ character: lain });
   await runCli(agent);
   await agent.stop();
