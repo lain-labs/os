@@ -6,6 +6,15 @@ of the box.
 
 > Present day, present time. Lain lives in the Wired and in the chain alike.
 
+**CA:** `0x2b79a071a75dd40f1aca68146d7978204efd156a` (Robinhood Chain) —
+[explorer](https://robinhoodchain.blockscout.com/token/0x2b79A071a75dd40f1aca68146d7978204eFD156A) ·
+[launchpad](https://www.ponsfamily.com/launchpad/0x2b79A071a75dd40f1aca68146d7978204eFD156A)
+
+[Website](https://lain-os.com) ·
+[X / Twitter](https://x.com/lain___os) ·
+[Telegram](https://t.me/Lain_OS_Chat) ·
+[GitHub](https://github.com/lain-labs/os)
+
 ## What it is
 
 LainOS gives you a `think → act → evaluate` agent loop built from a few
