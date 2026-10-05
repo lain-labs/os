@@ -333,8 +333,8 @@ export function createModelProvider(
   if (baseKind === "mock" && envKind === "mock" && !explicit) {
     log.warn(
       "no model provider configured. Get a free Lain OS API key at " +
-        "https://lain.cyberia.church/register, then set OPENROUTER_API_KEY " +
-        "(and OPENROUTER_BASE_URL=https://lain.cyberia.church/v1) in your .env.",
+        "https://lain-os.com/register, then set OPENROUTER_API_KEY " +
+        "(and OPENROUTER_BASE_URL=https://lain-os.com/v1) in your .env.",
     );
   }
 

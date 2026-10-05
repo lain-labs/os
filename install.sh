@@ -219,7 +219,7 @@ fi
 # ------------------------------------------------------------- Lain API key
 #
 # LainOS needs a model provider to actually answer anything. Lain OS
-# (https://lain.cyberia.church) is an OpenAI-compatible gateway with its own
+# (https://lain-os.com) is an OpenAI-compatible gateway with its own
 # API keys and free signup credits, so it's the fastest path from "just
 # installed" to "actually works" — prompt for one unless the operator has
 # already configured *some* provider (their own OpenRouter/Anthropic key, or
@@ -242,22 +242,22 @@ prompt_lain_api_key() {
   # this (parent) shell, where it's now known to work.
   if ! (exec 3< /dev/tty) 2>/dev/null; then
     log "non-interactive install — skipping API key setup"
-    log "set OPENROUTER_API_KEY (and OPENROUTER_BASE_URL=https://lain.cyberia.church/v1) in $SRC_DIR/.env before running lain"
+    log "set OPENROUTER_API_KEY (and OPENROUTER_BASE_URL=https://lain-os.com/v1) in $SRC_DIR/.env before running lain"
     return 0
   fi
   exec 3< /dev/tty
 
   echo
   log "LainOS needs a model provider. Get a free Lain OS API key (with free signup credits) at:"
-  log "  https://lain.cyberia.church/register"
+  log "  https://lain-os.com/register"
   log "opening it in your browser (if nothing opens, visit the link above yourself)…"
   echo
   if command -v open >/dev/null 2>&1; then
-    open "https://lain.cyberia.church/register" >/dev/null 2>&1 &
+    open "https://lain-os.com/register" >/dev/null 2>&1 &
   elif command -v xdg-open >/dev/null 2>&1; then
-    xdg-open "https://lain.cyberia.church/register" >/dev/null 2>&1 &
+    xdg-open "https://lain-os.com/register" >/dev/null 2>&1 &
   elif command -v cmd.exe >/dev/null 2>&1; then
-    cmd.exe /c start "" "https://lain.cyberia.church/register" >/dev/null 2>&1 &
+    cmd.exe /c start "" "https://lain-os.com/register" >/dev/null 2>&1 &
   fi
 
   key=""
@@ -298,11 +298,11 @@ prompt_lain_api_key() {
     cat "$tmp"
     echo "LAINOS_MODEL_PROVIDER=openrouter"
     echo "OPENROUTER_API_KEY=$key"
-    echo "OPENROUTER_BASE_URL=https://lain.cyberia.church/v1"
+    echo "OPENROUTER_BASE_URL=https://lain-os.com/v1"
   } > "$SRC_DIR/.env"
   rm -f "$tmp"
 
-  log "saved your Lain API key to $SRC_DIR/.env — LainOS will use https://lain.cyberia.church by default"
+  log "saved your Lain API key to $SRC_DIR/.env — LainOS will use https://lain-os.com by default"
 }
 
 prompt_lain_api_key

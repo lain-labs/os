@@ -22,7 +22,7 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { fileURLToPath } from "node:url";
 
-const LAIN_OS_URL = "https://lain.cyberia.church";
+const LAIN_OS_URL = "https://lain-os.com";
 
 /** Best-effort cross-platform "open this in the default browser". Never throws. */
 export function openUrl(url: string): void {

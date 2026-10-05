@@ -10,7 +10,7 @@ import type { IAgentRuntime } from "../types.js";
 
 const log = createLogger("cli");
 
-const LAIN_OS_URL = "https://lain.cyberia.church";
+const LAIN_OS_URL = "https://lain-os.com";
 
 const HELP = [
   "/login          get/manage your Lain OS API key",

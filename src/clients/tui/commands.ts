@@ -20,7 +20,7 @@ import { describeWatch, type SentinelService } from "../../plugins/sentinel/inde
 import { openUrl } from "../../setup/login-gate.js";
 
 /** Where /login points — same host install.sh offers a free API key from. */
-const LAIN_OS_URL = "https://lain.cyberia.church";
+const LAIN_OS_URL = "https://lain-os.com";
 
 /** Everything a command body may reach. Nothing else is in scope. */
 export type CommandCtx = {
