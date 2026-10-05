@@ -29,6 +29,15 @@ const log = createLogger("runtime");
 
 /** Upper bound on think→act rounds within one turn. */
 const MAX_TOOL_ROUNDS = 6;
+/**
+ * Every model call of a turn resends the whole conversation, tool output
+ * included, and a CLI provider pays for it as a fresh run each time. One
+ * result is cut to this many characters for the model (the full text is kept
+ * on disk, where read_file reaches it); results from rounds the model has
+ * already moved past shrink further.
+ */
+const TOOL_RESULT_MAX_CHARS = 6000;
+const OLD_TOOL_RESULT_MAX_CHARS = 1500;
 const SECRET_KEY_RE = /(KEY|TOKEN|SECRET|MNEMONIC|COOKIE|PASSWORD|PK|PRIVATE)/i;
 
 interface TurnTranscript {
@@ -47,6 +56,8 @@ interface TurnTranscript {
   forcedAction?: string;
   modelCalls: TranscriptModelCall[];
   toolResults: TranscriptToolResult[];
+  /** Long tool outputs cut for the model, kept whole on disk. */
+  savedOutputs?: string[];
   final?: {
     endedAt: string;
     model?: string;
@@ -240,7 +251,9 @@ export class AgentRuntime implements IAgentRuntime {
       .filter((a) => state.availableActions.includes(a.name))
       .map((a) => ({
         name: a.name,
-        description: `${a.description} (aliases: ${a.similes.join(", ")})`,
+        // Aliases still resolve (see the tool loop) but are not resent on
+        // every call of every turn: the description already says what it is.
+        description: a.description,
         input_schema: a.parameters ?? { type: "object", properties: {} },
       }));
   }
@@ -373,7 +386,7 @@ export class AgentRuntime implements IAgentRuntime {
         },
       );
       res = await this.streamOrGenerate(
-        { tier, task, system, messages: convo, maxTokens: this.maxTokens },
+        { tier, task, system, messages: convo, maxTokens: this.maxTokens, conversationId: input.roomId },
         (delta) => onEvent({ type: "text", delta }),
         transcript,
         "forced-action-summary",
@@ -391,7 +404,7 @@ export class AgentRuntime implements IAgentRuntime {
     if (!res) {
       onEvent({ type: "thinking" });
       res = await this.streamOrGenerate(
-        { tier, task, system, messages, tools, maxTokens: this.maxTokens },
+        { tier, task, system, messages, tools, maxTokens: this.maxTokens, conversationId: input.roomId },
         (delta) => onEvent({ type: "text", delta }),
         transcript,
         "initial",
@@ -402,6 +415,7 @@ export class AgentRuntime implements IAgentRuntime {
     }
     // Provenance: which model produced the text the user will actually see.
     const seenCalls = new Set<string>();
+    const toolResultIdx: number[] = [];
     let rounds = 0;
 
     while (res.toolCalls.length) {
@@ -439,6 +453,15 @@ export class AgentRuntime implements IAgentRuntime {
       }
 
       const canContinue = rounds < MAX_TOOL_ROUNDS && !sawRepeat;
+      // The model has read the earlier rounds' output and acted on it; keep
+      // their gist, not their bulk, in what every later call resends.
+      for (const i of toolResultIdx) {
+        const m = convo[i];
+        if (m.content.length > OLD_TOOL_RESULT_MAX_CHARS) {
+          convo[i] = { ...m, content: clipMiddle(m.content, OLD_TOOL_RESULT_MAX_CHARS, "earlier round") };
+        }
+      }
+      toolResultIdx.push(convo.length + 1);
       convo.push(
         {
           role: "assistant",
@@ -462,6 +485,7 @@ export class AgentRuntime implements IAgentRuntime {
           task,
           system,
           maxTokens: this.maxTokens,
+          conversationId: input.roomId,
           messages: convo,
           tools: canContinue ? tools : undefined,
         },
@@ -490,6 +514,7 @@ export class AgentRuntime implements IAgentRuntime {
             task,
             system,
             maxTokens: Math.max(this.maxTokens, 2048),
+            conversationId: input.roomId,
             messages: [
               ...convo,
               {
@@ -688,7 +713,24 @@ export class AgentRuntime implements IAgentRuntime {
       });
       await this.persistTranscript(transcript);
     }
-    return `Tool ${action.name} -> ${serializeActionResult(result)}`;
+    return this.capToolOutput(`Tool ${action.name} -> ${serializeActionResult(result)}`, action.name, transcript);
+  }
+
+  /** Cut an oversized tool result for the model, keeping the whole of it on disk. */
+  private async capToolOutput(text: string, name: string, transcript?: TurnTranscript | null): Promise<string> {
+    const max = Number(this.getSetting("LAINOS_TOOL_RESULT_MAX_CHARS")) || TOOL_RESULT_MAX_CHARS;
+    if (text.length <= max) return text;
+    const dir = resolve(join(this.getSetting("LAINOS_DATA_DIR") || "./data", "tool-outputs"));
+    const file = join(dir, `${new Date().toISOString().replace(/[:.]/g, "-")}-${safeSegment(name)}-${randomUUID().slice(0, 8)}.txt`);
+    try {
+      await mkdir(dir, { recursive: true });
+      await writeFile(file, this.redactString(text), "utf8");
+      if (transcript) (transcript.savedOutputs ??= []).push(file);
+      return clipMiddle(text, max, `full output saved to ${file} — grep or sed it with run_shell if the rest matters`);
+    } catch (err) {
+      log.warn("could not save a long tool output", err);
+      return clipMiddle(text, max, "rest not kept");
+    }
   }
 
   private async maybeStartSelfUpgrade(
@@ -768,8 +810,10 @@ export class AgentRuntime implements IAgentRuntime {
   private createTranscript(message: Memory): TurnTranscript | null {
     if (this.getSetting("LAINOS_MODEL_TRANSCRIPTS") === "0") return null;
     const dir = resolve(
-      this.getSetting("LAINOS_MODEL_TRANSCRIPTS_DIR") ??
-        join(this.getSetting("LAINOS_DATA_DIR") ?? "./data", "model-transcripts"),
+      // `||`: the shipped .env leaves this blank, and a blank path resolved to
+      // the cwd — transcripts landed in whatever directory lain was started in.
+      this.getSetting("LAINOS_MODEL_TRANSCRIPTS_DIR") ||
+        join(this.getSetting("LAINOS_DATA_DIR") || "./data", "model-transcripts"),
     );
     const stamp = new Date(message.createdAt).toISOString().replace(/[:.]/g, "-");
     const file = `${stamp}-${safeSegment(message.roomId)}-${message.id.slice(0, 8)}.json`;
@@ -796,7 +840,9 @@ export class AgentRuntime implements IAgentRuntime {
       phase,
       startedAt: new Date().toISOString(),
       provider: this.model.name,
-      request,
+      // A snapshot: the conversation array keeps growing after this call, and
+      // a reference made every call in the transcript look like the last one.
+      request: { ...request, messages: request.messages.map((m) => ({ ...m })) },
     };
     if (transcript) transcript.modelCalls.push(call);
     return call;
@@ -873,6 +919,15 @@ function serializeActionResult(result: ActionResult): string {
     ...(result.text ? { text: result.text } : {}),
     ...(result.data ? { data: result.data } : {}),
   });
+}
+
+/** Keep the head and tail of `text` within `max` characters, saying what was cut. */
+function clipMiddle(text: string, max: number, note: string): string {
+  if (text.length <= max) return text;
+  const head = Math.floor(max * 0.7);
+  const tail = Math.floor(max * 0.25);
+  const cut = text.length - head - tail;
+  return `${text.slice(0, head)}\n…[${cut} chars cut: ${note}]…\n${text.slice(text.length - tail)}`;
 }
 
 function safeSegment(raw: string): string {

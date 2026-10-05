@@ -270,6 +270,12 @@ export class OpenRouterModelProvider implements ModelProvider {
     return this.models[tier];
   }
 
+  /** Lets the Lain OS API group a session's requests into one chat; OpenRouter itself never gets it. */
+  private conversationHeader(request: ModelRequest): Record<string, string> {
+    if (!request.conversationId || /(^|\.)openrouter\.ai\//.test(this.baseUrl.replace(/^https?:\/\//, "") + "/")) return {};
+    return { "X-Lain-Conversation": request.conversationId.slice(0, 60) };
+  }
+
   async generate(request: ModelRequest): Promise<ModelResponse> {
     const model = this.modelFor(request.tier);
     log.debug(`generate via ${model}`);
@@ -295,6 +301,7 @@ export class OpenRouterModelProvider implements ModelProvider {
         "Content-Type": "application/json",
         ...(this.referer ? { "HTTP-Referer": this.referer } : {}),
         "X-Title": this.title,
+        ...this.conversationHeader(request),
       },
       body: JSON.stringify({
         model,
@@ -353,6 +360,7 @@ export class OpenRouterModelProvider implements ModelProvider {
         "Content-Type": "application/json",
         ...(this.referer ? { "HTTP-Referer": this.referer } : {}),
         "X-Title": this.title,
+        ...this.conversationHeader(request),
       },
       body: JSON.stringify({
         model,

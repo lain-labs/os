@@ -189,6 +189,12 @@ export interface ModelRequest {
   tools?: ToolSchema[];
   maxTokens?: number;
   temperature?: number;
+  /**
+   * The room this call belongs to. Sent to the Lain OS API as
+   * X-Lain-Conversation so its admin view groups one session's requests into
+   * one chat; providers that have no use for it ignore it.
+   */
+  conversationId?: string;
 }
 
 export interface ToolSchema {
