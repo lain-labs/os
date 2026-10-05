@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Box, Text, useApp, useStdin, useStdout } from "ink";
+import { Box, Static, Text, useApp, useStdin, useStdout } from "ink";
 import { ModelTier, type AgentEvent, type IAgentRuntime } from "../../types.js";
 import { buildRecap } from "../../memory/recap.js";
 import { newRoomId, type SessionRecord } from "../../memory/sessions.js";
@@ -15,20 +15,23 @@ import {
   GLYPH,
   THEME_ORDER,
   THEMES,
+  isViewPref,
   loadCursor,
   loadEffort,
   loadPulse,
   loadSkin,
+  loadView,
   saveCursor,
   saveEffort,
   savePulse,
   saveSkin,
+  saveView,
 } from "./theme.js";
-import { blank, concat, fitLine, sp, type Line } from "./markdown.js";
+import { blank, concat, fitLine, sp, terminalText, type Line } from "./markdown.js";
 import { chromeLines, menuLines, pickerLines } from "./chrome.js";
 import { runCommand as dispatchCommand, suggestionsFor } from "./commands.js";
 import { composeFrame, type ComposerWrap } from "./frame.js";
-import { useChainHeight, usePersistedPref, useSpin, useStdoutDimensions } from "./hooks.js";
+import { useChainHeight, useOutputFlowing, usePersistedPref, useSpin, useStdoutDimensions } from "./hooks.js";
 import { handleKey, type KeyCtx, type PickerState } from "./keymap.js";
 import { handleMouse as handleMouse_, type Drag, type MouseCtx } from "./mouse.js";
 import { localClipboard, osc52 } from "./clipboard.js";
@@ -107,7 +110,7 @@ function LineView({ line }: { line: Line }) {
     <Text wrap="truncate">
       {line.map((s, i) => (
         <Text key={i} color={s.c} bold={s.b} italic={s.i} underline={s.u} backgroundColor={s.bg}>
-          {s.t}
+          {terminalText(s.t)}
         </Text>
       ))}
     </Text>
@@ -209,6 +212,20 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
   }, [effort, runtime]);
 
   const [cursorPref, setCursorPref] = usePersistedPref(loadCursor, saveCursor);
+
+  // Scroll view: finished turns are printed once into the terminal's own
+  // scrollback and only the live turn + composer are redrawn, so the terminal
+  // scrolls and selects them natively — a phone cannot drive the full-screen
+  // view's mouse selection, and its repaints made native selection shake.
+  // "auto" decides once, at launch: a phone rotating past 100 columns should
+  // not flip the whole layout under the reader.
+  const [viewPref, setViewPref] = usePersistedPref(loadView, saveView);
+  const [narrowAtLaunch] = useState(() => (stdout?.columns ?? 80) < 100);
+  const scrollView = viewPref === "scroll" || (viewPref === "auto" && narrowAtLaunch);
+  // Nothing is drawn while the terminal is not reading (a phone that put the
+  // ssh client in the background): the agent keeps working, the screen catches
+  // up on return. See useOutputFlowing.
+  const flowing = useOutputFlowing(stdout);
   const cursorStyle: "block" | "line" = cursorPref.startsWith("line") ? "line" : "block";
   const blinkEnabled = cursorPref.endsWith("blink");
 
@@ -682,10 +699,30 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
       lastReply,
       // The flat feed is rebuilt from history, so a clear is just state.
       clear: () => {
+        // The scroll view's turns live in the terminal's scrollback, so a wipe
+        // has to reach the terminal itself.
+        if (scrollView) stdout?.write("\x1b[2J\x1b[3J\x1b[H");
         setLive(null);
         setHistory([]);
       },
-      freeze: () => setSelectMode(true),
+      freeze: () =>
+        scrollView
+          ? pushHistory(sysTurn("scroll view: the terminal already selects natively — long-press or drag over the text."))
+          : setSelectMode(true),
+      setView: (v?: string) => {
+        const next = v?.trim().toLowerCase();
+        if (!next) {
+          pushHistory(sysTurn(`view: ${viewPref}${viewPref === "auto" ? ` (${scrollView ? "scroll" : "full"})` : ""} — /view scroll | full | auto`));
+          return;
+        }
+        if (!isViewPref(next)) {
+          pushHistory(sysTurn(`unknown view "${v}" — /view scroll | full | auto`));
+          return;
+        }
+        setSelectMode(false);
+        setSelection(null);
+        setViewPref(next);
+      },
       togglePulse: () => {
         const next = !pulseOn;
         setPulseOn(next);
@@ -707,7 +744,7 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
       taskRoutes,
       exit,
     }),
-    [copyOut, exit, history, lastReply, listSessions, model, newSession, openCursorPicker, openEffortPicker, openModelPicker, openSkinPicker, provider, pulseOn, pushHistory, recapSession, resumeSession, runtime, switchProvider, switchable, taskRoutes],
+    [copyOut, exit, history, lastReply, listSessions, model, newSession, openCursorPicker, openEffortPicker, openModelPicker, openSkinPicker, provider, pulseOn, pushHistory, recapSession, resumeSession, runtime, scrollView, setViewPref, stdout, switchProvider, switchable, taskRoutes, viewPref],
   );
 
   const command = useCallback((text: string) => dispatchCommand(text, commandCtx), [commandCtx]);
@@ -807,7 +844,7 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
 
   // ---------------------------------------------------------- layout math
 
-  const sidebarOn = width >= 100;
+  const sidebarOn = !scrollView && width >= 100;
   const sidebarW = sidebarOn ? 28 : 0;
   const contentW = sidebarOn ? width - sidebarW : width;
   // the composer's text area: the gutter, the panel's two borders, its padding
@@ -824,6 +861,8 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
   const spin = useSpin(busy);
   const feedW = Math.max(8, contentW - 1);
   const feed = useMemo(() => {
+    // The scroll view prints turns into the terminal's scrollback instead.
+    if (scrollView) return { lines: [] as Line[], regions: [] as (FeedRegion | undefined)[] };
     // The masthead shrinks to one line once there is a conversation to read.
     const bn = bannerLines(theme, feedW, history.length > 0 || live !== null);
     const lines: Line[] = [...bn];
@@ -845,7 +884,7 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
       push(tl.lines, tl.regions);
     }
     return { lines, regions };
-  }, [expandedTools, feedW, history, live, spin, theme]);
+  }, [expandedTools, feedW, history, live, scrollView, spin, theme]);
 
   const watches = runtime.getService<SentinelService>("sentinel")?.listWatches()?.length ?? 0;
   const wishes = runtime.getService<ForgeService>("forge")?.listWishes()?.length ?? 0;
@@ -878,12 +917,14 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
     : picker
       ? ""
       : menuItems.length
-        ? "↑↓ or click · tab next · enter run · esc keep typing"
+        ? scrollView
+          ? "↑↓ · tab next · enter run · esc keep typing"
+          : "↑↓ or click · tab next · enter run · esc keep typing"
         : busy
-          ? "type ahead — she answers first · drag to select · ctrl+y copy her last reply"
+          ? `type ahead — she answers first${scrollView ? "" : " · drag to select"} · ctrl+y copy her last reply`
           : value.includes("\n")
-            ? "↵ send · alt+↵ another line · ctrl+u wipe · drag to select"
-            : "↵ send · alt+↵ new line · ↑ history · / commands · drag to select · ctrl+y copy";
+            ? `↵ send · alt+↵ another line · ctrl+u wipe${scrollView ? "" : " · drag to select"}`
+            : `↵ send · alt+↵ new line · ↑ history · / commands${scrollView ? "" : " · drag to select"} · ctrl+y copy`;
 
   const chrome = chromeLines({
     theme,
@@ -962,6 +1003,9 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
     sidebar,
     composerWrap: composerWrap as ComposerWrap,
     menuItems,
+    // A frozen frame is selected by the terminal itself, which would copy the
+    // scrollbar's column along with the text.
+    scrollbar: !selectMode,
   });
 
   const feedRef = useRef(view);
@@ -1142,12 +1186,65 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
     [copiedNote, handleMouse, selectMode],
   );
 
+  // ---- scroll view: what has already been printed, and what is still live
+  // A history that is not an extension of the last one (/new, /wipe, /resume)
+  // starts a fresh print run — ink's <Static> only ever appends.
+  const lastHistoryRef = useRef<Turn[]>(history);
+  const printEpochRef = useRef(0);
+  {
+    const prev = lastHistoryRef.current;
+    if (history !== prev && (history.length < prev.length || (prev.length > 0 && history[0] !== prev[0]))) {
+      printEpochRef.current += 1;
+    }
+    lastHistoryRef.current = history;
+  }
+  type PrintItem = { key: string; turn?: Turn };
+  const printItems: PrintItem[] = scrollView
+    ? [{ key: `banner-${printEpochRef.current}` }, ...history.map((t) => ({ key: t.id, turn: t }))]
+    : [];
+  const noTools = useMemo(() => new Set<string>(), []);
+  const printLines = (item: PrintItem): Line[] =>
+    item.turn
+      ? turnLines(item.turn, noTools, theme, feedW, "").lines
+      : history.length
+        ? bannerLines(theme, feedW, true)
+        : [...bannerLines(theme, feedW, false), ...bootLines(theme, feedW)];
+  // The live turn is redrawn until it is done, then printed for good. Capped so
+  // the redrawn area stays shorter than the window: ink wipes the screen and
+  // reprints everything it ever printed when it is not.
+  const liveLines = scrollView && live ? turnLines(live, expandedTools, theme, feedW, spinnerChar(spin)).lines : [];
+  const liveRoom = Math.max(0, frameRows - chrome.lines.length);
+  const scrollDisplay = scrollView ? [...liveLines.slice(-liveRoom), ...chrome.lines] : [];
+
+  // ---- while the terminal is not reading, keep showing what it last got, so
+  // ink has nothing new to write (it skips an identical frame).
+  const shownRef = useRef<{ lines: Line[]; items: PrintItem[] }>({ lines: [], items: [] });
+  if (flowing || !shownRef.current.lines.length) {
+    shownRef.current = { lines: scrollView ? scrollDisplay : display, items: printItems };
+  }
+  const shown = shownRef.current;
+
+  // Lines are measured by our own width table (markdown.ts), which counts a
+  // text-style pictograph like ⚠ as the one cell terminals draw; ink's measure
+  // says two and would truncate a full-width line. The slack keeps ink out of it.
+  const slack = width + 8;
   return (
-    <Box flexDirection="column">
-      {display.map((line, i) => (
+    <Box flexDirection="column" width={slack}>
+      {scrollView ? (
+        <Static key={`print-${printEpochRef.current}`} items={shown.items}>
+          {(item) => (
+            <Box key={item.key} flexDirection="column" width={slack}>
+              {printLines(item).map((line, i) => (
+                <LineView key={i} line={line} />
+              ))}
+            </Box>
+          )}
+        </Static>
+      ) : null}
+      {shown.lines.map((line, i) => (
         <LineView key={i} line={line} />
       ))}
-      {isRawModeSupported ? <InputCapture onKey={onKey} mouse={!selectMode} /> : null}
+      {isRawModeSupported ? <InputCapture onKey={onKey} mouse={!selectMode && !scrollView} /> : null}
     </Box>
   );
 }

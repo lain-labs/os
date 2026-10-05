@@ -16,6 +16,8 @@ import {
   textWidth,
   truncateLine,
   wrapSpans,
+  setTextPictographWidth,
+  terminalText,
 } from "../src/clients/tui/markdown.js";
 
 const results: [string, boolean][] = [];
@@ -73,6 +75,11 @@ check(
 // ⚙ ⛓ ⚠ and every emoji take two cells. Counting them as one makes the line a
 // column too long, ink truncates the frame's right edge, and a line that wraps
 // instead makes ink clear the terminal — scrollback and all — on every repaint.
+// Text-style pictographs take what the terminal measured; emoji are always two.
+setTextPictographWidth(1);
+check("text pictographs: one  ", textWidth("⚠") === 1 && textWidth("⚠\uFE0F ok") === 4 && textWidth("🔥") === 2);
+check("no VS16 reaches the tty", terminalText("⚠\uFE0F hi") === "⚠ hi");
+setTextPictographWidth(2);
 check("wide glyphs cost two   ", textWidth("⚙") === 2 && textWidth("⛓ 12345") === 8);
 check(
   "agrees with ink's ruler",

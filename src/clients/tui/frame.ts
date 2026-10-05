@@ -56,6 +56,8 @@ export function composeFrame(args: {
   sidebar: { lines: Line[]; regions: (SidebarRegion | undefined)[] };
   composerWrap: ComposerWrap;
   menuItems: readonly { name: string; desc: string }[];
+  /** false draws the scrollbar's column blank (a frozen frame for native selection). */
+  scrollbar?: boolean;
 }): { lines: Line[]; hit: FrameHit } {
   const { theme, width, contentW, sidebarW, sidebarOn, frameRows, viewportRows, scrollTop, maxScroll } = args;
 
@@ -70,7 +72,8 @@ export function composeFrame(args: {
   for (let i = 0; i < viewportRows; i++) {
     let l = slice[i] ?? blank(contentW);
     l = padLine(truncateLine(l, trackW), trackW);
-    l = concat(l, [sp(scrollbarChar(i, viewportRows, maxScroll, scrollTop), theme.mutedDim)]);
+    const bar = args.scrollbar === false ? " " : scrollbarChar(i, viewportRows, maxScroll, scrollTop);
+    l = concat(l, [sp(bar, theme.mutedDim)]);
     screenLines.push(l);
     feedRegions.push(sliceRegions[i]);
   }

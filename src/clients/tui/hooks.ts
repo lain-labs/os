@@ -86,3 +86,31 @@ export function useChainHeight(rpc: string): number | null {
   }, [rpc]);
   return block;
 }
+
+/** Bytes queued for the terminal past which drawing pauses. */
+const OUTPUT_BACKLOG_LIMIT = 256 * 1024;
+
+/**
+ * False while the terminal has stopped reading what we write.
+ *
+ * A phone that puts its ssh client in the background stops draining the
+ * connection; the pty fills, and a blocking write to it froze the whole
+ * process — the agent mid-tool included — until the app came back to the
+ * screen. The launcher makes stdout non-blocking (scripts/tui.ts), so writes
+ * queue in memory instead; this is what stops that queue from growing a frame
+ * per spinner tick for as long as the phone is away.
+ */
+export function useOutputFlowing(stdout: NodeJS.WriteStream | undefined): boolean {
+  const [flowing, setFlowing] = useState(true);
+  useEffect(() => {
+    if (!stdout) return;
+    const check = () => setFlowing((stdout.writableLength ?? 0) < OUTPUT_BACKLOG_LIMIT);
+    const t = setInterval(check, 250);
+    stdout.on("drain", check);
+    return () => {
+      clearInterval(t);
+      stdout.off("drain", check);
+    };
+  }, [stdout]);
+  return flowing;
+}

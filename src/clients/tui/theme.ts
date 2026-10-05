@@ -111,6 +111,7 @@ interface Prefs {
   effort?: string;
   cursor?: string; // "block-blink" | "block-steady" | "line-blink" | "line-steady"
   pulse?: boolean; // ambient chain-watcher murmurs on/off
+  view?: string; // "auto" | "scroll" | "full"
 }
 
 function prefsPath(): string {
@@ -177,4 +178,25 @@ export function loadCursor(): string {
 /** Persist the chosen cursor style, keeping other prefs intact. */
 export function saveCursor(cursor: string): void {
   writePrefs({ ...readPrefs(), cursor });
+}
+
+/**
+ * How the transcript is drawn. "full" owns the whole screen (in-app scroll,
+ * sidebar, mouse); "scroll" prints finished turns into the terminal's own
+ * scrollback, so the terminal scrolls and selects them natively — what a phone
+ * needs; "auto" picks scroll below 100 columns. env override → saved → auto.
+ */
+export type ViewPref = "auto" | "scroll" | "full";
+const VIEWS: readonly ViewPref[] = ["auto", "scroll", "full"];
+export const isViewPref = (v: unknown): v is ViewPref => VIEWS.includes(v as ViewPref);
+
+export function loadView(): ViewPref {
+  const env = process.env.LAINOS_TUI_VIEW;
+  if (isViewPref(env)) return env;
+  const saved = readPrefs().view;
+  return isViewPref(saved) ? saved : "auto";
+}
+
+export function saveView(view: ViewPref): void {
+  writePrefs({ ...readPrefs(), view });
 }

@@ -39,6 +39,8 @@ export type CommandCtx = {
   lastReply: () => string;
   clear: () => void;
   freeze: () => void;
+  /** Switch between the scrollback view and the full-screen one. */
+  setView: (view?: string) => void;
   togglePulse: () => void;
   openPicker: (which: "skin" | "effort" | "cursor" | "model") => void;
   switchProvider: (name: string) => void;
@@ -188,6 +190,12 @@ export const COMMANDS: readonly Command[] = [
           : "no research topics — try: “watch Solana and only tell me what matters”.",
       );
     },
+  },
+  {
+    name: "/view",
+    desc: "scroll (phone) or full-screen view",
+    help: "/view scroll — native terminal scroll + select (phones); /view full — sidebar + mouse; /view auto",
+    run: (ctx) => ctx.setView(ctx.arg),
   },
   {
     name: "/pulse",

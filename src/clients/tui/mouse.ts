@@ -145,7 +145,9 @@ export function handleMouse(m: MouseInfo, ctx: MouseCtx): void {
       col,
       moved: false,
       left: inSidebar ? L.contentW : 0,
-      right: inSidebar ? L.width : L.contentW,
+      // The transcript's last column is the scrollbar's, not text: a copy
+      // that included it pasted a column of █ and ░ down the right edge.
+      right: inSidebar ? L.width : Math.max(1, L.contentW - 1),
     };
     if (ctx.selection) ctx.setSelection(null);
     if (ctx.hasNote) ctx.clearNote();

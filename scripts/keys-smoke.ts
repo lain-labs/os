@@ -18,7 +18,7 @@ import {
   saveInputHistory,
 } from "../src/clients/tui/history.js";
 import { highlightSelection, isDrag, ordered, rowRange, selectionText } from "../src/clients/tui/selection.js";
-import type { Line } from "../src/clients/tui/markdown.js";
+import { setTextPictographWidth, type Line } from "../src/clients/tui/markdown.js";
 import { turnLines, type Turn } from "../src/clients/tui/layout.js";
 import { THEMES, DEFAULT_THEME } from "../src/clients/tui/theme.js";
 import { cursorToWrap, wrapIndices } from "../src/clients/tui/editor.js";
@@ -466,8 +466,9 @@ check(
 check(
   "wide glyphs stay whole",
   (() => {
-    // ⚙ is two columns wide: column 3 is the "t", and dragging over the glyph
-    // itself takes all of it rather than half a character
+    // ⚙ is two columns wide in a terminal that draws it so: column 3 is the
+    // "t", and dragging over the glyph takes all of it, never half a character
+    setTextPictographWidth(2);
     const line: Line[] = [[{ t: "⚙ tool ok" }]];
     return (
       selectionText(line, { a: { row: 0, col: 3 }, b: { row: 0, col: 6 } }, 12) === "tool" &&

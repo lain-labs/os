@@ -27,8 +27,47 @@ import type { Theme } from "./theme.js";
  */
 const ASCII = /^[\x20-\x7e]*$/;
 
+/**
+ * …except the pictographs whose default presentation is *text*: `⚠`, `⚙`, `✔`,
+ * `❤`, `ℹ`. string-width always calls them two columns; plenty of terminals
+ * (Termux among them) draw them in one, and every line holding one came out a
+ * column short, the scrollbar beside it jumping left. Their width is whatever
+ * the terminal measured (below), and the variation selector that asks for the
+ * emoji form (U+FE0F, which terminals disagree about even more) is dropped on
+ * the way out — see {@link terminalText}.
+ */
+const PICTO = /\p{Extended_Pictographic}/u;
+const TEXT_PICTO = /^\p{Extended_Pictographic}$/u;
+const EMOJI_PRESENTATION = /\p{Emoji_Presentation}/u;
+const VS16 = /\uFE0F/g;
+
+/**
+ * Terminals do not agree on those text-style pictographs: most draw them in
+ * one cell, some (and some fonts) in two. The launcher measures the terminal
+ * it is in (scripts/tui.ts) and sets this; 1 is the wcwidth answer.
+ */
+let textPictographWidth: 1 | 2 = 1;
+export function setTextPictographWidth(w: 1 | 2): void {
+  textPictographWidth = w;
+}
+
+function graphemeWidth(g: string): number {
+  const bare = g.replace(VS16, "");
+  if (TEXT_PICTO.test(bare) && !EMOJI_PRESENTATION.test(bare)) return textPictographWidth;
+  return stringWidth(bare);
+}
+
+/** What actually goes to the terminal: the text without emoji-presentation selectors. */
+export function terminalText(t: string): string {
+  return t.includes("\uFE0F") ? t.replace(VS16, "") : t;
+}
+
 export function textWidth(t: string): number {
-  return ASCII.test(t) ? t.length : stringWidth(t);
+  if (ASCII.test(t)) return t.length;
+  if (!PICTO.test(t)) return stringWidth(t);
+  let w = 0;
+  for (const g of graphemes(t)) w += graphemeWidth(g);
+  return w;
 }
 
 const segmenter =
@@ -49,7 +88,7 @@ export function fitToWidth(t: string, n: number): { text: string; width: number 
   let out = "";
   let w = 0;
   for (const g of graphemes(t)) {
-    const gw = stringWidth(g);
+    const gw = graphemeWidth(g);
     if (w + gw > n) break;
     out += g;
     w += gw;
