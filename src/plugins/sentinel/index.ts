@@ -3,14 +3,27 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { isAddress, type Address } from "viem";
 import { createLogger } from "../../logger.js";
-import type {
-  Action,
-  IAgentRuntime,
-  Plugin,
-  Provider,
-  Service,
+import { TaskKind } from "../../models/tasks.js";
+import {
+  ModelTier,
+  type Action,
+  type IAgentRuntime,
+  type Plugin,
+  type Provider,
+  type Service,
+  type State,
 } from "../../types.js";
 import type { ChainService } from "../chain/index.js";
+import { looksLikeNothing } from "../scout/index.js";
+import {
+  buysWithin,
+  chainActivitySource,
+  convergingWallets,
+  scanWallet,
+  type ActivitySource,
+  type WalletMove,
+} from "./activity.js";
+import { briefMaterial, localDay, parseClock, type BriefSnapshot } from "./brief.js";
 
 const log = createLogger("plugin:sentinel");
 
@@ -26,13 +39,29 @@ const log = createLogger("plugin:sentinel");
  *   - pull: the `sentinel_alerts` provider injects any not-yet-delivered alerts
  *     into the next conversation turn, so Lain mentions them herself.
  *
- * Watches and alerts persist to `data/sentinel.json` and survive restarts.
+ * Beyond balances, the sentinel watches what wallets *do* (see activity.ts):
+ *   - `position` — one wallet; alert when it opens a new position, and when it
+ *     keeps buying the same token (accumulation);
+ *   - `cohort` — a group of wallets; alert when several of them buy into the
+ *     same asset within a window.
+ * And once a day, at the time the operator chose, it writes a *brief*: the
+ * portfolio against yesterday, plus what the watched wallets did — filtered by
+ * the model to what matters for the portfolio, or silence.
+ *
+ * Watches, alerts, scan cursors and recent moves persist to
+ * `data/sentinel.json` and survive restarts.
  */
 
-export type WatchKind = "below" | "above" | "change";
+export type WatchKind = "below" | "above" | "change" | "position" | "cohort";
+
+const ACTIVITY_KINDS: WatchKind[] = ["position", "cohort"];
+const DAY_MS = 86_400_000;
+const MOVE_RETENTION_MS = 7 * DAY_MS;
+const MOVE_CAP = 1_000;
 
 export interface Watch {
   id: string;
+  /** The watched wallet; for a cohort, its first member. */
   address: Address;
   /** Token symbol or 0x address; undefined = the chain's native currency. */
   token?: string;
@@ -45,6 +74,16 @@ export interface Watch {
   lastValue?: string;
   /** True while the below/above condition currently holds (edge triggering). */
   firing?: boolean;
+  /** cohort: every wallet in the group. */
+  members?: Address[];
+  /** cohort: how many members must buy the same token to alert. */
+  minWallets?: number;
+  /** position: buys of one token within the window that count as building. */
+  minBuys?: number;
+  /** position/cohort: the window the rule looks back over. */
+  windowMs?: number;
+  /** Rule key → when it last fired, so one episode alerts once. */
+  fired?: Record<string, number>;
 }
 
 export interface Alert {
@@ -53,13 +92,36 @@ export interface Alert {
   text: string;
   at: number;
   delivered: boolean;
+  /** A morning brief rather than a watch firing. */
+  kind?: "watch" | "brief";
+}
+
+export interface BriefSchedule {
+  /** Local "HH:MM". */
+  at: string;
+  /** The operator's own words on what the brief is for. */
+  note?: string;
+  lastDay?: string;
+  snapshot?: BriefSnapshot;
 }
 
 interface SentinelFile {
   watches: Watch[];
   alerts: Alert[];
   counter: number;
+  /** Wallet (lowercase) → last scanned block. */
+  cursors?: Record<string, string>;
+  moves?: WalletMove[];
+  brief?: BriefSchedule | null;
 }
+
+/** How an alert reads in a feed (Telegram, the TUI). */
+export function alertLine(alert: Alert): string {
+  return `${alert.kind === "brief" ? "☀" : "⚠"} ${alert.text}`;
+}
+
+/** Briefs that arrive more than this long after their time wait for tomorrow. */
+const BRIEF_LATE_MS = 3 * 3_600_000;
 
 const ALERT_CAP = 200;
 
@@ -74,6 +136,13 @@ export class SentinelService implements Service {
   private runtime?: IAgentRuntime;
   private subscribers = new Set<(alert: Alert) => void>();
   private ticking = false;
+  private cursors: Record<string, string> = {};
+  private moves: WalletMove[] = [];
+  private brief: BriefSchedule | null = null;
+  private briefTimer: ReturnType<typeof setInterval> | null = null;
+  private briefing = false;
+  /** Tests inject a fake chain here; otherwise the chain service is used. */
+  activitySource?: ActivitySource;
 
   async start(runtime: IAgentRuntime): Promise<void> {
     this.runtime = runtime;
@@ -84,9 +153,14 @@ export class SentinelService implements Service {
       this.watches = parsed.watches ?? [];
       this.alerts = parsed.alerts ?? [];
       this.counter = parsed.counter ?? this.watches.length;
+      this.cursors = parsed.cursors ?? {};
+      this.moves = parsed.moves ?? [];
+      this.brief = parsed.brief ?? null;
     } catch {
       // Fresh store.
     }
+    const seeded = runtime.getSetting("LAINOS_BRIEF_AT");
+    if (!this.brief && seeded && parseClock(seeded)) this.brief = { at: seeded };
 
     const interval = Number(runtime.getSetting("LAINOS_SENTINEL_INTERVAL_MS") ?? 60_000);
     this.timer = setInterval(() => void this.tick(), Math.max(5_000, interval));
@@ -94,11 +168,23 @@ export class SentinelService implements Service {
     log.info(
       `sentinel online: ${this.watches.length} watch(es), tick every ${Math.max(5_000, interval) / 1000}s`,
     );
+
+    // The brief is delivered once per day per operator, so only the daemon
+    // writes it — a TUI next to it would send a second one.
+    const forced = runtime.getSetting("LAINOS_BRIEF");
+    const briefs = forced !== undefined && forced !== "" ? forced !== "0" : runtime.getSetting("LAINOS_DAEMON") === "1";
+    if (briefs) {
+      this.briefTimer = setInterval(() => void this.briefTick(), 60_000);
+      this.briefTimer.unref?.();
+      if (this.brief) log.info(`morning brief at ${this.brief.at} local`);
+    }
   }
 
   async stop(): Promise<void> {
     if (this.timer) clearInterval(this.timer);
+    if (this.briefTimer) clearInterval(this.briefTimer);
     this.timer = null;
+    this.briefTimer = null;
   }
 
   /** Subscribe to alerts as they fire (returns an unsubscribe fn). */
@@ -126,12 +212,31 @@ export class SentinelService implements Service {
     return fresh;
   }
 
+  /** Wallet moves seen within the last `withinMs`, oldest first. */
+  recentMoves(withinMs = DAY_MS, now = Date.now()): WalletMove[] {
+    return this.moves.filter((m) => now - m.at <= withinMs);
+  }
+
+  briefSchedule(): BriefSchedule | null {
+    return this.brief ? { ...this.brief } : null;
+  }
+
+  /** Set (or with null, cancel) the daily brief. */
+  async setBrief(input: { at: string; note?: string } | null): Promise<void> {
+    this.brief = input ? { ...this.brief, at: input.at, note: input.note ?? this.brief?.note } : null;
+    await this.persist();
+  }
+
   async addWatch(input: {
     address: Address;
     token?: string;
     kind: WatchKind;
     threshold?: number;
     note?: string;
+    members?: Address[];
+    minWallets?: number;
+    minBuys?: number;
+    windowMs?: number;
   }): Promise<Watch> {
     this.counter += 1;
     const watch: Watch = {
@@ -141,6 +246,10 @@ export class SentinelService implements Service {
       kind: input.kind,
       threshold: input.threshold,
       note: input.note,
+      members: input.members,
+      minWallets: input.minWallets,
+      minBuys: input.minBuys,
+      windowMs: input.windowMs,
       createdAt: Date.now(),
     };
     this.watches.push(watch);
@@ -159,24 +268,233 @@ export class SentinelService implements Service {
   }
 
   /** One poll cycle. Public so tests (and the smoke script) can force it. */
-  async tick(): Promise<void> {
+  async tick(now = Date.now()): Promise<void> {
     if (this.ticking || !this.watches.length) return;
     const chain = this.runtime?.getService<ChainService>("chain");
-    if (!chain) return;
+    const source = this.activitySource ?? (chain?.configured ? chainActivitySource(chain) : undefined);
+    if (!chain && !source) return;
     this.ticking = true;
     try {
       let dirty = false;
       for (const watch of this.watches) {
+        if (ACTIVITY_KINDS.includes(watch.kind) || !chain) continue;
         try {
           dirty = (await this.checkWatch(chain, watch)) || dirty;
         } catch (err) {
           log.warn(`watch ${watch.id} check failed`, err);
         }
       }
+      if (source) dirty = (await this.scanActivity(source, now)) || dirty;
       if (dirty) await this.persist();
     } finally {
       this.ticking = false;
     }
+  }
+
+  /** Every wallet an activity watch covers, deduplicated. */
+  private trackedWallets(): Address[] {
+    const out = new Map<string, Address>();
+    for (const w of this.watches) {
+      if (w.kind === "position") out.set(w.address.toLowerCase(), w.address);
+      if (w.kind === "cohort") for (const m of w.members ?? []) out.set(m.toLowerCase(), m);
+    }
+    return [...out.values()];
+  }
+
+  /**
+   * Read new transfers for each tracked wallet and apply the activity rules.
+   * A wallet seen for the first time starts at the chain head — a new watch
+   * reports what happens from now on, not a replay of its history.
+   */
+  private async scanActivity(src: ActivitySource, now: number): Promise<boolean> {
+    const wallets = this.trackedWallets();
+    if (!wallets.length) return false;
+    const head = await src.head();
+    const maxSpan = BigInt(Math.max(1, Number(this.runtime?.getSetting("LAINOS_SENTINEL_MAX_BLOCKS") ?? 2_000)));
+    let dirty = false;
+    const fresh: WalletMove[] = [];
+
+    for (const wallet of wallets) {
+      const key = wallet.toLowerCase();
+      const cursor = this.cursors[key];
+      if (cursor === undefined) {
+        this.cursors[key] = head.toString();
+        dirty = true;
+        continue;
+      }
+      let from = BigInt(cursor) + 1n;
+      if (from > head) continue;
+      if (head - from + 1n > maxSpan) {
+        log.warn(`${key}: ${head - from + 1n} blocks behind, scanning only the last ${maxSpan}`);
+        from = head - maxSpan + 1n;
+      }
+      try {
+        const transfers = await src.transfers(wallet, from, head);
+        fresh.push(...(await scanWallet(src, wallet, transfers, now)));
+        this.cursors[key] = head.toString();
+        dirty = true;
+      } catch (err) {
+        log.warn(`activity scan of ${key} failed`, err);
+      }
+    }
+
+    if (fresh.length) {
+      this.moves = [...this.moves, ...fresh]
+        .filter((m) => now - m.at <= MOVE_RETENTION_MS)
+        .slice(-MOVE_CAP);
+      for (const move of fresh) this.applyActivityRules(move, now);
+    }
+    return dirty;
+  }
+
+  private applyActivityRules(move: WalletMove, now: number): void {
+    if (move.side !== "buy") return;
+    for (const watch of this.watches) {
+      const windowMs = watch.windowMs ?? DAY_MS;
+      if (watch.kind === "position" && sameWallet(watch.address, move.wallet)) {
+        const who = this.labelFor(move.wallet);
+        if (move.fresh) {
+          this.fire(
+            watch,
+            `${who} opened a new position: ${move.amount} ${move.symbol} (${move.token}).${this.txSuffix(move.tx)}`,
+          );
+          continue;
+        }
+        const buys = buysWithin(this.moves, move.wallet, move.token, windowMs, now);
+        const minBuys = watch.minBuys ?? 3;
+        if (buys.length >= minBuys && this.once(watch, `build:${move.token.toLowerCase()}`, windowMs, now)) {
+          this.fire(
+            watch,
+            `${who} keeps building ${move.symbol}: ${buys.length} buys in ${hours(windowMs)}, now holds ${move.balance}.${this.txSuffix(move.tx)}`,
+          );
+        }
+      }
+      if (watch.kind === "cohort" && watch.members?.some((m) => sameWallet(m, move.wallet))) {
+        const members = watch.members;
+        const buyers = convergingWallets(this.moves, members, move.token, windowMs, now);
+        const min = watch.minWallets ?? Math.min(3, members.length);
+        if (buyers.length >= min && this.once(watch, `conv:${move.token.toLowerCase()}`, windowMs, now)) {
+          const group = watch.note ?? `cohort ${watch.id}`;
+          this.fire(
+            watch,
+            `${buyers.length} of ${members.length} wallets in ${group} bought ${move.symbol} (${move.token}) ` +
+              `within ${hours(windowMs)}: ${buyers.map((b) => this.labelFor(b)).join(", ")}.`,
+          );
+        }
+      }
+    }
+  }
+
+  /** True the first time `key` fires within the window; records it. */
+  private once(watch: Watch, key: string, windowMs: number, now: number): boolean {
+    const fired = (watch.fired ??= {});
+    for (const [k, at] of Object.entries(fired)) if (now - at > windowMs) delete fired[k];
+    if (fired[key] !== undefined) return false;
+    fired[key] = now;
+    return true;
+  }
+
+  /** A wallet's own note when some position watch names it, else its short form. */
+  labelFor(wallet: Address): string {
+    const short = `${wallet.slice(0, 6)}…${wallet.slice(-4)}`;
+    const named = this.watches.find((w) => w.kind === "position" && w.note && sameWallet(w.address, wallet));
+    return named ? `${named.note} (${short})` : short;
+  }
+
+  private txSuffix(hash: string): string {
+    const url = this.runtime?.getService<ChainService>("chain")?.explorerTxUrl(hash);
+    return url ? ` ${url}` : "";
+  }
+
+  // ------------------------------------------------------------- brief
+
+  private async briefTick(now = new Date()): Promise<void> {
+    const brief = this.brief;
+    const clock = brief ? parseClock(brief.at) : null;
+    if (!brief || !clock || this.briefing) return;
+    const day = localDay(now);
+    if (brief.lastDay === day) return;
+    const due = new Date(now);
+    due.setHours(clock.hour, clock.minute, 0, 0);
+    if (now < due) return;
+    this.briefing = true;
+    try {
+      // Mark the day first: a brief that failed is not retried every minute.
+      brief.lastDay = day;
+      await this.persist();
+      if (now.getTime() - due.getTime() > BRIEF_LATE_MS) {
+        log.info(`brief for ${day} is over ${BRIEF_LATE_MS / 3_600_000}h late, skipping to tomorrow`);
+        return;
+      }
+      const text = await this.composeBrief(now.getTime(), true);
+      if (text) this.fireBrief(text);
+    } catch (err) {
+      log.warn("morning brief failed", err);
+    } finally {
+      this.briefing = false;
+    }
+  }
+
+  /**
+   * Write the brief: the portfolio against the last brief's snapshot, the
+   * watched wallets' moves and the alerts of the last day, filtered by the
+   * model down to what matters for the portfolio. Null means silence.
+   * `remember` stores today's snapshot as the next brief's baseline.
+   */
+  async composeBrief(now = Date.now(), remember = false): Promise<string | null> {
+    const runtime = this.runtime;
+    if (!runtime) return null;
+    const portfolio = await readPortfolio(runtime);
+    const material = briefMaterial({
+      portfolioText: portfolio?.text,
+      positions: portfolio?.positions ?? [],
+      previous: this.brief?.snapshot,
+      moves: this.recentMoves(DAY_MS, now),
+      alerts: this.alerts.filter((a) => a.kind !== "brief" && now - a.at <= DAY_MS),
+      labelFor: (w) => this.labelFor(w),
+    });
+    if (remember && this.brief && portfolio) {
+      this.brief.snapshot = { at: now, positions: portfolio.positions };
+      await this.persist();
+    }
+    if (!material) return null;
+
+    const res = await runtime.model.generate({
+      tier: ModelTier.MEDIUM,
+      task: TaskKind.ANALYSIS,
+      system:
+        `You are ${runtime.character.name}, writing the operator's morning brief. ` +
+        `It is not a news feed. Report only what matters to THEIR portfolio: watched wallets buying or ` +
+        `dumping tokens the operator holds, several watched wallets converging on one asset, a watched ` +
+        `wallet opening a new position worth a look, a position that moved sharply since the last brief, ` +
+        `an alert that still needs action. Never retell an unchanged portfolio. ` +
+        `At most 6 short lines, plain text, most important first, in your own voice. ` +
+        `If nothing clears the bar, reply with exactly the single word: NOTHING.`,
+      messages: [
+        {
+          role: "user",
+          content:
+            (this.brief?.note ? `The operator asked for: ${this.brief.note}
+
+` : "") + material,
+        },
+      ],
+      maxTokens: 700,
+      temperature: 0.3,
+    });
+    const text = res.text.trim();
+    return looksLikeNothing(text) ? null : text;
+  }
+
+  private fireBrief(text: string): void {
+    this.emit({
+      id: randomUUID(),
+      watchId: "brief",
+      text,
+      at: Date.now(),
+      delivered: false,
+      kind: "brief",
+    });
   }
 
   /** Read the watched balance, fire on condition edges. Returns "state changed". */
@@ -221,16 +539,19 @@ export class SentinelService implements Service {
   }
 
   private fire(watch: Watch, text: string): void {
-    const alert: Alert = {
+    this.emit({
       id: randomUUID(),
       watchId: watch.id,
       text,
       at: Date.now(),
       delivered: false,
-    };
+    });
+  }
+
+  private emit(alert: Alert): void {
     this.alerts.push(alert);
     if (this.alerts.length > ALERT_CAP) this.alerts = this.alerts.slice(-ALERT_CAP);
-    log.info(`alert [${watch.id}] ${text}`);
+    log.info(`alert [${alert.watchId}] ${alert.text}`);
     for (const fn of this.subscribers) {
       try {
         fn(alert);
@@ -248,8 +569,45 @@ export class SentinelService implements Service {
       watches: this.watches,
       alerts: this.alerts,
       counter: this.counter,
+      cursors: this.cursors,
+      moves: this.moves,
+      brief: this.brief,
     };
     await writeFile(this.file, JSON.stringify(payload, null, 2), "utf8");
+  }
+}
+
+function sameWallet(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
+}
+
+function hours(ms: number): string {
+  const h = ms / 3_600_000;
+  return h >= 1 && Number.isInteger(h) ? `${h}h` : `${Math.round(ms / 60_000)}m`;
+}
+
+/**
+ * The portfolio as portfolio_pnl reports it — the brief and the chat must
+ * agree on what is held. Null when there is no chain or wallet.
+ */
+async function readPortfolio(
+  runtime: IAgentRuntime,
+): Promise<{ text: string; positions: BriefSnapshot["positions"] } | null> {
+  const action = runtime.actions.find((a) => a.name === "portfolio_pnl");
+  const chain = runtime.getService<ChainService>("chain");
+  if (!action || !chain?.configured || !chain.agentAddress) return null;
+  try {
+    // portfolio_pnl reads nothing from the turn state.
+    const res = await action.handler(runtime, {} as State, {});
+    if (!res.ok || !res.text) return null;
+    const raw = (res.data?.positions ?? []) as { token: string; symbol: string; valueNative: string }[];
+    return {
+      text: res.text,
+      positions: raw.map((p) => ({ token: p.token, symbol: p.symbol, valueNative: Number(p.valueNative) })),
+    };
+  } catch (err) {
+    log.warn("brief could not read the portfolio", err);
+    return null;
   }
 }
 
@@ -259,11 +617,22 @@ function getSentinel(runtime: IAgentRuntime): SentinelService {
   return svc;
 }
 
-function describeWatch(w: Watch, nativeSymbol: string): string {
+export function describeWatch(w: Watch, nativeSymbol: string): string {
+  const note = w.note ? ` — ${w.note}` : "";
+  const window = hours(w.windowMs ?? DAY_MS);
+  if (w.kind === "position") {
+    return `${w.id}: activity of ${w.address} — new positions, and ${w.minBuys ?? 3}+ buys of one token in ${window}${note}`;
+  }
+  if (w.kind === "cohort") {
+    const members = w.members ?? [];
+    return (
+      `${w.id}: cohort of ${members.length} wallets — ${w.minWallets ?? Math.min(3, members.length)}+ buying ` +
+      `the same token within ${window}${note}`
+    );
+  }
   const target = w.token ? `${w.token.toUpperCase()} of ${w.address}` : `${nativeSymbol} of ${w.address}`;
   const cond =
     w.kind === "change" ? "on any change" : `when ${w.kind} ${w.threshold}`;
-  const note = w.note ? ` — ${w.note}` : "";
   const last = w.lastValue !== undefined ? ` (last seen: ${w.lastValue})` : "";
   return `${w.id}: ${target} ${cond}${note}${last}`;
 }
@@ -350,7 +719,7 @@ const watchBalanceAction: Action = {
 const listWatchesAction: Action = {
   name: "list_watches",
   similes: ["show_watches", "watches", "what_are_you_watching"],
-  description: "List the background balance watches currently active, with their ids.",
+  description: "List the background watches currently active (balances, wallets, wallet groups), with their ids, and the daily brief if one is set.",
   parameters: { type: "object", properties: {} },
   examples: [{ user: "what are you watching?", agent: "Here are my open eyes…" }],
   async validate(runtime) {
@@ -359,11 +728,13 @@ const listWatchesAction: Action = {
   async handler(runtime) {
     const svc = getSentinel(runtime);
     const watches = svc.listWatches();
-    if (!watches.length) return { ok: true, text: "I'm not watching anything yet." };
+    const brief = svc.briefSchedule();
+    const briefLine = brief ? `\nDaily brief at ${brief.at} local${brief.note ? ` — ${brief.note}` : ""}.` : "";
+    if (!watches.length) return { ok: true, text: `I'm not watching anything yet.${briefLine}` };
     const nativeSymbol = runtime.getService<ChainService>("chain")?.nativeSymbol ?? "native currency";
     return {
       ok: true,
-      text: `Active watches:\n${watches.map((w) => describeWatch(w, nativeSymbol)).join("\n")}`,
+      text: `Active watches:\n${watches.map((w) => describeWatch(w, nativeSymbol)).join("\n")}${briefLine}`,
       data: { count: watches.length },
     };
   },
@@ -392,11 +763,185 @@ const unwatchAction: Action = {
   },
 };
 
+function windowParam(raw: unknown, fallbackHours = 24): number | null {
+  const h = raw === undefined ? fallbackHours : Number(raw);
+  return Number.isFinite(h) && h > 0 && h <= 24 * 30 ? Math.round(h * 3_600_000) : null;
+}
+
+const watchWalletAction: Action = {
+  name: "watch_wallet",
+  similes: ["track_wallet", "follow_wallet", "watch_positions", "copy_watch"],
+  description:
+    "Watch what a wallet DOES, in the background: alert when it opens a new token position (buys a token it held none of), and when it keeps building one (several buys of the same token within a window). Only the wallet's own transactions count; airdrops are ignored. Use for 'tell me when this wallet starts building a position'. For balance thresholds use watch_balance instead.",
+  parameters: {
+    type: "object",
+    properties: {
+      address: { type: "string", description: "0x address of the wallet." },
+      note: { type: "string", description: "Short human label, e.g. 'the fund wallet'." },
+      min_buys: {
+        type: "number",
+        description: "Buys of one token within the window that count as building a position. Default 3.",
+      },
+      window_hours: { type: "number", description: "Look-back window for repeated buys. Default 24." },
+    },
+    required: ["address"],
+  },
+  examples: [
+    { user: "watch 0x9c2e… and tell me when it starts building a new position", agent: "Eyes on it." },
+  ],
+  async validate(runtime) {
+    return Boolean(runtime.getService("sentinel"));
+  },
+  async handler(runtime, _state, params) {
+    const svc = getSentinel(runtime);
+    const address = String(params.address ?? "");
+    if (!isAddress(address)) return { ok: false, text: "I need a valid 0x address to watch." };
+    const windowMs = windowParam(params.window_hours);
+    if (windowMs === null) return { ok: false, text: "window_hours must be between 0 and 720." };
+    const minBuys = params.min_buys !== undefined ? Math.round(Number(params.min_buys)) : 3;
+    if (!Number.isFinite(minBuys) || minBuys < 2) return { ok: false, text: "min_buys must be 2 or more." };
+    const watch = await svc.addWatch({
+      address: address as Address,
+      kind: "position",
+      note: params.note ? String(params.note) : undefined,
+      minBuys,
+      windowMs,
+    });
+    return {
+      ok: true,
+      text: `Watching now — ${describeWatch(watch, "")}. I report from the next block on, not its history.`,
+      data: { watch: { ...watch } },
+    };
+  },
+};
+
+const watchWalletsAction: Action = {
+  name: "watch_wallets",
+  similes: ["watch_cohort", "watch_group", "watch_addresses", "smart_money_watch"],
+  description:
+    "Watch a group of wallets together, in the background: alert when several of them buy into the same token within a window (convergence). Use for 'watch these addresses and tell me if several of them start entering the same asset'.",
+  parameters: {
+    type: "object",
+    properties: {
+      addresses: {
+        type: "array",
+        items: { type: "string" },
+        description: "The 0x addresses in the group (2–50).",
+      },
+      min_wallets: {
+        type: "number",
+        description: "How many of them must buy the same token. Default: 3 (or the group size, if smaller).",
+      },
+      window_hours: { type: "number", description: "Within how many hours. Default 24." },
+      note: { type: "string", description: "Name for the group, e.g. 'the ten funds'." },
+    },
+    required: ["addresses"],
+  },
+  examples: [
+    {
+      user: "watch these ten addresses, alert me if several of them start entering the same asset",
+      agent: "Tying them into one cohort.",
+    },
+  ],
+  async validate(runtime) {
+    return Boolean(runtime.getService("sentinel"));
+  },
+  async handler(runtime, _state, params) {
+    const svc = getSentinel(runtime);
+    const raw = Array.isArray(params.addresses) ? params.addresses.map(String) : [];
+    const bad = raw.filter((a) => !isAddress(a));
+    if (bad.length) return { ok: false, text: `Not valid 0x addresses: ${bad.join(", ")}.` };
+    const members = [...new Map(raw.map((a) => [a.toLowerCase(), a as Address])).values()];
+    if (members.length < 2 || members.length > 50) {
+      return { ok: false, text: "A group needs between 2 and 50 distinct addresses." };
+    }
+    const windowMs = windowParam(params.window_hours);
+    if (windowMs === null) return { ok: false, text: "window_hours must be between 0 and 720." };
+    const minWallets =
+      params.min_wallets !== undefined ? Math.round(Number(params.min_wallets)) : Math.min(3, members.length);
+    if (!Number.isFinite(minWallets) || minWallets < 2 || minWallets > members.length) {
+      return { ok: false, text: `min_wallets must be between 2 and ${members.length}.` };
+    }
+    const watch = await svc.addWatch({
+      address: members[0],
+      kind: "cohort",
+      members,
+      minWallets,
+      windowMs,
+      note: params.note ? String(params.note) : undefined,
+    });
+    return {
+      ok: true,
+      text: `Watching now — ${describeWatch(watch, "")}.`,
+      data: { watch: { ...watch } },
+    };
+  },
+};
+
+const scheduleBriefAction: Action = {
+  name: "schedule_brief",
+  similes: ["morning_brief_schedule", "daily_brief", "set_brief", "cancel_brief"],
+  description:
+    "Set up (or cancel) a daily brief delivered at a local time: the portfolio against the day before, what the watched wallets did, and open alerts — cut down to only what matters for the portfolio, or nothing at all on a quiet day. Use for 'every morning tell me only what matters'. at='off' cancels it.",
+  parameters: {
+    type: "object",
+    properties: {
+      at: { type: "string", description: "Local time HH:MM (24h), e.g. '08:30', or 'off'. Default 08:00." },
+      note: { type: "string", description: "The operator's own words on what the brief is for." },
+    },
+  },
+  examples: [{ user: "every morning tell me only what actually matters to my portfolio", agent: "Every morning at eight." }],
+  async validate(runtime) {
+    return Boolean(runtime.getService("sentinel"));
+  },
+  async handler(runtime, _state, params) {
+    const svc = getSentinel(runtime);
+    const at = String(params.at ?? "08:00").trim();
+    if (at.toLowerCase() === "off") {
+      await svc.setBrief(null);
+      return { ok: true, text: "Daily brief cancelled." };
+    }
+    const clock = parseClock(at);
+    if (!clock) return { ok: false, text: "Give the time as HH:MM, e.g. 08:30." };
+    const normalized = `${String(clock.hour).padStart(2, "0")}:${String(clock.minute).padStart(2, "0")}`;
+    await svc.setBrief({ at: normalized, note: params.note ? String(params.note) : undefined });
+    return {
+      ok: true,
+      text: `Daily brief set for ${normalized} local time. Quiet days stay quiet.`,
+      data: { brief: svc.briefSchedule() },
+    };
+  },
+};
+
+const briefNowAction: Action = {
+  name: "brief_now",
+  similes: ["morning_brief", "what_matters", "portfolio_brief", "daily_summary"],
+  description:
+    "Write the brief right now: what matters for the portfolio from the last 24 hours — watched wallets' moves, alerts, positions that moved since the last brief. Returns NOTHING-style silence as 'nothing worth your attention'.",
+  parameters: { type: "object", properties: {} },
+  examples: [{ user: "anything I should know about today?", agent: "Let me look over the last day." }],
+  async validate(runtime) {
+    return Boolean(runtime.getService("sentinel"));
+  },
+  async handler(runtime) {
+    const text = await getSentinel(runtime).composeBrief();
+    return { ok: true, text: text ?? "Nothing in the last day worth your attention." };
+  },
+};
+
 export const sentinelPlugin: Plugin = {
   name: "sentinel",
   description:
-    "Background chain sentinel: persistent balance watches that raise alerts (push to clients, or mentioned in the next conversation).",
+    "Background chain sentinel: persistent balance and wallet-activity watches that raise alerts (push to clients, or mentioned in the next conversation), and a daily portfolio brief.",
   services: [new SentinelService()],
   providers: [alertsProvider],
-  actions: [watchBalanceAction, listWatchesAction, unwatchAction],
+  actions: [
+    watchBalanceAction,
+    watchWalletAction,
+    watchWalletsAction,
+    scheduleBriefAction,
+    briefNowAction,
+    listWatchesAction,
+    unwatchAction,
+  ],
 };

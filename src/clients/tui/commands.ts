@@ -16,7 +16,7 @@ import type { IAgentRuntime } from "../../types.js";
 import type { ChainService } from "../../plugins/chain/index.js";
 import type { ForgeService } from "../../plugins/forge/index.js";
 import type { ScoutService } from "../../plugins/scout/index.js";
-import type { SentinelService } from "../../plugins/sentinel/index.js";
+import { describeWatch, type SentinelService } from "../../plugins/sentinel/index.js";
 import { openUrl } from "../../setup/login-gate.js";
 
 /** Where /login points — same host install.sh offers a free API key from. */
@@ -134,7 +134,7 @@ export const COMMANDS: readonly Command[] = [
   {
     name: "/watches",
     desc: "active background watches",
-    help: "active background balance watches",
+    help: "active background watches (balances, wallets, wallet groups)",
     run: (ctx) => {
       const sentinel = ctx.runtime.getService<SentinelService>("sentinel");
       const chain = ctx.runtime.getService<ChainService>("chain");
@@ -143,12 +143,7 @@ export const COMMANDS: readonly Command[] = [
       ctx.say(
         watches.length
           ? `active watches (${watches.length}):\n${watches
-              .map(
-                (w) =>
-                  `  ${w.id}  ${w.token ? w.token.toUpperCase() : nativeSymbol} of ${w.address}` +
-                  `  ${w.kind === "change" ? "on change" : `${w.kind} ${w.threshold}`}` +
-                  `${w.note ? `  — ${w.note}` : ""}${w.lastValue !== undefined ? `  (last ${w.lastValue})` : ""}`,
-              )
+              .map((w) => `  ${describeWatch(w, nativeSymbol)}`)
               .join("\n")}`
           : `no background watches. ask lain: “watch 0x… and warn me below 5 ${nativeSymbol}”.`,
       );

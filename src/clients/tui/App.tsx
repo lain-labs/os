@@ -50,7 +50,7 @@ import {
 } from "./layout.js";
 import type { ForgeService } from "../../plugins/forge/index.js";
 import type { ScoutService } from "../../plugins/scout/index.js";
-import type { SentinelService } from "../../plugins/sentinel/index.js";
+import { alertLine, type SentinelService } from "../../plugins/sentinel/index.js";
 
 // ------------------------------------------------------------------ model
 
@@ -341,7 +341,7 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
   useEffect(() => {
     const sentinel = runtime.getService<SentinelService>("sentinel");
     if (!sentinel?.onAlert) return;
-    return sentinel.onAlert((alert) => pushHistory(pulseTurn(`⚠ ${alert.text}`)));
+    return sentinel.onAlert((alert) => pushHistory(pulseTurn(alertLine(alert))));
   }, [pushHistory, runtime]);
 
   // Forge progress (wishes being built) appears live too.

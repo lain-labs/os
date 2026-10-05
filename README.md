@@ -501,12 +501,35 @@ and secret values loaded from the environment.
   - `watch_balance` — watch an address (native currency or a token) and alert
     when the balance drops **below** / rises **above** a threshold, or on any
     **change**. Ask in plain language: *"watch 0x… and warn me below 5 ETH"*.
+  - `watch_wallet` — watch what a wallet *does*: alert when it opens a new
+    token position (buys a token it held none of), and when it keeps building
+    one (`min_buys` buys of the same token within `window_hours`, default 3 in
+    24 h). *"Watch this wallet. Tell me when it starts building a new
+    position."*
+  - `watch_wallets` — watch a group (2–50 wallets): alert when `min_wallets`
+    of them (default 3) buy the same token within the window. *"Watch these
+    ten addresses. Alert me if several of them start entering the same
+    asset."*
+  - `schedule_brief` / `brief_now` — a daily brief at a local time (or one
+    right now): the portfolio against the last brief, what watched wallets did
+    in the last day (flagged when it touches a token you hold), and the day's
+    alerts, cut by the model down to what matters to the portfolio — and
+    nothing at all on a quiet day. *"Every morning, tell me only what actually
+    matters to my portfolio."*
   - `list_watches` / `unwatch` — inspect and remove watches by id.
+
+  Wallet activity is read from ERC20 `Transfer` logs over plain RPC (no
+  explorer or archive node needed). Only transactions the wallet signed
+  itself count, so airdrops and dust spam never alert; a new watch starts at
+  the chain head instead of replaying history. Each episode alerts once per
+  window, not once per buy.
 
   Watches persist to `data/sentinel.json` and are polled every
   `LAINOS_SENTINEL_INTERVAL_MS` (default 60 s). Alerts are pushed live to the
   TUI and to every known Telegram chat; anything not pushed is mentioned by
-  the agent itself at the start of the next conversation.
+  the agent itself at the start of the next conversation. The brief is
+  written by the daemon only (`LAINOS_BRIEF_AT` seeds a time; a brief more
+  than 3 h late is skipped, not sent at lunch).
 - **forge** — Lain's self-development drive. She is the support line for
   the project's holders, and every wish they voice becomes part of her:
   - `log_wish` — any feature request or bug report lands on a persistent
@@ -896,7 +919,7 @@ src/
   plugins/chain/      the chain: chain.ts (registry) + abi.ts + math.ts (pure AMM)
                       + config.ts (trading policy) + service.ts (client + journal)
                       + explorer.ts + actions/{wallet,trade,liquidity,speculate,portfolio}
-  plugins/sentinel/   background balance watches -> alerts (push + next-turn)
+  plugins/sentinel/   balance + wallet-activity watches -> alerts, daily brief
   plugins/forge/      wishboard + coding-agent jobs (wishes -> direct commits)
   plugins/skills/     hot-loaded self-written tools (skills/*.mjs, no restart)
   plugins/trader/     autonomous take-profit loop over the trade journal

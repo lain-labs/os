@@ -85,8 +85,11 @@ export {
 export { chainPlugin, ChainService, loadChainConfig, loadChainTokens, loadDexConfig } from "./plugins/chain/index.js";
 export type { ChainDexConfig, NativeBuyQuote, NativeSellQuote, DexLiquidityQuote } from "./plugins/chain/index.js";
 export { systemPlugin } from "./plugins/system/index.js";
-export { sentinelPlugin, SentinelService } from "./plugins/sentinel/index.js";
-export type { Alert, Watch, WatchKind } from "./plugins/sentinel/index.js";
+export { sentinelPlugin, SentinelService, alertLine, describeWatch } from "./plugins/sentinel/index.js";
+export type { Alert, BriefSchedule, Watch, WatchKind } from "./plugins/sentinel/index.js";
+export { scanWallet, buysWithin, convergingWallets, chainActivitySource } from "./plugins/sentinel/activity.js";
+export type { ActivitySource, RawTransfer, WalletMove } from "./plugins/sentinel/activity.js";
+export { briefMaterial, parseClock } from "./plugins/sentinel/brief.js";
 export { forgePlugin, ForgeService } from "./plugins/forge/index.js";
 export type { ForgeEvent, ForgeJob, Wish, WishStatus } from "./plugins/forge/index.js";
 export { scoutPlugin, ScoutService, parseRss, looksLikeNothing } from "./plugins/scout/index.js";

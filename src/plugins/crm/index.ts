@@ -401,6 +401,18 @@ export class CrmService implements Service {
     if (typeof sentinel?.onAlert === "function") {
       this.unsubscribe.push(
         sentinel.onAlert((alert) => {
+          // A brief is a report, filed like a digest.
+          if (alert.kind === "brief") {
+            void this.record({
+              kind: "digest",
+              key: alert.id,
+              status: "done",
+              title: "morning brief",
+              detail: alert.text,
+              at: alert.at,
+            });
+            return;
+          }
           void this.record({
             kind: "alert",
             key: alert.id,

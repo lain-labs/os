@@ -19,7 +19,7 @@ import type { ForgeService } from "../src/plugins/forge/index.js";
 import type { GithubStreakService } from "../src/plugins/github/index.js";
 import type { PressService } from "../src/plugins/press/index.js";
 import type { ScoutService } from "../src/plugins/scout/index.js";
-import type { SentinelService } from "../src/plugins/sentinel/index.js";
+import { alertLine, type SentinelService } from "../src/plugins/sentinel/index.js";
 import type { TraderService } from "../src/plugins/trader/index.js";
 
 // The daemon must never die because something somewhere threw: a failed watch,
@@ -45,7 +45,7 @@ async function main() {
   const sentinel = agent.getService<SentinelService>("sentinel");
   if (sentinel && telegramUp) {
     sentinel.onAlert((alert) => {
-      void telegram.broadcast(`⚠ ${alert.text}`);
+      void telegram.broadcast(alertLine(alert));
     });
   }
 
