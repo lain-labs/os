@@ -8,6 +8,10 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=/home/lain/lainos
 Environment=NODE_ENV=production
+# Optional: the daemon's own settings file instead of the install directory's
+# .env — needed when an interactive `lain` shares this install, so it does not
+# also start the daemon's Telegram bot, trader and data dir.
+#Environment=LAINOS_ENV_FILE=/home/lain/.config/lainos/daemon.env
 # ~/.local/bin holds the forge's coding agents (claude, codex); ~/.opencode/bin
 # is where the opencode installer drops the binary.
 Environment=PATH=/home/lain/.local/bin:/home/lain/.opencode/bin:/home/lain/.nvm/versions/node/v24.10.0/bin:/usr/local/bin:/usr/bin:/bin

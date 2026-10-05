@@ -41,9 +41,19 @@ const candidates = [
   resolve(here, "../../.env"), // dist/src/env.js (built)
 ];
 
-for (const path of candidates) {
-  if (existsSync(path)) {
-    loadDotenv({ path });
-    break;
+// A daemon running next to an interactive install has settings of its own
+// (its Telegram bot, its data dir, its trading wallet) that the operator's
+// `lain` must never pick up, so it names its file outright.
+const explicit = process.env.LAINOS_ENV_FILE?.trim();
+
+if (explicit) {
+  if (existsSync(explicit)) loadDotenv({ path: resolve(explicit) });
+  else console.error(`LAINOS_ENV_FILE=${explicit} does not exist — starting with no .env`);
+} else {
+  for (const path of candidates) {
+    if (existsSync(path)) {
+      loadDotenv({ path });
+      break;
+    }
   }
 }
