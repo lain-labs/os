@@ -319,7 +319,11 @@ export class OpenRouterModelProvider implements ModelProvider {
       throw new Error(`${this.name} HTTP ${res.status}: ${detail.slice(0, 300)}`);
     }
 
-    const data = (await res.json()) as ORResponse;
+    return this.fromCompletion(model, (await res.json()) as ORResponse);
+  }
+
+  /** A whole (non-streamed) chat completion, as a ModelResponse. */
+  private fromCompletion(model: string, data: ORResponse): ModelResponse {
     if (data.error) throw new Error(`${this.name} error: ${data.error.message}`);
 
     const msg = data.choices?.[0]?.message ?? {};
@@ -377,6 +381,14 @@ export class OpenRouterModelProvider implements ModelProvider {
     if (!res.ok || !res.body) {
       log.debug("stream unavailable — falling back to generate");
       return this.generate(request);
+    }
+    // A gateway that does not stream (the Lain OS API, for one) answers
+    // `stream: true` with an ordinary completion. Read as SSE it was an empty
+    // reply with no tool calls — the model's tool calls silently dropped.
+    if (!(res.headers.get("content-type") ?? "").includes("text/event-stream")) {
+      const whole = this.fromCompletion(model, (await res.json()) as ORResponse);
+      if (whole.text) onText(whole.text);
+      return whole;
     }
 
     const reader = res.body.getReader();
