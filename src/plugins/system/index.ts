@@ -3,6 +3,8 @@ import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { Action, Plugin, Provider } from "../../types.js";
+import { setSettingAction } from "./settings.js";
+import { offerChoicesAction } from "./choices.js";
 
 const execAsync = promisify(exec);
 
@@ -17,7 +19,7 @@ const execAsync = promisify(exec);
  * cwd itself, or the agent could read the daemon's .env (bot token, signer
  * key) and litter the repo it runs from.
  */
-function workspaceRoot(): string {
+export function workspaceRoot(): string {
   return resolve(process.env.LAINOS_WORKSPACE ?? "workspace");
 }
 
@@ -29,7 +31,7 @@ async function ensureWorkspace(): Promise<string> {
 }
 
 /** Resolve a user-supplied path against the workspace, refusing escapes. */
-function safePath(p: string): string | null {
+export function safePath(p: string): string | null {
   const root = workspaceRoot();
   const abs = resolve(root, p);
   const rel = relative(root, abs);
@@ -82,11 +84,16 @@ const runShellAction: Action = {
       const out = clip([stdout, stderr].filter(Boolean).join("\n").trim() || "(no output)");
       return { ok: true, text: out, data: { command, cwd } };
     } catch (err) {
-      const e = err as { stdout?: string; stderr?: string; message: string; code?: number };
+      const e = err as { stdout?: string; stderr?: string; message: string; code?: number; killed?: boolean; signal?: string };
       const out = clip([e.stdout, e.stderr, e.message].filter(Boolean).join("\n").trim());
+      // A kill by the timeout used to read as a bare "failed (code ?)" and the
+      // model went looking for a bug that wasn't there.
+      const why = e.killed
+        ? `killed after the ${timeout / 1000}s timeout (${e.signal ?? "signal"}) — run long jobs in the background: nohup … > log 2>&1 &, then read the log`
+        : `code ${e.code ?? e.signal ?? "?"}`;
       return {
         ok: false,
-        text: `Command failed (code ${e.code ?? "?"}):\n${out}`,
+        text: `Command failed (${why}):\n${out}`,
         data: { command },
       };
     }
@@ -200,7 +207,10 @@ const systemProvider: Provider = {
       `You have a real terminal and filesystem in your workspace (${workspaceRoot()}): ` +
       `run_shell executes commands, read_file/write_file/list_dir manage files. ` +
       `When a user asks you to run or check something there, do it yourself with these tools and report the actual output — ` +
-      `never tell the user to run commands for you, and never invent file listings or command output.`
+      `never tell the user to run commands for you, and never invent file listings or command output. ` +
+      `A setting the operator hands you goes in with set_setting — plain settings at once, secrets (a bot token, an API key) after their yes; ` +
+      `don't refuse it and don't send them to edit the file by hand. A shell command is killed after ${Number(process.env.LAINOS_SHELL_TIMEOUT_MS ?? 30_000) / 1000}s: ` +
+      `run anything longer in the background (nohup … > log 2>&1 &) and read the log.`
     );
   },
 };
@@ -210,5 +220,5 @@ export const systemPlugin: Plugin = {
   description:
     "Terminal and filesystem skills: run shell commands and read/write/list files within a sandboxed workspace.",
   providers: [systemProvider],
-  actions: [runShellAction, readFileAction, writeFileAction, listDirAction],
+  actions: [runShellAction, readFileAction, writeFileAction, listDirAction, setSettingAction, offerChoicesAction],
 };

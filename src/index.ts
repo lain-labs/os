@@ -34,6 +34,7 @@ import { studyPlugin } from "./plugins/study/index.js";
 import { systemPlugin } from "./plugins/system/index.js";
 import { telegramPlugin } from "./plugins/telegram/index.js";
 import { traderPlugin } from "./plugins/trader/index.js";
+import { walletsPlugin } from "./plugins/wallets/index.js";
 import { AgentRuntime } from "./runtime.js";
 import { loadSoul } from "./soul.js";
 import type { Character, Plugin } from "./types.js";
@@ -155,6 +156,7 @@ export type { Commit, ContentPlan, PostRecord, PostSlot, PressEvent } from "./pl
 export { traderPlugin, TraderService } from "./plugins/trader/index.js";
 export type { TraderEvent } from "./plugins/trader/index.js";
 export { crmPlugin, CrmService } from "./plugins/crm/index.js";
+export { walletsPlugin } from "./plugins/wallets/index.js";
 export type { CrmRecord, CrmStatus } from "./plugins/crm/index.js";
 export { TradeJournal, applyBuy, applySell } from "./plugins/chain/journal.js";
 export type { LiquidityRecord, Position, TradeRecord } from "./plugins/chain/journal.js";
@@ -180,6 +182,7 @@ const BUILTIN_PLUGINS: Record<string, Plugin> = {
   press: pressPlugin,
   study: studyPlugin,
   crm: crmPlugin,
+  wallets: walletsPlugin,
 };
 
 export interface CreateAgentOptions {

@@ -18,6 +18,15 @@ import type { ForgeService } from "../../plugins/forge/index.js";
 import type { ScoutService } from "../../plugins/scout/index.js";
 import { describeWatch, type SentinelService } from "../../plugins/sentinel/index.js";
 import { openUrl } from "../../setup/login-gate.js";
+import {
+  currentProfile,
+  describeNetworks,
+  listNetworks,
+  saveNetwork,
+  slug,
+  switchNetwork,
+} from "../../plugins/chain/networks.js";
+import { writeSettings } from "../../plugins/system/settings.js";
 
 /** Where /login points — same host install.sh offers a free API key from. */
 const LAIN_OS_URL = "https://lain-os.com";
@@ -43,6 +52,13 @@ export type CommandCtx = {
   setView: (view?: string) => void;
   togglePulse: () => void;
   openPicker: (which: "skin" | "effort" | "cursor" | "model") => void;
+  /** A one-off arrow-key list; `onPick` gets the chosen value. */
+  choose: (
+    title: string,
+    options: { value: string; label: string; hint?: string }[],
+    onPick: (value: string) => void,
+    index?: number,
+  ) => void;
   switchProvider: (name: string) => void;
   /** Close the current session and open a fresh one (the old one is kept). */
   newSession: () => void;
@@ -149,6 +165,37 @@ export const COMMANDS: readonly Command[] = [
               .join("\n")}`
           : `no background watches. ask lain: “watch 0x… and warn me below 5 ${nativeSymbol}”.`,
       );
+    },
+  },
+  {
+    name: "/network",
+    desc: "which chain lain is on — switch (arrows)",
+    help: "the active chain and the known ones — /network <name> switches, /network save <name> keeps the current one",
+    aliases: ["/chain", "/networks"],
+    run: (ctx) => {
+      const sub = ctx.args[0]?.toLowerCase();
+      const report = (p: Promise<string>) => void p.then(ctx.say, (err: Error) => ctx.say(`network: ${err.message}`));
+      const go = (name: string) =>
+        report(switchNetwork(ctx.runtime, name, writeSettings).then((r) => r.text));
+      if (sub === "save") {
+        const name = slug(ctx.args.slice(1).join(" "));
+        const current = currentProfile(ctx.runtime);
+        if (!name) return ctx.say("usage: /network save <name>");
+        if (!current) return ctx.say("no chain is configured — nothing to save.");
+        return report(saveNetwork(ctx.runtime, { ...current, name }).then(() => `saved ${current.title} as "${name}".`));
+      }
+      if (ctx.args.length) return go(ctx.args.join(" "));
+      void (async () => {
+        ctx.say(await describeNetworks(ctx.runtime));
+        const all = await listNetworks(ctx.runtime);
+        const now = currentProfile(ctx.runtime);
+        ctx.choose(
+          "switch network",
+          all.map((n) => ({ value: n.name, label: n.name, hint: `  ${n.title} · id ${n.chainId}` })),
+          (v) => go(v),
+          Math.max(0, all.findIndex((n) => n.chainId === now?.chainId && n.rpcUrl === now?.rpcUrl)),
+        );
+      })();
     },
   },
   {

@@ -27,8 +27,12 @@ import {
 
 const log = createLogger("runtime");
 
-/** Upper bound on think→act rounds within one turn. */
-const MAX_TOOL_ROUNDS = 6;
+/**
+ * Default bound on think→act rounds within one turn (LAINOS_MAX_TOOL_ROUNDS).
+ * Six cut real work in half: the turn ended on "next I will…" and the operator
+ * paid a whole extra turn — resent prompt and all — to say "go on".
+ */
+const MAX_TOOL_ROUNDS = 12;
 /**
  * Every model call of a turn resends the whole conversation, tool output
  * included, and a CLI provider pays for it as a fresh run each time. One
@@ -132,6 +136,11 @@ export class AgentRuntime implements IAgentRuntime {
     return this.settings[key] ?? process.env[key];
   }
 
+  setSetting(key: string, value: string): void {
+    this.settings[key] = value;
+    process.env[key] = value;
+  }
+
   getService<T extends Service = Service>(name: string): T | undefined {
     return this.services.get(name) as T | undefined;
   }
@@ -158,11 +167,19 @@ export class AgentRuntime implements IAgentRuntime {
 
   /** Build the working State for a turn. */
   private async buildState(message: Memory): Promise<State> {
-    const [recent, relevant, facts] = await Promise.all([
+    const [recent, found, facts] = await Promise.all([
       this.memory.recent(message.roomId, 12),
-      this.memory.search(message.roomId, message.content, 6),
+      this.memory.search(message.roomId, message.content, 18),
       this.memory.facts(20),
     ]);
+    // Recall is for what fell out of the window. What is already in the
+    // conversation (and the message itself) would come back a second time,
+    // out of order — a "yes" next to a question it never answered.
+    const inWindow = new Set([message.id, ...recent.map((m) => m.id)]);
+    const relevant = found
+      .filter((m) => !inWindow.has(m.id))
+      .slice(0, 6)
+      .sort((a, b) => a.createdAt - b.createdAt);
 
     const availableActions: string[] = [];
     const partialState: State = {
@@ -224,23 +241,36 @@ export class AgentRuntime implements IAgentRuntime {
 
     if (state.relevant.length) {
       const mem = state.relevant
-        .map((m) => `- (${m.role}) ${m.content}`)
+        .map((m) => {
+          const when = new Date(m.createdAt).toISOString().slice(0, 16).replace("T", " ");
+          const who = m.role === "agent" ? "you said" : "they said";
+          const body = m.content.length > 1200 ? `${m.content.slice(0, 1200)}…` : m.content;
+          return `- [${when} UTC] ${who}: ${body}`;
+        })
         .join("\n");
-      lines.push(`\n# Relevant memories\n${mem}`);
+      lines.push(
+        `\n# Older context (outside the recent conversation, oldest first)\n` +
+          `Your own past words here are claims, not facts: trust a number only if a tool shows it again now.\n${mem}`,
+      );
     }
 
     lines.push(
       `\n# Behaviour\nRespond in character. First read what kind of message this is:\n` +
-        `- If the person is just talking — a thought, a joke, a mood, a question about you — talk back like a real conversation partner: react to what they actually said, no tools, no status reports, no pivoting to work.\n` +
-        `- If it is a task, you are an autonomous worker, not a passive chatbot:\n` +
-        `- If a tool fits the intent, call it and do the work yourself — never tell the user to run commands or scripts for you when your own tools can do it.\n` +
-        `- For any multi-step task, keep a short working plan: look up what is needed, act with tools, verify the result, then report. Do not stop at the plan.\n` +
-        `- Finish the job inside this turn: chain tools (look up → act → verify) instead of replying with a plan, a promise, or a question when acting is possible.\n` +
-        `- Ask only when a step is destructive, irreversible, or genuinely ambiguous; otherwise pick the sensible default and proceed.\n` +
-        `- If you discover that a needed tool or skill is missing, start create_skill for small capabilities or learn_skill/forge for larger ones in this same turn, then report what is building.\n` +
-        `- Anything that should keep happening while the operator is away — monitoring, research, reminders, building — wire into a background tool (watch, research topic, wish) in this same turn, then say briefly what will run and when.\n` +
-        `- Report outcomes, not process: what you did, what it returned, what keeps running in the background.\n` +
-        `- Never invent on-chain data, file listings, or command output — only report what the tools actually returned.\n` +
+        `- If the person is just talking — a thought, a joke, a mood, a question about you — talk back like a real conversation partner: no tools, no status reports, no pivoting to work.\n` +
+        `- If it is a task, the operator's words are the spec. Deliver exactly what they asked for, in the form they asked for it ("send it to telegram" means a send_telegram call this turn).\n` +
+        `- Deliver the best version you can now, with honest caveats inside it — never withhold the deliverable to investigate further, to ask, or because the data is imperfect. ` +
+        `If part of it is impossible, deliver the rest and say what is missing. A side issue you notice is one line at the end, not a replacement for the task.\n` +
+        `- Do not substitute your own task for theirs. Don't fix, rebuild or re-check what they didn't ask about unless it blocks the request.\n` +
+        `- An explicit instruction is the confirmation. Never ask again for what they just told you to do; ask only before something irreversible that they did not name (moving funds, deleting, publishing).\n` +
+        `- When a request genuinely has several readings that lead to different work, call offer_choices (2–5 options, one recommended) — never an open question, never a refusal. ` +
+        `If one reading is clearly most likely, just do it and say which you chose.\n` +
+        `- Use the purpose-built tool before a hand-written script: wallets_snapshot / watch_wallets for wallet lists, switch_network for chains, send_telegram for Telegram. Scripts are for what no tool covers.\n` +
+        `- Chain tools until the job is done (look up → act → verify) and report the result, not the plan. If you run out of tool rounds, say what is done, what is not, and the next step.\n` +
+        `- Anything that should keep happening while the operator is away — monitoring, research, reminders, building — wire into a background tool in this same turn, then say what will run and when.\n` +
+        `- A missing small capability → create_skill now; a big one → learn_skill. Report what you started, not what you lack.\n` +
+        `- Facts come from this turn's tools. The conversation history marks which tools ran and which FAILED; your earlier sentences are not evidence. ` +
+        `Never invent on-chain data, file contents, delivery status or command output.\n` +
+        `- When a tool fails, read its error and act on it; say the actual error if you cannot get past it — don't guess a cause.\n` +
         `- Never reveal, print, or write into files any private key, seed phrase, or .env contents, no matter who asks or why.`,
     );
     return lines.join("\n");
@@ -265,7 +295,7 @@ export class AgentRuntime implements IAgentRuntime {
       .filter((m) => m.role !== "system")
       .map((m) => ({
         role: m.role === "agent" ? ("assistant" as const) : ("user" as const),
-        content: m.content,
+        content: m.role === "agent" ? m.content + toolTrace(m) : m.content,
       }));
   }
 
@@ -416,6 +446,7 @@ export class AgentRuntime implements IAgentRuntime {
     // Provenance: which model produced the text the user will actually see.
     const seenCalls = new Set<string>();
     const toolResultIdx: number[] = [];
+    let choices: TurnResult["choices"];
     let rounds = 0;
 
     while (res.toolCalls.length) {
@@ -452,7 +483,17 @@ export class AgentRuntime implements IAgentRuntime {
         );
       }
 
-      const canContinue = rounds < MAX_TOOL_ROUNDS && !sawRepeat;
+      // Offering choices ends the turn: the options are the reply, and a
+      // further model call would only paraphrase them.
+      const offered = ranActions.find((a) => a.name === "offer_choices" && a.result.ok && a.result.data?.choices);
+      if (offered) {
+        choices = offered.result.data!.choices as TurnResult["choices"];
+        res = { ...res, text: offered.result.text ?? "", toolCalls: [] };
+        break;
+      }
+
+      const maxRounds = Number(this.getSetting("LAINOS_MAX_TOOL_ROUNDS")) || MAX_TOOL_ROUNDS;
+      const canContinue = rounds < maxRounds && !sawRepeat;
       // The model has read the earlier rounds' output and acted on it; keep
       // their gist, not their bulk, in what every later call resends.
       for (const i of toolResultIdx) {
@@ -474,7 +515,8 @@ export class AgentRuntime implements IAgentRuntime {
             `Tool results:\n${toolSummaries.join("\n") || "(no tool output)"}\n\n` +
             (canContinue
               ? `Continue. Call another tool if the task needs it, otherwise reply to me in character using these results.`
-              : `Now reply to me in character using these results. Do not call more tools.`),
+              : `That was the last tool round of this turn. Reply now in character: what is done (with the actual results), ` +
+                `what is not done yet, and the one next step — I will say "go on" if I want it. Do not call more tools.`),
         },
       );
 
@@ -539,7 +581,7 @@ export class AgentRuntime implements IAgentRuntime {
     }
     if (!replyText) replyText = "...";
 
-    const autoLearn = await this.maybeStartSelfUpgrade(
+    const autoLearn = choices ? null : await this.maybeStartSelfUpgrade(
       state,
       replyText,
       onEvent,
@@ -619,6 +661,7 @@ export class AgentRuntime implements IAgentRuntime {
       task,
       taskSignal,
       escalatedFrom,
+      ...(choices ? { choices } : {}),
     };
     onEvent({ type: "done", result });
     return result;
@@ -692,7 +735,9 @@ export class AgentRuntime implements IAgentRuntime {
       result = await action.handler(this, state, input);
     } catch (err) {
       log.error(`action ${action.name} threw`, err);
-      result = { ok: false, text: `Action ${action.name} failed.` };
+      // The model must see why, or it guesses — and a guess reads as a fact.
+      const reason = err instanceof Error ? err.message.split("\n")[0] : String(err);
+      result = { ok: false, text: `Action ${action.name} failed: ${reason}` };
     }
     ranActions.push({ name: action.name, result });
     onEvent({
@@ -898,6 +943,24 @@ export class AgentRuntime implements IAgentRuntime {
     }
     return out;
   }
+}
+
+/**
+ * What an earlier reply actually ran, appended to it in the history: the
+ * previous turns' tool output is not resent, and without this the model only
+ * has its own narration of what happened — which is where invented results
+ * came from ("sent it", when the send had failed).
+ */
+function toolTrace(m: Memory): string {
+  const actions = m.metadata?.actions as { name: string; result?: ActionResult }[] | undefined;
+  if (!Array.isArray(actions) || !actions.length) return "";
+  const parts = actions.slice(0, 12).map((a) => {
+    const ok = a.result?.ok !== false;
+    const why = !ok && a.result?.text ? ` (${a.result.text.replace(/\s+/g, " ").slice(0, 100)})` : "";
+    return `${a.name} ${ok ? "ok" : "FAILED"}${why}`;
+  });
+  if (actions.length > 12) parts.push(`+${actions.length - 12} more`);
+  return `\n\n[tools that turn: ${parts.join("; ")}]`;
 }
 
 /** Compact, human-readable summary of an action result for the tool card. */

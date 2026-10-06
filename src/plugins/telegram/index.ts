@@ -56,31 +56,81 @@ export async function resolveOperatorChatId(getSetting: GetSetting): Promise<str
  * send_telegram action and background services (initiative, trader) that speak
  * to the operator on their own. Throws when no chat is known or delivery fails.
  */
-export async function sendToOperator(getSetting: GetSetting, text: string): Promise<string> {
+export async function sendToOperator(
+  getSetting: GetSetting,
+  text: string,
+  opts: DeliverOptions = {},
+): Promise<string> {
   const chatId = await resolveOperatorChatId(getSetting);
   if (!chatId) throw new Error("operator chat unknown (set TELEGRAM_OPERATOR_CHAT_ID)");
-  await deliver(getSetting, chatId, text);
+  await deliver(getSetting, chatId, text, opts);
   return chatId;
 }
 
-/** POST sendMessage chunk-by-chunk; throws with the API description on failure. */
-async function deliver(getSetting: GetSetting, chatId: string, text: string): Promise<void> {
+export interface DeliverOptions {
+  /** Text is Telegram HTML (<a href>, <b>, <code>…) — links stay short. */
+  html?: boolean;
+  /** Reply-keyboard buttons shown under the message; a tap sends the label back as a message. */
+  buttons?: string[];
+}
+
+/** HTML for Telegram, flattened to text when Telegram refuses the markup. */
+export function htmlToText(html: string): string {
+  return html
+    .replace(/<a\s+href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, (_m, href: string, label: string) => `${label} (${href})`)
+    .replace(/<[^>]+>/g, "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, "&");
+}
+
+/** A one-time reply keyboard: one button per row, so long labels stay readable. */
+export function replyKeyboard(buttons: string[]): Record<string, unknown> {
+  return {
+    keyboard: buttons.map((b) => [{ text: b.slice(0, 120) }]),
+    one_time_keyboard: true,
+    resize_keyboard: true,
+  };
+}
+
+/**
+ * POST sendMessage chunk-by-chunk; throws with the API description on failure.
+ * An HTML chunk Telegram cannot parse is sent again as plain text — a message
+ * with a broken link beats no message.
+ */
+async function deliver(getSetting: GetSetting, chatId: string, text: string, opts: DeliverOptions = {}): Promise<void> {
   const token = getSetting("TELEGRAM_BOT_TOKEN") ?? "";
   const proxy =
     getSetting("TELEGRAM_PROXY") ?? getSetting("HTTPS_PROXY") ?? getSetting("https_proxy");
   const dispatcher = proxy ? new ProxyAgent(proxy) : undefined;
+  const post = async (body: Record<string, unknown>) => {
+    const res = await undiciFetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      dispatcher,
+      signal: AbortSignal.timeout(30_000),
+    });
+    const json = (await res.json()) as { ok: boolean; description?: string };
+    if (!res.ok || !json.ok) {
+      throw new Error(`telegram sendMessage ${res.status}: ${json.description ?? "error"}`);
+    }
+  };
   try {
-    for (const chunk of splitMessage(text, MAX_MESSAGE)) {
-      const res = await undiciFetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ chat_id: chatId, text: chunk }),
-        dispatcher,
-        signal: AbortSignal.timeout(30_000),
-      });
-      const json = (await res.json()) as { ok: boolean; description?: string };
-      if (!res.ok || !json.ok) {
-        throw new Error(`telegram sendMessage ${res.status}: ${json.description ?? "error"}`);
+    const chunks = splitMessage(text, MAX_MESSAGE);
+    for (const [i, chunk] of chunks.entries()) {
+      const last = i === chunks.length - 1;
+      const extra = last && opts.buttons?.length ? { reply_markup: replyKeyboard(opts.buttons) } : {};
+      if (!opts.html) {
+        await post({ chat_id: chatId, text: chunk, ...extra });
+        continue;
+      }
+      try {
+        await post({ chat_id: chatId, text: chunk, parse_mode: "HTML", disable_web_page_preview: true, ...extra });
+      } catch (err) {
+        if (!/can't parse entities|unsupported start tag|can't find end/i.test((err as Error).message)) throw err;
+        await post({ chat_id: chatId, text: htmlToText(chunk), disable_web_page_preview: true, ...extra });
       }
     }
   } finally {
@@ -97,7 +147,12 @@ const sendTelegramAction: Action = {
   parameters: {
     type: "object",
     properties: {
-      text: { type: "string", description: "The message to deliver. Keep it short." },
+      text: { type: "string", description: "The message to deliver. Long text is split into several messages." },
+      html: {
+        type: "boolean",
+        description:
+          "true when text is Telegram HTML: <a href=\"https://…/address/0x…\">0xbe0b…c8d9</a>, <b>, <i>, <code>. Escape & < > in plain parts. Use it for explorer links.",
+      },
     },
     required: ["text"],
   },
@@ -119,7 +174,7 @@ const sendTelegramAction: Action = {
     }
 
     try {
-      await deliver(getSetting, chatId, text);
+      await deliver(getSetting, chatId, text, { html: params.html === true });
       return {
         ok: true,
         text: `delivered to operator (chat ${chatId})`,

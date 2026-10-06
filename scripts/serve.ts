@@ -45,7 +45,10 @@ async function main() {
   const sentinel = agent.getService<SentinelService>("sentinel");
   if (sentinel && telegramUp) {
     sentinel.onAlert((alert) => {
-      void telegram.broadcast(alertLine(alert));
+      // A wallets watch delivers its own digest to the operator; don't repeat it.
+      if (alert.telegramSent) return;
+      if (alert.html) void telegram.broadcast(alert.html, { html: true });
+      else void telegram.broadcast(alertLine(alert));
     });
   }
 

@@ -739,6 +739,8 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
         else if (which === "cursor") openCursorPicker();
         else openModelPicker();
       },
+      choose: (title: string, options: { value: string; label: string; hint?: string }[], onPick: (value: string) => void, index = 0) =>
+        setPicker({ title, kind: "plain", options, index, onPick }),
       switchProvider,
       newSession,
       resumeSession,
@@ -821,6 +823,23 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
         acc.upstream = result.upstream;
         acc.task = result.task;
         acc.escalated = Boolean(result.escalatedFrom);
+        if (result.choices) {
+          // The options come from a tool, not from streamed text: print them,
+          // then let the arrows answer. Esc leaves the composer for a free reply.
+          const c = result.choices;
+          acc.parts.push({ kind: "text", text: result.text });
+          setPicker({
+            title: c.question.length > 60 ? `${c.question.slice(0, 59)}…` : c.question,
+            kind: "plain",
+            options: c.options.map((o, i) => ({
+              value: `${i + 1}. ${o.label}`,
+              label: `${i + 1}. ${o.label}${i === c.recommended ? " ★" : ""}`,
+              hint: o.detail ? `  ${o.detail}` : undefined,
+            })),
+            index: c.recommended ?? 0,
+            onPick: (v) => setQueued(v),
+          });
+        }
         // The index gets its record on the first turn — pick the id up so the
         // sidebar stops saying "new".
         void runtime.sessions?.resolve(room).then((r) => setSessionId(r?.id));

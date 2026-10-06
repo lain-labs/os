@@ -24,6 +24,16 @@ import {
   type WalletMove,
 } from "./activity.js";
 import { briefMaterial, localDay, parseClock, type BriefSnapshot } from "./brief.js";
+import { findNetwork, type NetworkProfile } from "../chain/networks.js";
+import { rpcWalletSource, type TokenMeta, type WalletSource } from "../wallets/chainread.js";
+import type { WalletEntry } from "../wallets/lists.js";
+import { formatGroupAlert, scanGroup, type GroupState } from "../wallets/watch.js";
+import { sendToOperator } from "../telegram/index.js";
+import { currentProfile } from "../chain/networks.js";
+import { readFile as readText } from "node:fs/promises";
+import { parseUnits } from "viem";
+import { mergeWalletLists, parseWalletList } from "../wallets/lists.js";
+import { safePath } from "../system/index.js";
 
 const log = createLogger("plugin:sentinel");
 
@@ -52,9 +62,9 @@ const log = createLogger("plugin:sentinel");
  * `data/sentinel.json` and survive restarts.
  */
 
-export type WatchKind = "below" | "above" | "change" | "position" | "cohort";
+export type WatchKind = "below" | "above" | "change" | "position" | "cohort" | "wallets";
 
-const ACTIVITY_KINDS: WatchKind[] = ["position", "cohort"];
+const ACTIVITY_KINDS: WatchKind[] = ["position", "cohort", "wallets"];
 const DAY_MS = 86_400_000;
 const MOVE_RETENTION_MS = 7 * DAY_MS;
 const MOVE_CAP = 1_000;
@@ -84,6 +94,25 @@ export interface Watch {
   windowMs?: number;
   /** Rule key → when it last fired, so one episode alerts once. */
   fired?: Record<string, number>;
+  /** wallets: a whole list followed for every change, on its own network. */
+  group?: GroupWatch;
+}
+
+/** A `wallets` watch: every token and native move of every member. */
+export interface GroupWatch {
+  /** Network profile name — independent of the active chain. */
+  network: string;
+  members: WalletEntry[];
+  /** Lowercase members that are contracts (pool, locker): shown, marked. */
+  contracts: string[];
+  events: { tokens: boolean; native: boolean };
+  /** Native moves below this (wei, decimal string) are ignored. */
+  minNative: string;
+  /** Deliver each digest to the operator's Telegram directly. */
+  telegram: boolean;
+  state: GroupState;
+  /** Last error, so list_watches can say why a watch is quiet. */
+  lastError?: string;
 }
 
 export interface Alert {
@@ -94,6 +123,10 @@ export interface Alert {
   delivered: boolean;
   /** A morning brief rather than a watch firing. */
   kind?: "watch" | "brief";
+  /** Telegram HTML version (explorer links), when the watch made one. */
+  html?: string;
+  /** Already delivered to the operator's Telegram by the sentinel itself. */
+  telegramSent?: boolean;
 }
 
 export interface BriefSchedule {
@@ -143,6 +176,12 @@ export class SentinelService implements Service {
   private briefing = false;
   /** Tests inject a fake chain here; otherwise the chain service is used. */
   activitySource?: ActivitySource;
+  /** Tests inject a fake reader for `wallets` watches; otherwise the network's RPC. */
+  groupSource?: (profile: NetworkProfile) => WalletSource;
+  /** Tests replace Telegram delivery; otherwise the operator chat via the bot. */
+  deliverTelegram?: (html: string) => Promise<void>;
+  /** Token metadata per chain, kept across ticks. */
+  private tokenMeta = new Map<string, Map<string, TokenMeta>>();
 
   async start(runtime: IAgentRuntime): Promise<void> {
     this.runtime = runtime;
@@ -237,6 +276,7 @@ export class SentinelService implements Service {
     minWallets?: number;
     minBuys?: number;
     windowMs?: number;
+    group?: GroupWatch;
   }): Promise<Watch> {
     this.counter += 1;
     const watch: Watch = {
@@ -250,6 +290,7 @@ export class SentinelService implements Service {
       minWallets: input.minWallets,
       minBuys: input.minBuys,
       windowMs: input.windowMs,
+      ...(input.group ? { group: input.group } : {}),
       createdAt: Date.now(),
     };
     this.watches.push(watch);
@@ -270,18 +311,25 @@ export class SentinelService implements Service {
   /** One poll cycle. Public so tests (and the smoke script) can force it. */
   async tick(now = Date.now()): Promise<void> {
     if (this.ticking || !this.watches.length) return;
-    const chain = this.runtime?.getService<ChainService>("chain");
-    const source = this.activitySource ?? (chain?.configured ? chainActivitySource(chain) : undefined);
-    if (!chain && !source) return;
     this.ticking = true;
     try {
       let dirty = false;
+      // Group watches name their own network, so they run with or without
+      // an active chain in this process.
       for (const watch of this.watches) {
-        if (ACTIVITY_KINDS.includes(watch.kind) || !chain) continue;
-        try {
-          dirty = (await this.checkWatch(chain, watch)) || dirty;
-        } catch (err) {
-          log.warn(`watch ${watch.id} check failed`, err);
+        if (watch.kind !== "wallets" || !watch.group) continue;
+        dirty = (await this.scanGroupWatch(watch)) || dirty;
+      }
+      const chain = this.runtime?.getService<ChainService>("chain");
+      const source = this.activitySource ?? (chain?.configured ? chainActivitySource(chain) : undefined);
+      if (chain?.configured) {
+        for (const watch of this.watches) {
+          if (ACTIVITY_KINDS.includes(watch.kind)) continue;
+          try {
+            dirty = (await this.checkWatch(chain, watch)) || dirty;
+          } catch (err) {
+            log.warn(`watch ${watch.id} check failed`, err);
+          }
         }
       }
       if (source) dirty = (await this.scanActivity(source, now)) || dirty;
@@ -289,6 +337,72 @@ export class SentinelService implements Service {
     } finally {
       this.ticking = false;
     }
+  }
+
+  /**
+   * One tick of a `wallets` watch: read what moved since its cursor on its
+   * own network and fire one digest. Returns "state changed".
+   */
+  private async scanGroupWatch(watch: Watch): Promise<boolean> {
+    const group = watch.group!;
+    const runtime = this.runtime;
+    if (!runtime) return false;
+    const profile = await findNetwork(runtime, group.network);
+    if (!profile) {
+      const err = `unknown network "${group.network}"`;
+      if (group.lastError !== err) {
+        group.lastError = err;
+        return true;
+      }
+      return false;
+    }
+    const src = this.groupSource ? this.groupSource(profile) : rpcWalletSource(profile);
+    const metaKey = String(profile.chainId);
+    const meta = this.tokenMeta.get(metaKey) ?? new Map<string, TokenMeta>();
+    this.tokenMeta.set(metaKey, meta);
+    const maxSpan = BigInt(Math.max(100, Number(runtime.getSetting("LAINOS_GROUP_MAX_BLOCKS") ?? 20_000)));
+    try {
+      const scan = await scanGroup(
+        src,
+        group.members,
+        group.state,
+        {
+          tokens: group.events.tokens,
+          native: group.events.native,
+          minNativeWei: BigInt(group.minNative || "0"),
+          maxSpan,
+          maxLag: maxSpan * 20n,
+        },
+        meta,
+        new Set(group.contracts),
+      );
+      group.lastError = undefined;
+      const report = formatGroupAlert(watch.note ?? `watch ${watch.id}`, profile, scan);
+      if (report) await this.fireGroup(watch, report.text, report.html);
+      return true;
+    } catch (err) {
+      const msg = (err as Error).message?.split("\n")[0] ?? String(err);
+      log.warn(`wallets watch ${watch.id} scan failed: ${msg}`);
+      const changed = group.lastError !== msg;
+      group.lastError = msg;
+      return changed;
+    }
+  }
+
+  /** Fire a group digest; deliver it to Telegram first when the watch asks for it. */
+  private async fireGroup(watch: Watch, text: string, html: string): Promise<void> {
+    const alert: Alert = { id: randomUUID(), watchId: watch.id, text, html, at: Date.now(), delivered: false };
+    if (watch.group?.telegram) {
+      try {
+        const runtime = this.runtime!;
+        if (this.deliverTelegram) await this.deliverTelegram(html);
+        else await sendToOperator((k) => runtime.getSetting(k), html, { html: true });
+        alert.telegramSent = true;
+      } catch (err) {
+        log.warn(`watch ${watch.id}: telegram delivery failed — ${(err as Error).message}`);
+      }
+    }
+    this.emit(alert);
   }
 
   /** Every wallet an activity watch covers, deduplicated. */
@@ -619,6 +733,17 @@ function getSentinel(runtime: IAgentRuntime): SentinelService {
 
 export function describeWatch(w: Watch, nativeSymbol: string): string {
   const note = w.note ? ` — ${w.note}` : "";
+  if (w.kind === "wallets" && w.group) {
+    const g = w.group;
+    const what = [g.events.tokens ? "every token" : "", g.events.native ? "native balance" : ""].filter(Boolean).join(" + ");
+    return (
+      `${w.id}: ${g.members.length} wallets on ${g.network} — ${what}` +
+      `${g.contracts.length ? ` (${g.contracts.length} contracts among them)` : ""}` +
+      `${g.telegram ? " → telegram" : ""}${note}` +
+      `${g.state.cursor ? ` · at block ${g.state.cursor}` : " · starts next tick"}` +
+      `${g.lastError ? ` · last error: ${g.lastError}` : ""}`
+    );
+  }
   const window = hours(w.windowMs ?? DAY_MS);
   if (w.kind === "position") {
     return `${w.id}: activity of ${w.address} — new positions, and ${w.minBuys ?? 3}+ buys of one token in ${window}${note}`;
@@ -645,7 +770,12 @@ const alertsProvider: Provider = {
     if (!svc) return "";
     const fresh = svc.takeUndelivered();
     if (!fresh.length) return "";
-    const lines = fresh.map((a) => `- ${new Date(a.at).toISOString()} ${a.text}`);
+    // A group digest can run to forty lines; the model needs the gist, the
+    // operator already has the whole thing in Telegram.
+    const lines = fresh.map((a) => {
+      const body = a.text.length > 700 ? `${a.text.slice(0, 700)}…` : a.text;
+      return `- ${new Date(a.at).toISOString()} ${body}${a.telegramSent ? " (already sent to Telegram)" : ""}`;
+    });
     return (
       `While the user was away, your watches fired these alerts. ` +
       `Mention them naturally in your reply:\n${lines.join("\n")}`
@@ -815,32 +945,80 @@ const watchWalletAction: Action = {
   },
 };
 
+/** Most wallets one `wallets` watch follows. */
+const MAX_GROUP = 1000;
+
+/**
+ * Read the wallets a request names: `addresses`, a workspace `file` (CSV,
+ * JSON, or one address per line — the order is the rank), and `labels`.
+ * Shared by watch_wallets and wallets_snapshot.
+ */
+export async function walletsFromParams(params: Record<string, unknown>): Promise<{ wallets: WalletEntry[]; error?: string }> {
+  const lists: WalletEntry[][] = [];
+  if (Array.isArray(params.addresses) && params.addresses.length) {
+    const raw = params.addresses.map(String);
+    const bad = raw.filter((a) => !isAddress(a));
+    if (bad.length) return { wallets: [], error: `not valid 0x addresses: ${bad.slice(0, 5).join(", ")}` };
+    lists.push(parseWalletList(raw.join("\n")));
+  }
+  if (params.file) {
+    const path = safePath(String(params.file));
+    if (!path) return { wallets: [], error: `${String(params.file)} is outside the workspace` };
+    let text: string;
+    try {
+      text = await readText(path, "utf8");
+    } catch (err) {
+      return { wallets: [], error: `could not read ${String(params.file)}: ${(err as Error).message}` };
+    }
+    const fromFile = parseWalletList(text);
+    if (!fromFile.length) return { wallets: [], error: `no 0x addresses found in ${String(params.file)}` };
+    lists.push(fromFile);
+  }
+  const labels =
+    params.labels && typeof params.labels === "object"
+      ? Object.fromEntries(Object.entries(params.labels as Record<string, unknown>).map(([k, v]) => [k, String(v)]))
+      : {};
+  return { wallets: mergeWalletLists(lists, labels) };
+}
+
 const watchWalletsAction: Action = {
   name: "watch_wallets",
-  similes: ["watch_cohort", "watch_group", "watch_addresses", "smart_money_watch"],
+  similes: ["watch_cohort", "watch_group", "watch_addresses", "smart_money_watch", "track_wallets", "watch_holders"],
   description:
-    "Watch a group of wallets together, in the background: alert when several of them buy into the same token within a window (convergence). Use for 'watch these addresses and tell me if several of them start entering the same asset'.",
+    "Follow a list of wallets in the background (up to 1000; from `addresses` and/or a workspace `file` — CSV/JSON/one per line, its order is the rank). " +
+    "Default mode 'all': every change — any ERC20 token in or out (new positions, exits, buys, sells, transfers) and native balance moves — " +
+    "one digest per tick with explorer links, delivered straight to the operator's Telegram. Runs on any known network (`network`, e.g. robinhood) " +
+    "without switching the active chain. `replace` removes older watches it supersedes in the same call. " +
+    "mode 'convergence': alert only when several of them buy the same token within a window.",
   parameters: {
     type: "object",
     properties: {
-      addresses: {
+      addresses: { type: "array", items: { type: "string" }, description: "0x addresses." },
+      file: { type: "string", description: "Workspace path of a list of addresses, e.g. exports/holders.csv." },
+      labels: {
+        type: "object",
+        additionalProperties: { type: "string" },
+        description: "Names for some of them: { \"0x…\": \"pool\" }.",
+      },
+      network: { type: "string", description: "Network profile (list_networks). Default: the active chain." },
+      mode: { type: "string", enum: ["all", "convergence"], description: "Default all." },
+      events: {
         type: "array",
-        items: { type: "string" },
-        description: "The 0x addresses in the group (2–50).",
+        items: { type: "string", enum: ["tokens", "native"] },
+        description: "mode all: what counts as a change. Default both.",
       },
-      min_wallets: {
-        type: "number",
-        description: "How many of them must buy the same token. Default: 3 (or the group size, if smaller).",
-      },
-      window_hours: { type: "number", description: "Within how many hours. Default 24." },
-      note: { type: "string", description: "Name for the group, e.g. 'the ten funds'." },
+      min_native: { type: "number", description: "Ignore native moves smaller than this (gas). Default 0.001." },
+      telegram: { type: "boolean", description: "Send each digest to the operator's Telegram. Default true." },
+      replace: { type: "array", items: { type: "string" }, description: "Watch ids to remove, e.g. [\"w1\",\"w2\"]." },
+      note: { type: "string", description: "Name for the group, e.g. 'LAIN top-100'." },
+      min_wallets: { type: "number", description: "convergence: how many must buy the same token. Default 3." },
+      window_hours: { type: "number", description: "convergence: within how many hours. Default 24." },
     },
-    required: ["addresses"],
   },
   examples: [
     {
-      user: "watch these ten addresses, alert me if several of them start entering the same asset",
-      agent: "Tying them into one cohort.",
+      user: "следи за всеми 100 холдерами по всем токенам и пиши в тг",
+      agent: "ставлю одну слежку на всех сотню.",
     },
   ],
   async validate(runtime) {
@@ -848,32 +1026,85 @@ const watchWalletsAction: Action = {
   },
   async handler(runtime, _state, params) {
     const svc = getSentinel(runtime);
-    const raw = Array.isArray(params.addresses) ? params.addresses.map(String) : [];
-    const bad = raw.filter((a) => !isAddress(a));
-    if (bad.length) return { ok: false, text: `Not valid 0x addresses: ${bad.join(", ")}.` };
-    const members = [...new Map(raw.map((a) => [a.toLowerCase(), a as Address])).values()];
-    if (members.length < 2 || members.length > 50) {
-      return { ok: false, text: "A group needs between 2 and 50 distinct addresses." };
+    const { wallets, error } = await walletsFromParams(params);
+    if (error) return { ok: false, text: `${error}.` };
+    if (wallets.length < 1) return { ok: false, text: "Give me the wallets: addresses, or a file in the workspace with them." };
+    if (wallets.length > MAX_GROUP) return { ok: false, text: `That is ${wallets.length} wallets; one watch follows at most ${MAX_GROUP}.` };
+
+    const removed: string[] = [];
+    for (const id of Array.isArray(params.replace) ? params.replace.map(String) : []) {
+      if (await svc.removeWatch(id.trim())) removed.push(id.trim());
     }
-    const windowMs = windowParam(params.window_hours);
-    if (windowMs === null) return { ok: false, text: "window_hours must be between 0 and 720." };
-    const minWallets =
-      params.min_wallets !== undefined ? Math.round(Number(params.min_wallets)) : Math.min(3, members.length);
-    if (!Number.isFinite(minWallets) || minWallets < 2 || minWallets > members.length) {
-      return { ok: false, text: `min_wallets must be between 2 and ${members.length}.` };
+    const removedNote = removed.length ? ` Removed ${removed.join(", ")}.` : "";
+
+    if (params.mode === "convergence") {
+      const members = wallets.map((w) => w.address);
+      if (members.length < 2) return { ok: false, text: "Convergence needs at least 2 wallets." };
+      const windowMs = windowParam(params.window_hours);
+      if (windowMs === null) return { ok: false, text: "window_hours must be between 0 and 720." };
+      const minWallets =
+        params.min_wallets !== undefined ? Math.round(Number(params.min_wallets)) : Math.min(3, members.length);
+      if (!Number.isFinite(minWallets) || minWallets < 2 || minWallets > members.length) {
+        return { ok: false, text: `min_wallets must be between 2 and ${members.length}.` };
+      }
+      const watch = await svc.addWatch({
+        address: members[0],
+        kind: "cohort",
+        members,
+        minWallets,
+        windowMs,
+        note: params.note ? String(params.note) : undefined,
+      });
+      return { ok: true, text: `Watching now — ${describeWatch(watch, "")}.${removedNote}`, data: { watch: watch.id, removed } };
     }
+
+    const profile = params.network ? await findNetwork(runtime, String(params.network)) : currentProfile(runtime);
+    if (!profile) {
+      return {
+        ok: false,
+        text: params.network
+          ? `No network "${String(params.network)}" — list_networks shows the known ones.`
+          : "No chain is active here; name the network (e.g. network: robinhood).",
+      };
+    }
+    const events = Array.isArray(params.events) && params.events.length ? params.events.map(String) : ["tokens", "native"];
+    const minNative = params.min_native !== undefined ? Number(params.min_native) : 0.001;
+    if (!Number.isFinite(minNative) || minNative < 0) return { ok: false, text: "min_native must be 0 or more." };
+
+    // Which members are contracts — the pool and the locker stay on the list,
+    // marked, so their floods read as one line instead of passing for a person.
+    let contracts: string[] = [];
+    try {
+      const src = svc.groupSource ? svc.groupSource(profile) : rpcWalletSource(profile);
+      contracts = [...(await src.contracts(wallets.map((w) => w.address)))];
+    } catch (err) {
+      return { ok: false, text: `${profile.title} did not answer (${(err as Error).message.split("\n")[0]}); nothing was set up.${removedNote}` };
+    }
+
     const watch = await svc.addWatch({
-      address: members[0],
-      kind: "cohort",
-      members,
-      minWallets,
-      windowMs,
-      note: params.note ? String(params.note) : undefined,
+      address: wallets[0].address,
+      kind: "wallets",
+      note: params.note ? String(params.note) : `${wallets.length} wallets`,
+      group: {
+        network: profile.name,
+        members: wallets,
+        contracts,
+        events: { tokens: events.includes("tokens"), native: events.includes("native") },
+        minNative: parseUnits(String(minNative), profile.nativeDecimals ?? 18).toString(),
+        telegram: params.telegram !== false,
+        state: {},
+      },
     });
+    const interval = Math.round(Math.max(5_000, Number(runtime.getSetting("LAINOS_SENTINEL_INTERVAL_MS") ?? 60_000)) / 1000);
     return {
       ok: true,
-      text: `Watching now — ${describeWatch(watch, "")}.`,
-      data: { watch: { ...watch } },
+      text:
+        `Watching now — ${describeWatch(watch, profile.nativeSymbol)}. ` +
+        `Checks every ${interval}s from the next block on; one digest per check when something moved.${removedNote}` +
+        (runtime.getSetting("LAINOS_DAEMON") === "1"
+          ? ""
+          : " Note: this process is not the daemon — the watch runs while this session is open."),
+      data: { watch: watch.id, members: wallets.length, contracts: contracts.length, network: profile.name, removed },
     };
   },
 };

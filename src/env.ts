@@ -46,13 +46,17 @@ const candidates = [
 // `lain` must never pick up, so it names its file outright.
 const explicit = process.env.LAINOS_ENV_FILE?.trim();
 
+/** The settings file this process loaded — where set_setting writes — or null. */
+export let envFile: string | null = null;
+
 if (explicit) {
-  if (existsSync(explicit)) loadDotenv({ path: resolve(explicit) });
+  if (existsSync(explicit)) loadDotenv({ path: (envFile = resolve(explicit)) });
   else console.error(`LAINOS_ENV_FILE=${explicit} does not exist — starting with no .env`);
 } else {
   for (const path of candidates) {
     if (existsSync(path)) {
       loadDotenv({ path });
+      envFile = path;
       break;
     }
   }

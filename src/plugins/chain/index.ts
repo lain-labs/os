@@ -30,17 +30,31 @@ import { buyTokenAction, quoteTokenBuyAction, sellTokenAction } from "./actions/
 import { addLiquidityAction, quoteLiquidityAction } from "./actions/liquidity.js";
 import { speculateBasketAction, speculateTokenAction } from "./actions/speculate.js";
 import { portfolioPnlAction } from "./actions/portfolio.js";
+import { listNetworksAction, switchNetworkAction } from "./actions/network.js";
+import { listNetworks } from "./networks.js";
 
 export { loadChainConfig, loadChainTokens, loadDexConfig, ZERO_ADDRESS } from "./chain.js";
 export type { ChainDexConfig } from "./chain.js";
 export { ChainService } from "./service.js";
+export * from "./networks.js";
 export type { NativeBuyQuote, NativeSellQuote, DexLiquidityQuote } from "./service.js";
 
 const chainProvider: Provider = {
   name: "chain_status",
   async get(runtime) {
     const svc = getService(runtime);
-    const parts = [`${svc.chain.name} (id ${svc.chain.id}), native token ${svc.nativeSymbol}.`];
+    if (!svc.configured) {
+      const names = (await listNetworks(runtime)).map((n) => n.name).join(", ");
+      return (
+        `No chain is configured in this process, so every chain tool fails until one is. ` +
+        `switch_network moves you onto a known network in one call (${names}).`
+      );
+    }
+    const parts = [
+      `${svc.chain.name} (id ${svc.chain.id}), native token ${svc.nativeSymbol}` +
+        `${svc.explorerUrl ? `, explorer ${svc.explorerUrl}` : ""}. ` +
+        `Other networks are a switch_network away; a wallet watch or snapshot can name its own network without switching.`,
+    ];
     try {
       const block = await svc.publicClient.getBlockNumber();
       parts.push(`Latest block: ${block}.`);
@@ -88,6 +102,8 @@ export const chainPlugin: Plugin = {
     sellTokenAction,
     portfolioPnlAction,
     chainStatusAction,
+    listNetworksAction,
+    switchNetworkAction,
     txLookupAction,
     sendNativeAction,
     buyTokenAction,

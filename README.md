@@ -496,6 +496,34 @@ and secret values loaded from the environment.
   The token registry is empty by default and entirely operator-configured:
   set `CHAIN_TOKENS` (`SYMBOL:0xaddr,SYMBOL2:0xaddr2`) to the deployments that
   exist on your chain.
+
+  **Networks.** A chain is one profile — RPC, id, native symbol, explorer,
+  token registry, DEX — and the switch writes the whole profile at once and
+  rebuilds the chain tools in place, no restart:
+
+  ```bash
+  /network                  # TUI or Telegram: the active chain and the known ones (arrows to switch)
+  /network robinhood        # switch; also robinhood-testnet, cyberia, a chain id, or a saved name
+  /network save mychain     # keep the current CHAIN_* configuration as a profile
+  ```
+
+  Lain does the same with `switch_network` / `list_networks`. Profiles live
+  in `data/networks.json`; switching away from a configuration saves it there
+  first, so a filled token registry or DEX comes back whole. A wallet watch or
+  snapshot can name its own network without switching the active one.
+- **wallets** — analytics over lists of addresses:
+  - `wallets_snapshot` — native balance and *every* ERC20 each wallet holds,
+    totals and "most held" across the list, saved as JSON + CSV in
+    `workspace/exports/`; `telegram: true` sends the report with explorer
+    links on every address. Tokens are discovered from the chain's own
+    Transfer logs (no explorer API — Robinhood's Blockscout refuses servers),
+    over `days` back (default 2; longer scans go to the background by themselves) or from `from_block`; discovery is cached in
+    `data/wallets-cache.json`, so later runs only read new blocks. Long scans
+    take `background: true` and report to Telegram when done. EIP-7702
+    delegated wallets count as wallets; copycat tickers are told apart
+    (`NVDA·1a2b`).
+  - The same from a shell, e.g. a full-history first pass that fills the cache:
+    `npm run wallets -- snapshot --file holders.csv --network robinhood --from-block 0`.
 - **sentinel** — background chain watches, so the agent is useful even while
   nobody is talking to it:
   - `watch_balance` — watch an address (native currency or a token) and alert
@@ -506,10 +534,15 @@ and secret values loaded from the environment.
     one (`min_buys` buys of the same token within `window_hours`, default 3 in
     24 h). *"Watch this wallet. Tell me when it starts building a new
     position."*
-  - `watch_wallets` — watch a group (2–50 wallets): alert when `min_wallets`
-    of them (default 3) buy the same token within the window. *"Watch these
-    ten addresses. Alert me if several of them start entering the same
-    asset."*
+  - `watch_wallets` — follow a whole list (up to 1000 wallets, from
+    `addresses` or a workspace file — a holders CSV/JSON works as is) for
+    **every** change: any ERC20 in or out, new positions, exits, and native
+    balance moves above `min_native`. One digest per tick with explorer links,
+    delivered straight to the operator's Telegram; a pool that sees hundreds
+    of swaps is one line. Runs on its own `network`. `replace` drops the
+    watches it supersedes. *"Follow all 100 holders, every token, write me in
+    Telegram."* `mode: "convergence"` keeps the old rule: alert when
+    `min_wallets` of them buy the same token within the window.
   - `schedule_brief` / `brief_now` — a daily brief at a local time (or one
     right now): the portfolio against the last brief, what watched wallets did
     in the last day (flagged when it touches a token you hold), and the day's
@@ -763,8 +796,17 @@ and secret values loaded from the environment.
   long-polling client need not be running (sending never conflicts with it).
 - **system** — a terminal and filesystem, confined to a workspace
   (`LAINOS_WORKSPACE`, default `./workspace`):
-  - `run_shell` — run a shell command (cwd = workspace, hard timeout, clipped output)
+  - `run_shell` — run a shell command (cwd = workspace, hard timeout
+    `LAINOS_SHELL_TIMEOUT_MS`, clipped output; a kill by the timeout says so)
   - `read_file` / `write_file` / `list_dir` — files within the workspace
+  - `set_setting` — write settings into this process's settings file and apply
+    them now (`values` for several at once). Plain settings are written when
+    the operator asks; secrets (`…KEY`, `…TOKEN`, `…_PK`…) wait for an
+    explicit yes. A `CHAIN_` key rebuilds the chain tools in place.
+  - `offer_choices` — when a request really has several readings, Lain offers
+    2–5 options instead of an open question: a picker in the TUI, one-tap
+    buttons in Telegram. The turn ends there with no extra model call; the
+    tapped option comes back as the next message.
 
   Powerful and dual-use: paths that escape the workspace are refused. It loads
   only for characters that list `"system"` in their `plugins` (Lain does); drop

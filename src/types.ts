@@ -260,6 +260,11 @@ export interface TurnResult {
    * provider mid-turn: acting on the world is never left to the free pool.
    */
   escalatedFrom?: TaskKind;
+  /**
+   * Set when the turn ended by offering options (offer_choices): the client
+   * shows them as a picker / buttons and sends the picked label back.
+   */
+  choices?: { question: string; options: { label: string; detail?: string }[]; recommended?: number };
 }
 
 /**
@@ -291,6 +296,8 @@ export interface IAgentRuntime {
 
   getService<T extends Service = Service>(name: string): T | undefined;
   getSetting(key: string): string | undefined;
+  /** Change a setting for the rest of this process's life (set_setting). */
+  setSetting(key: string, value: string): void;
 
   /** Register a plugin's contributions. */
   use(plugin: Plugin): void;

@@ -123,18 +123,43 @@ export class ChainService implements Service {
   private walletFile = "";
 
   async start(runtime: IAgentRuntime): Promise<void> {
-    const getSetting = (key: string) => runtime.getSetting(key);
     const dataDir = runtime.getSetting("LAINOS_DATA_DIR") ?? "./data";
     this.walletFile = join(dataDir, "wallet.json");
     this.journal = new TradeJournal(join(dataDir, "trades.json"));
     await this.journal.load();
+    await this.configure(runtime);
+  }
+
+  /**
+   * Re-read every CHAIN_* setting and rebuild the clients — a network switch
+   * (switch_network, /network, set_setting on a CHAIN_ key) takes effect at
+   * once instead of leaving every chain tool failing until a restart. The
+   * journal and the stored wallet are not touched. Returns the reason the
+   * chain is unconfigured, or null when it is up.
+   */
+  async reload(runtime: IAgentRuntime): Promise<string | null> {
+    return this.configure(runtime);
+  }
+
+  private async configure(runtime: IAgentRuntime): Promise<string | null> {
+    const getSetting = (key: string) => runtime.getSetting(key);
+    this._chain = undefined;
+    this._publicClient = undefined;
+    this._dex = undefined;
+    this.walletClient = undefined;
+    this.agentAddress = undefined;
+    this.tokens = {};
+    this.explorerUrl = undefined;
+    this.explorerApiUrl = undefined;
+    this.nativeSymbol = getSetting("CHAIN_NATIVE_SYMBOL") || "ETH";
 
     let chainConfig;
     try {
       chainConfig = loadChainConfig(getSetting);
     } catch (err) {
-      log.warn(`chain plugin not configured — chain tools will fail until it is (${(err as Error).message})`);
-      return;
+      const reason = (err as Error).message;
+      log.warn(`chain plugin not configured — chain tools will fail until it is (${reason})`);
+      return reason;
     }
     const { chain, nativeSymbol, explorerUrl } = chainConfig;
     this._chain = chain;
@@ -142,7 +167,12 @@ export class ChainService implements Service {
     this.explorerUrl = explorerUrl;
     this.explorerApiUrl = getSetting("CHAIN_EXPLORER_API_URL")?.trim() || (explorerUrl ? `${explorerUrl}/api/v2` : undefined);
     this.tokens = loadChainTokens(getSetting);
-    this._dex = loadDexConfig(getSetting);
+    try {
+      this._dex = loadDexConfig(getSetting);
+    } catch (err) {
+      // A half-configured DEX disables trading, not the whole chain.
+      log.warn(`DEX disabled: ${(err as Error).message}`);
+    }
 
     this.rpc = chain.rpcUrls.default.http[0]!;
     this._publicClient = createPublicClient({
@@ -154,7 +184,7 @@ export class ChainService implements Service {
     if (pk && /^0x[0-9a-fA-F]{64}$/.test(pk)) {
       this.activateSigner(pk as `0x${string}`);
       log.info(`signer enabled for ${this.agentAddress}`);
-      return;
+      return null;
     }
     const stored = await this.loadStoredWallet();
     if (stored) {
@@ -163,6 +193,7 @@ export class ChainService implements Service {
     } else {
       log.info("read-only mode (no key configured; create_wallet can make one).");
     }
+    return null;
   }
 
   /** True once CHAIN_RPC_URL/CHAIN_ID have been loaded successfully. */
@@ -244,6 +275,16 @@ export class ChainService implements Service {
   /** Link to a transaction on the configured explorer, or undefined if none is set. */
   explorerTxUrl(hash: string): string | undefined {
     return this.explorerUrl ? `${this.explorerUrl}/tx/${hash}` : undefined;
+  }
+
+  /** Link to an address on the configured explorer, or undefined if none is set. */
+  explorerAddressUrl(address: string): string | undefined {
+    return this.explorerUrl ? `${this.explorerUrl}/address/${address}` : undefined;
+  }
+
+  /** The RPC endpoint in use, or "" when unconfigured. */
+  get rpcUrl(): string {
+    return this.configured ? this.rpc : "";
   }
 
   resolveToken(token: string): Address | undefined {

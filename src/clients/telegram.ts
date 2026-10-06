@@ -13,6 +13,9 @@ import {
 } from "../models/routing.js";
 import { TASKS, TaskKind, isTaskKind } from "../models/tasks.js";
 import { formatForgeJobs, type ForgeService } from "../plugins/forge/index.js";
+import { describeNetworks, switchNetwork } from "../plugins/chain/networks.js";
+import { writeSettings } from "../plugins/system/settings.js";
+import { htmlToText, replyKeyboard } from "../plugins/telegram/index.js";
 import type { IAgentRuntime } from "../types.js";
 
 const log = createLogger("telegram");
@@ -86,6 +89,15 @@ interface TgUpdate {
 
 const MAX_MESSAGE = 4000; // Telegram hard limit is 4096; leave headroom.
 
+export interface SendOptions {
+  /** The text is Telegram HTML. */
+  html?: boolean;
+  /** Offer these as one-tap reply buttons under the message. */
+  buttons?: string[];
+  /** Remove a reply keyboard left by an earlier choice. */
+  clearButtons?: boolean;
+}
+
 const HELP_TEXT = [
   "i'm lain. i live in the wired and on whatever chain i'm configured for.",
   "",
@@ -99,6 +111,7 @@ const HELP_TEXT = [
   "  · /recap — summarise this conversation so far",
   "  · /tasks — which model answers which kind of work (/tasks <kind> <provider[:model]> re-routes one)",
   "  · /model — who answers you now, and switch (/model free — the free pool)",
+  "  · /network — which chain i'm on (/network robinhood switches)",
   "",
   "try: \"watch 0x… and warn me below 5\"",
 ].join("\n");
@@ -248,11 +261,11 @@ export class TelegramClient {
   }
 
   /** Push a message to every chat the bot has spoken in (sentinel alerts). */
-  async broadcast(text: string): Promise<void> {
+  async broadcast(text: string, opts: SendOptions = {}): Promise<void> {
     for (const chatId of this.knownChats) {
       if (!this.isAllowed(chatId)) continue;
       try {
-        await this.sendChunked(chatId, text);
+        await this.sendChunked(chatId, text, opts);
       } catch (err) {
         log.warn(`broadcast to ${chatId} failed`, err);
       }
@@ -349,6 +362,14 @@ export class TelegramClient {
       await this.showForgeJobs(chatId, content.split(/\s+/).slice(1));
       return;
     }
+    if (cmd === "/network" || cmd === "/chain") {
+      const name = content.split(/\s+/).slice(1).join(" ").trim();
+      const text = name
+        ? (await switchNetwork(this.runtime, name, writeSettings)).text
+        : await describeNetworks(this.runtime);
+      await this.sendChunked(chatId, text);
+      return;
+    }
 
     // A reply carries the quoted message as context, so "run this script"
     // in reply to a code block reaches the agent together with the code.
@@ -373,7 +394,10 @@ export class TelegramClient {
         result.model && this.runtime.getSetting("LAINOS_REPLY_SIGNATURE") !== "0"
           ? `\n\n⌁ ${answerStamp(result)}`
           : "";
-      await this.sendChunked(chatId, (result.text || "…") + sig);
+      // A choice arrives as one-tap buttons; the tapped label comes back as
+      // the operator's next message ("2. Mainnet").
+      const buttons = result.choices?.options.map((o, i) => `${i + 1}. ${o.label}`);
+      await this.sendChunked(chatId, (result.text || "…") + sig, buttons ? { buttons } : {});
     } catch (err) {
       log.error("agent turn failed", err);
       await this.sendChunked(chatId, "…the wired flickered. try again.").catch(() => {});
@@ -658,9 +682,35 @@ export class TelegramClient {
     return () => clearInterval(timer);
   }
 
-  private async sendChunked(chatId: number, text: string): Promise<void> {
-    for (const chunk of splitMessage(text, MAX_MESSAGE)) {
-      await this.send("sendMessage", { chat_id: chatId, text: chunk });
+  private async sendChunked(chatId: number, text: string, opts: SendOptions = {}): Promise<void> {
+    const chunks = splitMessage(text, MAX_MESSAGE);
+    for (const [i, chunk] of chunks.entries()) {
+      const last = i === chunks.length - 1;
+      // A reply keyboard sends the tapped label back as an ordinary message,
+      // so a choice needs no callback plumbing — and with none it is removed.
+      const markup = last
+        ? opts.buttons?.length
+          ? { reply_markup: replyKeyboard(opts.buttons) }
+          : opts.clearButtons
+            ? { reply_markup: { remove_keyboard: true } }
+            : {}
+        : {};
+      if (!opts.html) {
+        await this.send("sendMessage", { chat_id: chatId, text: chunk, ...markup });
+        continue;
+      }
+      try {
+        await this.send("sendMessage", {
+          chat_id: chatId,
+          text: chunk,
+          parse_mode: "HTML",
+          disable_web_page_preview: true,
+          ...markup,
+        });
+      } catch (err) {
+        if (!/can't parse entities|unsupported start tag|can't find end/i.test((err as Error).message)) throw err;
+        await this.send("sendMessage", { chat_id: chatId, text: htmlToText(chunk), disable_web_page_preview: true, ...markup });
+      }
     }
   }
 
