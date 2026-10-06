@@ -30,6 +30,9 @@ export type FrameHit = {
   menuTop: number;
   menuItems: readonly { name: string; desc: string }[];
   pickerTop: number;
+  /** The picker options on screen: rows pickerTop.. show options pickerStart.. */
+  pickerStart: number;
+  pickerCount: number;
   feedRegions: (FeedRegion | undefined)[];
   sidebarRegions: (SidebarRegion | undefined)[];
 };
@@ -55,7 +58,10 @@ export function composeFrame(args: {
   chrome: ChromeFrame;
   sidebar: { lines: Line[]; regions: (SidebarRegion | undefined)[] };
   composerWrap: ComposerWrap;
+  /** The menu items on screen, in screen order (the menu may be a window). */
   menuItems: readonly { name: string; desc: string }[];
+  pickerStart?: number;
+  pickerCount?: number;
   /** false draws the scrollbar's column blank (a frozen frame for native selection). */
   scrollbar?: boolean;
 }): { lines: Line[]; hit: FrameHit } {
@@ -102,6 +108,8 @@ export function composeFrame(args: {
       menuTop: below(args.chrome.menuOffset),
       menuItems: args.menuItems,
       pickerTop: below(args.chrome.pickerOffset),
+      pickerStart: args.pickerStart ?? 0,
+      pickerCount: args.pickerCount ?? 0,
       feedRegions,
       sidebarRegions: args.sidebar.regions,
     },

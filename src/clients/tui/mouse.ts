@@ -14,8 +14,9 @@ import type { MouseInfo } from "./keys.js";
 import type { FrameHit } from "./frame.js";
 import type { PickerState } from "./keymap.js";
 
-/** A press in flight: where it started and which pane it may cover. */
-export type Drag = { row: number; col: number; moved: boolean; left: number; right: number };
+/** A press in flight: where it started and which pane it may cover. In the
+ *  transcript (`feed`) the row counts transcript rows, not screen rows. */
+export type Drag = { row: number; col: number; moved: boolean; left: number; right: number; feed: boolean };
 
 export type MouseCtx = {
   hit: FrameHit;
@@ -29,6 +30,8 @@ export type MouseCtx = {
   setSelection: (r: BoundedRange | null) => void;
   clearNote: () => void;
   scrollBy: (delta: number) => void;
+  /** The transcript row at the top of the screen, current even mid-event. */
+  scrollTop: () => number;
   copySelection: (range: BoundedRange) => void;
 
   // what a plain click can reach
@@ -90,7 +93,10 @@ function pickerMouse(m: MouseInfo, ctx: MouseCtx): boolean {
   const L = ctx.hit;
   const row = m.y - 1;
   const col = m.x - 1;
-  const idx = L.pickerTop >= 0 ? row - L.pickerTop : -1;
+  // The picker may be a window onto a longer list: a row is an option only
+  // while it is one of the rows drawn.
+  const shown = L.pickerTop >= 0 ? row - L.pickerTop : -1;
+  const idx = shown >= 0 && shown < L.pickerCount ? L.pickerStart + shown : -1;
   const n = picker.options.length;
 
   if (m.wheel) {
@@ -107,7 +113,7 @@ function pickerMouse(m: MouseInfo, ctx: MouseCtx): boolean {
       picker.onHighlight?.(picker.options[idx].value);
       ctx.setPicker({ ...picker, index: idx });
     }
-    ctx.drag.current = { row, col, moved: false, left: 0, right: L.width };
+    ctx.drag.current = { row, col, moved: false, left: 0, right: L.width, feed: false };
     return true;
   }
   const started = ctx.drag.current;
@@ -132,6 +138,9 @@ export function handleMouse(m: MouseInfo, ctx: MouseCtx): void {
 
   if (m.wheel) {
     ctx.scrollBy(m.wheel === "down" ? 3 : -3);
+    // The wheel under a held button carries a transcript selection along.
+    const d = ctx.drag.current;
+    if (d?.feed) extend(d, row, col, ctx);
     return;
   }
 
@@ -140,10 +149,12 @@ export function handleMouse(m: MouseInfo, ctx: MouseCtx): void {
 
   if (m.action === "press" && !m.motion) {
     const inSidebar = L.sidebarOn && col >= L.contentW;
+    const feed = !inSidebar && row < L.viewportRows;
     ctx.drag.current = {
-      row,
+      row: feed ? ctx.scrollTop() + row : row,
       col,
       moved: false,
+      feed,
       left: inSidebar ? L.contentW : 0,
       // The transcript's last column is the scrollbar's, not text: a copy
       // that included it pasted a column of █ and ░ down the right edge.
@@ -157,6 +168,14 @@ export function handleMouse(m: MouseInfo, ctx: MouseCtx): void {
   if (m.motion) {
     const d = ctx.drag.current;
     if (!d) return;
+    if (d.feed) {
+      // Held against the top row or below the transcript, the feed scrolls a
+      // line per move, so a selection can run past what one screen shows.
+      if (row <= 0) ctx.scrollBy(-1);
+      else if (row >= L.viewportRows) ctx.scrollBy(1);
+      extend(d, row, col, ctx);
+      return;
+    }
     if (row !== d.row || col !== d.col) d.moved = true;
     if (d.moved) ctx.setSelection({ a: { row: d.row, col: d.col }, b: { row, col }, left: d.left, right: d.right });
     return;
@@ -165,10 +184,22 @@ export function handleMouse(m: MouseInfo, ctx: MouseCtx): void {
   const d = ctx.drag.current;
   ctx.drag.current = null;
   if (!d) return;
+  if (d.feed && !d.moved) {
+    clickAt(d.row - ctx.scrollTop(), d.col, ctx);
+    return;
+  }
   const range = ctx.selection;
   if (d.moved && range && isDrag(range)) {
     ctx.copySelection(range);
     return;
   }
   clickAt(d.row, d.col, ctx);
+}
+
+/** Move a transcript drag's free end to the screen cell under the pointer. */
+function extend(d: Drag, row: number, col: number, ctx: MouseCtx): void {
+  const at = ctx.scrollTop() + clamp(row, 0, ctx.hit.viewportRows - 1);
+  if (at !== d.row || col !== d.col) d.moved = true;
+  if (!d.moved) return;
+  ctx.setSelection({ a: { row: d.row, col: d.col }, b: { row: at, col }, left: d.left, right: d.right, feed: true });
 }

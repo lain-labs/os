@@ -35,7 +35,7 @@ import { useChainHeight, useOutputFlowing, usePersistedPref, useSpin, useStdoutD
 import { handleKey, type KeyCtx, type PickerState } from "./keymap.js";
 import { handleMouse as handleMouse_, type Drag, type MouseCtx } from "./mouse.js";
 import { localClipboard, osc52 } from "./clipboard.js";
-import { highlightSelection, selectionText, type BoundedRange } from "./selection.js";
+import { feedToScreen, highlightSelection, selectionText, type BoundedRange } from "./selection.js";
 import { cursorToWrap, wrapIndices } from "./editor.js";
 import { InputHistory, loadInputHistory, saveInputHistory } from "./history.js";
 import { ESC_TIMEOUT_MS, KeyReader, type KeyPress, type MouseInfo, type TuiKey } from "./keys.js";
@@ -286,6 +286,9 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
   const suggestions = useMemo(() => suggestionsFor(value), [value]);
   const menuItems = browsing ? [] : suggestions;
   const acIdx = menuItems.length ? Math.min(acIndex, menuItems.length - 1) : 0;
+  // first visible row of the menu / picker when they are taller than the screen
+  const menuStartRef = useRef(0);
+  const pickerStartRef = useRef(0);
   const pushHistory = useCallback((t: Turn) => setHistory((h) => [...h, t]), []);
 
   /**
@@ -910,8 +913,19 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
   // ---- chrome (state line + menus/picker + framed composer + key hints)
   const composerWrap = useMemo(() => wrapIndices(value, composerWidth), [value, composerWidth]);
   const cursorPos = useMemo(() => cursorToWrap(value, cursor, composerWidth), [value, cursor, composerWidth]);
-  const menu = !picker && menuItems.length ? menuLines(menuItems, acIdx, theme, feedW) : [];
-  const pickerRows = picker ? pickerLines(picker, theme, feedW) : [];
+  // A menu or picker taller than the screen would push the frame past the
+  // terminal's last row, and the terminal scrolls on every repaint — the list
+  // flickers. So each gets the rows the rest of the frame leaves (minus one for
+  // the transcript) and shows a window of itself that follows the highlight.
+  // State line, then either the picker alone or menu + blank + composer + hint.
+  const listRows = frameRows - 1 - (picker ? 1 : 1 + 1 + composerWrap.length + 2 + 1);
+  const menuWin =
+    !picker && menuItems.length ? menuLines(menuItems, acIdx, theme, feedW, listRows, menuStartRef.current) : null;
+  const pickerWin = picker ? pickerLines(picker, theme, feedW, listRows, pickerStartRef.current) : null;
+  menuStartRef.current = menuWin?.start ?? 0;
+  pickerStartRef.current = pickerWin?.start ?? 0;
+  const menu = menuWin?.lines ?? [];
+  const pickerRows = pickerWin?.lines ?? [];
   const hint = copiedNote
     ? `✓ ${copiedNote} — drag anywhere to select, click to clear`
     : picker
@@ -1002,7 +1016,9 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
     chrome,
     sidebar,
     composerWrap: composerWrap as ComposerWrap,
-    menuItems,
+    menuItems: menuWin ? menuItems.slice(menuWin.start, menuWin.start + menuWin.count) : [],
+    pickerStart: pickerWin?.start ?? 0,
+    pickerCount: pickerWin?.count ?? 0,
     // A frozen frame is selected by the terminal itself, which would copy the
     // scrollbar's column along with the text.
     scrollbar: !selectMode,
@@ -1011,13 +1027,16 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
   const feedRef = useRef(view);
   const layoutRef = useRef(composed.hit);
 
+  // The mouse reads the scroll position between renders (a drag scrolls and
+  // extends in one event), so it is kept in a ref as well as in state.
+  const scrollTopRef = useRef(scrollTop);
+  scrollTopRef.current = scrollTop;
   const scrollBy = useCallback((delta: number) => {
-    setScrollTop((prev) => {
-      const max = Math.max(0, feedRef.current.lines.length - layoutRef.current.viewportRows);
-      const next = clamp(prev + delta, 0, max);
-      atBottomRef.current = next >= max;
-      return next;
-    });
+    const max = Math.max(0, feedRef.current.lines.length - layoutRef.current.viewportRows);
+    const next = clamp(scrollTopRef.current + delta, 0, max);
+    atBottomRef.current = next >= max;
+    scrollTopRef.current = next;
+    setScrollTop(next);
   }, []);
 
   feedRef.current = view;
@@ -1043,9 +1062,10 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
       : all;
   // The drag is read back off the painted frame, so remember it unhighlighted.
   displayRef.current = frame;
+  const onScreen = selection?.feed ? feedToScreen(selection, scrollTop, viewportRows) : selection;
   const display =
-    selection && !selectMode
-      ? highlightSelection(frame, selection, theme.border, selection.right, selection.left)
+    onScreen && !selectMode
+      ? highlightSelection(frame, onScreen, theme.border, onScreen.right, onScreen.left)
       : frame;
 
   // ------------------------------------------------------------- handlers
@@ -1062,7 +1082,11 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
   /** Copy whatever the drag covered, straight off the painted frame. */
   const copySelection = useCallback(
     (range: Selection) => {
-      const text = selectionText(displayRef.current, range, range.right, range.left);
+      // A transcript selection is read off the whole transcript — it may reach
+      // well past the screen — and a sidebar one off the painted frame.
+      const text = range.feed
+        ? selectionText(feedRef.current.lines, range, range.right, range.left)
+        : selectionText(displayRef.current, range, range.right, range.left);
       if (!text.trim()) return;
       osc52(text, (s) => void stdout?.write(s));
       void localClipboard(text);
@@ -1083,6 +1107,7 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
     setSelection,
     clearNote: () => setCopiedNote(null),
     scrollBy,
+    scrollTop: () => scrollTopRef.current,
     copySelection,
     openPicker: (which) => {
       if (which === "skin") openSkinPicker();

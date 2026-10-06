@@ -24,8 +24,27 @@ export interface Range {
 }
 
 /** A range plus the pane it was dragged inside — the transcript or the sidebar.
- *  A drag never spans both, so the bounds travel with the range. */
-export type BoundedRange = Range & { left: number; right: number };
+ *  A drag never spans both, so the bounds travel with the range. A transcript
+ *  range (`feed`) counts rows of the whole transcript, not of the screen, so it
+ *  can run past the window's edge and stays on its text while the feed scrolls. */
+export type BoundedRange = Range & { left: number; right: number; feed?: boolean };
+
+/**
+ * A transcript range as the screen shows it with the feed scrolled to
+ * `scrollTop`: clipped to the `rows` the transcript has, or null when none of
+ * it is on screen.
+ */
+export function feedToScreen(r: BoundedRange, scrollTop: number, rows: number): BoundedRange | null {
+  const { a, b } = ordered(r);
+  const top = a.row - scrollTop;
+  const bottom = b.row - scrollTop;
+  if (bottom < 0 || top >= rows) return null;
+  return {
+    ...r,
+    a: top < 0 ? { row: 0, col: r.left } : { row: top, col: a.col },
+    b: bottom >= rows ? { row: rows - 1, col: r.right } : { row: bottom, col: b.col },
+  };
+}
 
 /** The same range with `a` first in reading order (a drag may go upwards). */
 export function ordered(r: Range): Range {

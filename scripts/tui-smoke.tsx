@@ -134,6 +134,7 @@ async function main() {
 
   await sleep(300);
   const results: [string, boolean][] = [];
+  const resizeWipes: [number, number][] = [];
 
   // 0) the tab/window title is claimed via OSC 0
   results.push(["sets terminal title  ", anyWrite("\x1b]0;Lain OS")]);
@@ -299,6 +300,31 @@ async function main() {
   ]);
   results.push(["drag says what it did", anyPlain("chars copied", beforeDrag)]);
 
+  // 4.66) a drag held below the transcript scrolls it, and the copy takes what
+  // scrolled past — not just the rows one screen shows.
+  await type("/help\r");
+  await sleep(300);
+  for (let i = 0; i < 40; i++) stdin.write("\x1b[<64;5;5M"); // wheel up to the top
+  await sleep(200);
+  const beforeLong = stdout.writes.length;
+  stdin.write("\x1b[<0;3;2M");
+  await sleep(40);
+  for (let i = 0; i < 60; i++) {
+    stdin.write(`\x1b[<32;${10 + (i % 2)};${stdout.rows - 1}M`); // held on the composer
+    await sleep(5);
+  }
+  await sleep(100);
+  stdin.write(`\x1b[<0;10;${stdout.rows - 1}m`);
+  await sleep(300);
+  const longOsc = stdout.writes.slice(beforeLong).filter((w) => w.includes("\x1b]52;c;")).at(-1);
+  const longCopy = longOsc
+    ? Buffer.from(longOsc.split("\x1b]52;c;")[1]?.split("\x07")[0] ?? "", "base64").toString("utf8")
+    : "";
+  // (the transcript gets the window less the chrome: about rows - 7)
+  results.push(["drag scrolls past edge", longCopy.split("\n").length > stdout.rows - 7]);
+  await type("/clear\r"); // the rest expects the short boot feed
+  await sleep(200);
+
   // 4.7) /model re-routes the replies in place, and a route that cannot be
   // built says so instead of silently dropping the chat on another model.
   const beforeModel = stdout.writes.length;
@@ -383,6 +409,37 @@ async function main() {
     !anyPlain("╭─ session", beforeResize) && anyPlain("LAIN OS", beforeResize),
   ]);
 
+  // 5.5) a slash menu taller than the window scrolls inside it instead of
+  // pushing the frame past the last row (which made the terminal flicker)
+  // (ink wipes the screen once when it repaints the old, taller frame into a
+  // shorter window — that is the resize, not the menu, so those writes are
+  // left out of the "never wipes" check below)
+  const shrinkAt = stdout.writes.length;
+  stdout.rows = 14;
+  stdout.emit("resize");
+  await sleep(300);
+  const beforeMenu = stdout.writes.length;
+  resizeWipes.push([shrinkAt, beforeMenu]);
+  await type("/");
+  await sleep(150);
+  results.push(["short menu says more ", anyPlain("more", beforeMenu)]);
+  for (let i = 0; i < 30; i++) {
+    stdin.write("\x1b[B");
+    await sleep(15);
+  }
+  await sleep(150);
+  results.push(["menu scrolls to ↑ more", anyPlain("↑ ", beforeMenu)]);
+  const menuTallest = Math.max(
+    ...stdout.writes.slice(beforeMenu).map((w) => stripAnsi(w).split("\n").length),
+  );
+  results.push(["menu fits the window ", menuTallest <= stdout.rows]);
+  results.push(["menu never wipes     ", !anyWrite("\x1b[2J", beforeMenu)]);
+  stdin.write("\x15"); // ctrl+u closes the menu again
+  await sleep(150);
+  stdout.rows = 40;
+  stdout.emit("resize");
+  await sleep(300);
+
   // 6) blink repaints happen right after typing…
   const n1 = stdout.writes.length;
   await sleep(2500);
@@ -420,7 +477,12 @@ async function main() {
   // with it — whenever a frame is as tall as the window, which is why the frame
   // stops one row short. A screen wiped several times a second cannot be read
   // back, scrolled back, or copied out of.
-  results.push(["never wipes the screen", !anyWrite("\x1b[2J")]);
+  results.push([
+    "never wipes the screen",
+    !stdout.writes.some(
+      (w, i) => w.includes("\x1b[2J") && !resizeWipes.some(([a, b]) => i >= a && i < b),
+    ),
+  ]);
   // …and every frame stays inside the window, or ink wraps a line and clears.
   const tallest = Math.max(...stdout.writes.map((w) => stripAnsi(w).split("\n").length));
   results.push(["frame fits the window ", tallest <= stdout.rows]);

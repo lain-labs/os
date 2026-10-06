@@ -185,16 +185,45 @@ export function chromeLines(args: {
 export const MENU_HEADER_ROWS = 1; // the blank margin
 export const PICKER_HEADER_ROWS = 2; // the blank margin + the titled border
 
-/** The slash-command autocomplete menu, margin + one row per command. */
+/**
+ * The first row of a list that shows at most `max` of its `n` rows and must
+ * keep `index` on screen. It moves only when the highlight walks off an edge,
+ * so arrowing through a long list scrolls it instead of re-centring each step.
+ */
+export function scrollWindow(prevStart: number, index: number, n: number, max: number): number {
+  if (n <= max) return 0;
+  let start = clamp(prevStart, 0, n - max);
+  if (index < start) start = index;
+  else if (index >= start + max) start = index - max + 1;
+  return start;
+}
+
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+
+/** A window onto a list: the lines, and which options they show. */
+export type ListWindow = { lines: Line[]; start: number; count: number };
+
+/**
+ * The slash-command autocomplete menu: margin + one row per command. Taller
+ * than `maxRows` it shows a window that follows the highlight, the margin
+ * saying how many are above and one more row how many are below.
+ */
 export function menuLines(
   items: readonly { name: string; desc: string }[],
   index: number,
   theme: Theme,
   width: number,
-): Line[] {
+  maxRows = Infinity,
+  prevStart = 0,
+): ListWindow {
   const c = theme;
-  const out: Line[] = [blank(width)];
-  for (let i = 0; i < items.length; i++) {
+  const fits = items.length + MENU_HEADER_ROWS <= maxRows;
+  const count = fits ? items.length : Math.max(1, maxRows - MENU_HEADER_ROWS - 1);
+  const start = scrollWindow(prevStart, index, items.length, count);
+  const more = (glyph: string, k: number): Line =>
+    k > 0 ? [sp(`  ${glyph} ${k} more`, c.mutedDim)] : blank(width);
+  const out: Line[] = [fits ? blank(width) : more("↑", start)];
+  for (let i = start; i < start + count; i++) {
     const it = items[i];
     const on = i === index;
     out.push(
@@ -205,16 +234,26 @@ export function menuLines(
       ),
     );
   }
-  return out;
+  if (!fits) out.push(more("↓", items.length - start - count));
+  return { lines: out, start, count };
 }
 
 /** The bordered arrow-key picker (skin/effort/cursor/model). */
-export function pickerLines(state: PickerView, theme: Theme, width: number): Line[] {
+export function pickerLines(
+  state: PickerView,
+  theme: Theme,
+  width: number,
+  maxRows = Infinity,
+  prevStart = 0,
+): ListWindow {
   const c = theme;
+  const n = state.options.length;
+  const count = Math.max(1, Math.min(n, maxRows - PICKER_HEADER_ROWS - 1));
+  const start = scrollWindow(prevStart, state.index, n, count);
   const out: Line[] = [blank(width)];
   const title = ` ${state.title}  ↑↓ or click · enter select · esc cancel `;
   out.push(truncateLine([{ t: `╭─${title}${"─".repeat(Math.max(0, width - title.length - 3))}╮`, c: c.border }], width));
-  for (let i = 0; i < state.options.length; i++) {
+  for (let i = start; i < start + count; i++) {
     const opt = state.options[i];
     const on = i === state.index;
     const th = state.kind === "skin" ? THEMES[opt.value] : undefined;
@@ -232,6 +271,16 @@ export function pickerLines(state: PickerView, theme: Theme, width: number): Lin
     // closed border reads as two different widgets.
     out.push(concat([sp("│", c.border)], fitLine(concat(row), Math.max(1, width - 2)), [sp("│", c.border)]));
   }
-  out.push([{ t: `╰${"─".repeat(Math.max(1, width - 2))}╯`, c: c.border }]);
-  return out;
+  // A window onto a longer list says so in its bottom border.
+  const above = start;
+  const below = n - start - count;
+  const note = count < n ? ` ${above ? `↑${above} ` : ""}${below ? `↓${below} ` : ""}` : "";
+  out.push(
+    concat(
+      [sp(`╰${"─".repeat(Math.max(1, width - 3 - note.length))}`, c.border)],
+      note ? [sp(note, c.mutedDim)] : [],
+      [sp("─╯", c.border)],
+    ),
+  );
+  return { lines: out, start, count };
 }

@@ -8,6 +8,7 @@ import { setLogMuted } from "../src/logger.js";
 import { ensureLogin } from "../src/setup/login-gate.js";
 import { setTextPictographWidth } from "../src/clients/tui/markdown.js";
 import { App } from "../src/clients/tui/App.js";
+import { smoothFrames } from "../src/clients/tui/smooth.js";
 
 async function main() {
   // Required before the TUI takes over the screen, so the prompt (and any
@@ -21,6 +22,9 @@ async function main() {
   // a full pty — and every turn, tool and watch with it. Queue instead; the
   // app stops drawing while the queue is backed up (useOutputFlowing).
   setStdoutBlocking(false);
+  // ink erases a frame before it draws the next; a desktop terminal shows the
+  // gap — overwrite in place, one synchronized update per tick.
+  if (process.stdout.isTTY) smoothFrames(process.stdout);
   // ⚠ ⚙ ✔ are one cell in most terminals and two in some; ask this one.
   const pictograph = await measureTextPictograph();
   if (pictograph) setTextPictographWidth(pictograph);
