@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fetch as undiciFetch, ProxyAgent } from "undici";
 import { splitMessage } from "../../clients/telegram.js";
+import { markdownToTelegramHtml } from "../../clients/telegram-format.js";
 import { createLogger } from "../../logger.js";
 import type { Action, Plugin } from "../../types.js";
 
@@ -70,6 +71,12 @@ export async function sendToOperator(
 export interface DeliverOptions {
   /** Text is Telegram HTML (<a href>, <b>, <code>…) — links stay short. */
   html?: boolean;
+  /**
+   * Text is plain: sent exactly as written. Otherwise (the default for text
+   * that is not HTML) it is read as the model's Markdown and converted, so
+   * `**bold**` arrives bold instead of as asterisks.
+   */
+  plain?: boolean;
   /** Reply-keyboard buttons shown under the message; a tap sends the label back as a message. */
   buttons?: string[];
 }
@@ -118,11 +125,13 @@ async function deliver(getSetting: GetSetting, chatId: string, text: string, opt
     }
   };
   try {
-    const chunks = splitMessage(text, MAX_MESSAGE);
+    const markdown = !opts.html && !opts.plain;
+    const chunks = markdown ? splitMessage(text, 3300).map(markdownToTelegramHtml) : splitMessage(text, MAX_MESSAGE);
+    const html = opts.html || markdown;
     for (const [i, chunk] of chunks.entries()) {
       const last = i === chunks.length - 1;
       const extra = last && opts.buttons?.length ? { reply_markup: replyKeyboard(opts.buttons) } : {};
-      if (!opts.html) {
+      if (!html) {
         await post({ chat_id: chatId, text: chunk, ...extra });
         continue;
       }
@@ -130,6 +139,7 @@ async function deliver(getSetting: GetSetting, chatId: string, text: string, opt
         await post({ chat_id: chatId, text: chunk, parse_mode: "HTML", disable_web_page_preview: true, ...extra });
       } catch (err) {
         if (!/can't parse entities|unsupported start tag|can't find end/i.test((err as Error).message)) throw err;
+        log.warn(`telegram refused the formatting (${(err as Error).message}) — sent as plain text`);
         await post({ chat_id: chatId, text: htmlToText(chunk), disable_web_page_preview: true, ...extra });
       }
     }
@@ -147,11 +157,14 @@ const sendTelegramAction: Action = {
   parameters: {
     type: "object",
     properties: {
-      text: { type: "string", description: "The message to deliver. Long text is split into several messages." },
+      text: {
+        type: "string",
+        description: "The message to deliver, in Markdown (**bold**, `code`, [link](url), lists, tables) — it is rendered for Telegram. Long text is split.",
+      },
       html: {
         type: "boolean",
         description:
-          "true when text is Telegram HTML: <a href=\"https://…/address/0x…\">0xbe0b…c8d9</a>, <b>, <i>, <code>. Escape & < > in plain parts. Use it for explorer links.",
+          "true when text is already Telegram HTML (<a href>, <b>, <code>) instead of Markdown. Rarely needed: Markdown links [0xbe0b…c8d9](https://…/address/0x…) work.",
       },
     },
     required: ["text"],

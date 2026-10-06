@@ -25,7 +25,7 @@
     "analyze:transcripts": "tsx scripts/analyze-transcripts.ts",
     "smoke": "tsx scripts/smoke.ts",
     "wired:smoke": "tsx scripts/wired-smoke.ts",
-    "test": "npm run typecheck && npm run keys:smoke && npm run markdown:smoke && npm run tasks:smoke && npm run press:smoke && npm run crm:smoke && npm run sentinel:smoke && npm run wallets:smoke && npm run tui:smoke",
+    "test": "npm run typecheck && npm run keys:smoke && npm run markdown:smoke && npm run tasks:smoke && npm run press:smoke && npm run crm:smoke && npm run sentinel:smoke && npm run wallets:smoke && npm run telegram:smoke && npm run tui:smoke",
     "dev": "tsx watch scripts/chat.ts",
     "tui:smoke": "FORCE_COLOR=3 tsx scripts/tui-smoke.tsx",
     "keys:smoke": "tsx scripts/keys-smoke.ts",
@@ -36,7 +36,8 @@
     "sentinel:smoke": "tsx scripts/sentinel-smoke.ts",
     "tasks": "tsx scripts/tasks.ts",
     "wallets": "tsx scripts/wallets.ts",
-    "wallets:smoke": "tsx scripts/wallets-smoke.ts"
+    "wallets:smoke": "tsx scripts/wallets-smoke.ts",
+    "telegram:smoke": "tsx scripts/telegram-smoke.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",

@@ -16,6 +16,7 @@ import { formatForgeJobs, type ForgeService } from "../plugins/forge/index.js";
 import { describeNetworks, switchNetwork } from "../plugins/chain/networks.js";
 import { writeSettings } from "../plugins/system/settings.js";
 import { htmlToText, replyKeyboard } from "../plugins/telegram/index.js";
+import { markdownToTelegramHtml } from "./telegram-format.js";
 import type { IAgentRuntime } from "../types.js";
 
 const log = createLogger("telegram");
@@ -88,10 +89,14 @@ interface TgUpdate {
 }
 
 const MAX_MESSAGE = 4000; // Telegram hard limit is 4096; leave headroom.
+/** Markdown per message before conversion — HTML escapes and tags make it longer. */
+const MARKDOWN_CHUNK = 3300;
 
 export interface SendOptions {
   /** The text is Telegram HTML. */
   html?: boolean;
+  /** The text is the model's Markdown: converted to Telegram HTML, chunk by chunk. */
+  markdown?: boolean;
   /** Offer these as one-tap reply buttons under the message. */
   buttons?: string[];
   /** Remove a reply keyboard left by an earlier choice. */
@@ -397,7 +402,7 @@ export class TelegramClient {
       // A choice arrives as one-tap buttons; the tapped label comes back as
       // the operator's next message ("2. Mainnet").
       const buttons = result.choices?.options.map((o, i) => `${i + 1}. ${o.label}`);
-      await this.sendChunked(chatId, (result.text || "…") + sig, buttons ? { buttons } : {});
+      await this.sendChunked(chatId, (result.text || "…") + sig, { markdown: true, ...(buttons ? { buttons } : {}) });
     } catch (err) {
       log.error("agent turn failed", err);
       await this.sendChunked(chatId, "…the wired flickered. try again.").catch(() => {});
@@ -683,7 +688,12 @@ export class TelegramClient {
   }
 
   private async sendChunked(chatId: number, text: string, opts: SendOptions = {}): Promise<void> {
-    const chunks = splitMessage(text, MAX_MESSAGE);
+    // Markdown is split before it is converted, so a tag never straddles two
+    // messages; the margin leaves room for what escaping and tags add.
+    const chunks = opts.markdown
+      ? splitMessage(text, MARKDOWN_CHUNK).map(markdownToTelegramHtml)
+      : splitMessage(text, MAX_MESSAGE);
+    if (opts.markdown) opts = { ...opts, html: true };
     for (const [i, chunk] of chunks.entries()) {
       const last = i === chunks.length - 1;
       // A reply keyboard sends the tapped label back as an ordinary message,
@@ -709,6 +719,7 @@ export class TelegramClient {
         });
       } catch (err) {
         if (!/can't parse entities|unsupported start tag|can't find end/i.test((err as Error).message)) throw err;
+        log.warn(`telegram refused the formatting (${(err as Error).message}) — sent as plain text`);
         await this.send("sendMessage", { chat_id: chatId, text: htmlToText(chunk), disable_web_page_preview: true, ...markup });
       }
     }

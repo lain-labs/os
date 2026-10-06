@@ -406,7 +406,13 @@ export function answerStamp(result: {
     const spec = TASKS[result.task];
     parts.push(`${spec.emoji} ${spec.label}${result.escalatedFrom ? `↑ (was ${result.escalatedFrom})` : ""}`);
   }
-  const who = [result.provider, result.model].filter(Boolean).join("/");
+  // A CLI provider already names its model "claude/claude-opus-5-5"; putting
+  // the provider in front again read "claude/claude/claude-opus-5-5".
+  const model = result.model ?? "";
+  const who =
+    result.provider && !model.toLowerCase().startsWith(`${result.provider.toLowerCase()}/`)
+      ? [result.provider, model].filter(Boolean).join("/")
+      : model || result.provider || "";
   if (who) parts.push(result.upstream ? `${who} ← ${result.upstream}` : who);
   return parts.join(" · ");
 }
