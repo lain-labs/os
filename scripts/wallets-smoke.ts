@@ -13,7 +13,10 @@
  *      discovery from its cache instead of rescanning;
  *   7. copycat tickers are told apart;
  *   8. a `wallets` watch in the sentinel delivers its digest to Telegram itself;
- *   9. offer_choices validates and renders; networks resolve by loose names.
+ *   9. offer_choices validates and renders; networks resolve by loose names;
+ *  10. token holders are rebuilt from Transfer logs (walking back only until the
+ *      supply is minted, then resuming from the cursor) and appended to a watch:
+ *      nobody is removed, exclusions hold, the block cursor is untouched.
  *
  * Run: npm run wallets:smoke
  */
@@ -35,6 +38,7 @@ import {
 import { mergeWalletLists, parseWalletList } from "../src/plugins/wallets/lists.js";
 import { formatSnapshot, takeSnapshot, tokenLabels, TokenCache } from "../src/plugins/wallets/snapshot.js";
 import { formatGroupAlert, scanGroup, type GroupState } from "../src/plugins/wallets/watch.js";
+import { newHolders, scanHolders, type HolderLedger, type HolderSource, type TokenMove } from "../src/plugins/wallets/holders.js";
 import type { IAgentRuntime, State } from "../src/types.js";
 
 const results: [string, boolean][] = [];
@@ -281,6 +285,79 @@ check("one option is not a choice", typeof parseChoices({ question: "?", options
 check("networks resolve by loose name", (await findNetwork(runtime, "Robinhood mainnet"))?.chainId === 4663);
 check("a test name finds the testnet", (await findNetwork(runtime, "robinhood testnet"))?.chainId === 46630);
 check("networks resolve by chain id", (await findNetwork(runtime, "49406"))?.name === "cyberia");
+
+// ---------------------------------------------------------------- 10. token holders
+
+const ZERO = addr(0);
+const C = addr(0xc3);
+const D = addr(0xd4);
+const X = addr(0xee); // the operator's exclusion
+const hMoves: (TokenMove & { block: bigint })[] = [];
+const hMove = (block: bigint, from: Address, to: Address, value: bigint) =>
+  hMoves.push({ block, from: from.toLowerCase(), to: to.toLowerCase(), value });
+const hCalls: string[] = [];
+const holderFake: HolderSource = {
+  head: async () => head,
+  totalSupply: async () => 1_000n,
+  async moves(_token, from, to) {
+    hCalls.push(`${from}-${to}`);
+    return hMoves.filter((m) => m.block >= from && m.block <= to);
+  },
+  async balances(_token, list) {
+    const bal = new Map<string, bigint>();
+    for (const m of hMoves) {
+      bal.set(m.from, (bal.get(m.from) ?? 0n) - m.value);
+      bal.set(m.to, (bal.get(m.to) ?? 0n) + m.value);
+    }
+    return new Map(list.map((w) => [w.toLowerCase(), bal.get(w.toLowerCase()) ?? 0n]));
+  },
+};
+hMove(400n, ZERO, POOL, 1_000n);
+hMove(500n, POOL, C, 50n);
+hMove(500n, POOL, D, 100n);
+hMove(600n, POOL, X, 200n);
+hMove(700n, POOL, B, 10n);
+hMove(800n, B, C, 10n); // B sells everything: still a member afterwards
+const ledger: HolderLedger = { balances: {} };
+const hScan = await scanHolders(holderFake, TOK, ledger, 100n);
+check("the first holder scan walks back only until the supply is minted", hScan.complete && hScan.from > 0n && hScan.from <= 400n);
+check("holders come largest first, sold-out wallets are not holders", hScan.holders[0].address === POOL.toLowerCase() && !hScan.holders.some((h) => h.address === B.toLowerCase()));
+check("new holders append after the list, exclusions never join",
+  JSON.stringify(newHolders([{ address: A, rank: 1 }, { address: B, rank: 2 }], hScan.holders, [X.toLowerCase()]).map((e) => [e.address, e.rank])) ===
+    JSON.stringify([[POOL.toLowerCase(), 3], [D.toLowerCase(), 4], [C.toLowerCase(), 5]]));
+
+svc.holderSource = () => holderFake;
+hCalls.length = 0;
+const w = svc.listWatches().find((x) => x.kind === "wallets")!;
+const cursorBefore = w.group!.state.cursor;
+const rescan = svc.rescanHolders.bind(svc);
+const rescanAction = (await import("../src/plugins/sentinel/index.js")).sentinelPlugin.actions!.find((a) => a.name === "rescan_token_holders")!;
+const r1 = await rescanAction.handler(runtime, {} as State, { watch: w.id, token: "LAIN", exclude: [X] });
+const after1 = svc.listWatches().find((x) => x.id === w.id)!.group!;
+check("rescan keeps every member in place and appends the new holders",
+  r1.ok && after1.members.map((m) => m.address.toLowerCase()).join() === [POOL, A, B, D, C].map((a) => a.toLowerCase()).join() &&
+    after1.members[3].rank === 4);
+check("a member who sold everything stays watched", after1.members.some((m) => m.address === B));
+check("an exclusion is saved and not re-added", !after1.members.some((m) => m.address.toLowerCase() === X.toLowerCase()) && after1.holders?.excluded.includes(X.toLowerCase()) === true);
+check("the watch's block cursor is untouched", after1.state.cursor === cursorBefore);
+
+head = 1_100n;
+const E = addr(0xe5);
+hMove(1_050n, POOL, E, 5n);
+hCalls.length = 0;
+const r2 = await rescan(w.id);
+check("a later rescan resumes from the ledger and remembers the token", hCalls.join() === "1031-1100" && r2.added.length === 1 && r2.added[0].rank === 6);
+check("exclusions survive the next rescan", !r2.added.some((a) => a.address.toLowerCase() === X.toLowerCase()));
+
+await rescanAction.handler(runtime, {} as State, { watch: w.id, daily: true });
+const F = addr(0xf6);
+head = 1_200n;
+hMove(1_150n, POOL, F, 1n);
+const sentBefore = sent.length;
+await svc.rescanTick(Date.now() + 2 * 86_400_000);
+check("a daily rescan sends one line naming who joined", sent.length === sentBefore + 1 && sent.at(-1)!.includes("+1") && sent.at(-1)!.includes("#7"));
+await svc.rescanTick(Date.now());
+check("and does not run again the same day", sent.length === sentBefore + 1);
 
 await rm(tmp, { recursive: true, force: true });
 

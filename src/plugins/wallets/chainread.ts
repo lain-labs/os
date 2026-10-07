@@ -191,7 +191,7 @@ export function isContractCode(code: string | undefined): boolean {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Space out request starts by `gapMs` (a shared clock per source). */
-function pacer(gapMs: number): () => Promise<void> {
+export function pacer(gapMs: number): () => Promise<void> {
   let next = 0;
   return async () => {
     const now = Date.now();

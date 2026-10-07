@@ -24,10 +24,22 @@ import {
   type WalletMove,
 } from "./activity.js";
 import { briefMaterial, localDay, parseClock, type BriefSnapshot } from "./brief.js";
-import { findNetwork, type NetworkProfile } from "../chain/networks.js";
+import { explorerLinks, findNetwork, type NetworkProfile } from "../chain/networks.js";
 import { rpcWalletSource, type TokenMeta, type WalletSource } from "../wallets/chainread.js";
 import type { WalletEntry } from "../wallets/lists.js";
 import { formatGroupAlert, scanGroup, type GroupState } from "../wallets/watch.js";
+import {
+  ledgerPath,
+  loadLedger,
+  newHolders,
+  rpcHolderSource,
+  saveLedger,
+  scanHolders,
+  type HolderScan,
+  type HolderSource,
+} from "../wallets/holders.js";
+import { shortAddress } from "../wallets/lists.js";
+import { escapeHtml } from "../wallets/snapshot.js";
 import { sendToOperator } from "../telegram/index.js";
 import { currentProfile } from "../chain/networks.js";
 import { readFile as readText } from "node:fs/promises";
@@ -113,6 +125,34 @@ export interface GroupWatch {
   state: GroupState;
   /** Last error, so list_watches can say why a watch is quiet. */
   lastError?: string;
+  /** Set by rescan_token_holders: the token whose holders join this list. */
+  holders?: HolderRescan;
+}
+
+/** How a `wallets` watch keeps up with a token's holders. */
+export interface HolderRescan {
+  /** Token address. */
+  token: string;
+  symbol?: string;
+  /** Lowercase addresses the operator took off the list; a rescan never adds them back. */
+  excluded: string[];
+  /** Rescan once a day and send the operator one line naming who joined. */
+  daily: boolean;
+  lastRun?: number;
+  lastError?: string;
+}
+
+export interface RescanResult {
+  watchId?: string;
+  token: Address;
+  symbol: string;
+  network: NetworkProfile;
+  scan: HolderScan;
+  added: WalletEntry[];
+  /** Members after the merge. */
+  members: number;
+  excluded: string[];
+  dryRun: boolean;
 }
 
 export interface Alert {
@@ -157,6 +197,8 @@ export function alertLine(alert: Alert): string {
 const BRIEF_LATE_MS = 3 * 3_600_000;
 
 const ALERT_CAP = 200;
+/** How often due daily holder rescans are looked for. */
+const RESCAN_CHECK_MS = 10 * 60_000;
 
 export class SentinelService implements Service {
   readonly name = "sentinel";
@@ -182,10 +224,17 @@ export class SentinelService implements Service {
   deliverTelegram?: (html: string) => Promise<void>;
   /** Token metadata per chain, kept across ticks. */
   private tokenMeta = new Map<string, Map<string, TokenMeta>>();
+  /** Tests inject a fake token log reader; otherwise the network's RPC. */
+  holderSource?: (profile: NetworkProfile) => HolderSource;
+  private dataDir = "./data";
+  /** Holder scans in flight per chain:token — one at a time per ledger. */
+  private holderScans = new Map<string, Promise<HolderScan>>();
+  private rescanTimer: ReturnType<typeof setInterval> | null = null;
 
   async start(runtime: IAgentRuntime): Promise<void> {
     this.runtime = runtime;
     const dataDir = runtime.getSetting("LAINOS_DATA_DIR") ?? "./data";
+    this.dataDir = dataDir;
     this.file = join(dataDir, "sentinel.json");
     try {
       const parsed = JSON.parse(await readFile(this.file, "utf8")) as SentinelFile;
@@ -204,6 +253,8 @@ export class SentinelService implements Service {
     const interval = Number(runtime.getSetting("LAINOS_SENTINEL_INTERVAL_MS") ?? 60_000);
     this.timer = setInterval(() => void this.tick(), Math.max(5_000, interval));
     this.timer.unref?.();
+    this.rescanTimer = setInterval(() => void this.rescanTick(), RESCAN_CHECK_MS);
+    this.rescanTimer.unref?.();
     log.info(
       `sentinel online: ${this.watches.length} watch(es), tick every ${Math.max(5_000, interval) / 1000}s`,
     );
@@ -222,6 +273,8 @@ export class SentinelService implements Service {
   async stop(): Promise<void> {
     if (this.timer) clearInterval(this.timer);
     if (this.briefTimer) clearInterval(this.briefTimer);
+    if (this.rescanTimer) clearInterval(this.rescanTimer);
+    this.rescanTimer = null;
     this.timer = null;
     this.briefTimer = null;
   }
@@ -403,6 +456,132 @@ export class SentinelService implements Service {
       }
     }
     this.emit(alert);
+  }
+
+  // ---------------------------------------------------------- holders
+
+  /**
+   * Who holds `token` on `profile` now, from its Transfer logs since the
+   * ledger's cursor. Concurrent calls for one token share one scan.
+   */
+  scanTokenHolders(profile: NetworkProfile, token: Address): Promise<HolderScan> {
+    const key = `${profile.chainId}:${token.toLowerCase()}`;
+    const running = this.holderScans.get(key);
+    if (running) return running;
+    const job = (async () => {
+      const path = ledgerPath(this.dataDir, profile.chainId, token);
+      const ledger = await loadLedger(path);
+      const src = this.holderSource ? this.holderSource(profile) : rpcHolderSource(profile);
+      const scan = await scanHolders(src, token, ledger, BigInt(profile.maxLogSpan ?? 10_000), (blocks) => {
+        if (blocks % 1_500_000n < BigInt(profile.maxLogSpan ?? 10_000)) log.info(`holders of ${token}: ${blocks} blocks back`);
+      });
+      await saveLedger(path, ledger);
+      return scan;
+    })().finally(() => this.holderScans.delete(key));
+    this.holderScans.set(key, job);
+    return job;
+  }
+
+  /**
+   * Rescan a token's holders and append the new ones to a `wallets` watch, in
+   * place: members keep their rank and order, nobody is ever removed (a
+   * holder who sold stays watched), operator exclusions are never re-added,
+   * and the block cursor is untouched. `exclude`, `token` and `daily` are
+   * saved on the watch, so the next rescan needs no arguments.
+   */
+  async rescanHolders(
+    watchId: string,
+    opts: { token?: string; exclude?: string[]; daily?: boolean; dryRun?: boolean } = {},
+  ): Promise<RescanResult> {
+    const runtime = this.runtime;
+    const find = () => this.watches.find((w) => w.id === watchId && w.kind === "wallets" && w.group);
+    const watch = find();
+    if (!runtime || !watch) throw new Error(`no wallets watch ${watchId} (list_watches shows them)`);
+    const group = watch.group!;
+    const profile = await findNetwork(runtime, group.network);
+    if (!profile) throw new Error(`unknown network "${group.network}"`);
+    const token = resolveTokenOn(profile, opts.token ?? group.holders?.token);
+    if (!token) {
+      throw new Error(
+        opts.token ? `"${opts.token}" is neither a 0x address nor a token known on ${profile.title}` : "which token? (token: symbol or 0x address)",
+      );
+    }
+    const cfg: HolderRescan = group.holders && group.holders.token.toLowerCase() === token.address.toLowerCase()
+      ? { ...group.holders }
+      : { token: token.address, excluded: group.holders?.excluded ?? [], daily: group.holders?.daily ?? false };
+    cfg.symbol = token.symbol;
+    cfg.excluded = [...new Set([...cfg.excluded, ...(opts.exclude ?? []).map((a) => a.toLowerCase())])];
+    if (opts.daily !== undefined) cfg.daily = opts.daily;
+    if (!opts.dryRun) {
+      // Exclusions and the schedule hold even if the scan below fails.
+      cfg.lastRun = Date.now();
+      group.holders = cfg;
+      await this.persist();
+    }
+
+    let scan: HolderScan;
+    try {
+      scan = await this.scanTokenHolders(profile, token.address);
+    } catch (err) {
+      if (!opts.dryRun && find()?.group?.holders) {
+        find()!.group!.holders!.lastError = (err as Error).message.split("\n")[0];
+        await this.persist();
+      }
+      throw err;
+    }
+
+    // The watch may have been replaced while the scan ran.
+    const live = find();
+    if (!live) throw new Error(`watch ${watchId} was removed during the scan`);
+    const g = live.group!;
+    const added = newHolders(g.members, scan.holders, cfg.excluded);
+    if (!opts.dryRun) {
+      if (added.length) {
+        let contracts: string[] = [];
+        try {
+          const src = this.groupSource ? this.groupSource(profile) : rpcWalletSource(profile);
+          contracts = [...(await src.contracts(added.map((a) => a.address)))];
+        } catch (err) {
+          log.warn(`watch ${watchId}: could not tell contracts among new holders — ${(err as Error).message}`);
+        }
+        g.members.push(...added);
+        g.contracts.push(...contracts.filter((c) => !g.contracts.includes(c)));
+      }
+      if (g.holders) g.holders.lastError = undefined;
+      await this.persist();
+    }
+    return {
+      watchId,
+      token: token.address,
+      symbol: token.symbol,
+      network: profile,
+      scan,
+      added,
+      members: g.members.length + (opts.dryRun ? added.length : 0),
+      excluded: cfg.excluded,
+      dryRun: Boolean(opts.dryRun),
+    };
+  }
+
+  /** Daily rescans that are due; each sends one line when someone joined. */
+  async rescanTick(now = Date.now()): Promise<void> {
+    for (const watch of this.watches) {
+      const cfg = watch.group?.holders;
+      if (!cfg?.daily || now - (cfg.lastRun ?? 0) < DAY_MS) continue;
+      try {
+        const res = await this.rescanHolders(watch.id);
+        if (res.added.length) await this.tellOperator(holdersLine(res));
+      } catch (err) {
+        log.warn(`daily holder rescan of ${watch.id} failed: ${(err as Error).message}`);
+      }
+    }
+  }
+
+  /** One HTML line to the operator's Telegram. */
+  async tellOperator(html: string): Promise<void> {
+    const runtime = this.runtime!;
+    if (this.deliverTelegram) await this.deliverTelegram(html);
+    else await sendToOperator((k) => runtime.getSetting(k), html, { html: true });
   }
 
   /** Every wallet an activity watch covers, deduplicated. */
@@ -700,6 +879,32 @@ function hours(ms: number): string {
   return h >= 1 && Number.isInteger(h) ? `${h}h` : `${Math.round(ms / 60_000)}m`;
 }
 
+/** A token named by 0x address, or by symbol from the profile's registry. */
+function resolveTokenOn(profile: NetworkProfile, q: string | undefined): { address: Address; symbol: string } | null {
+  if (!q) return null;
+  const registry = (profile.tokens ?? "")
+    .split(",")
+    .map((t) => t.trim().split(":"))
+    .filter(([sym, a]) => sym && a && isAddress(a));
+  const want = q.trim().toLowerCase();
+  const hit = registry.find(([sym, a]) => sym.toLowerCase() === want || a.toLowerCase() === want);
+  if (hit) return { address: hit[1] as Address, symbol: hit[0] };
+  return isAddress(q.trim()) ? { address: q.trim() as Address, symbol: shortAddress(q.trim()) } : null;
+}
+
+/** "w5 LAIN holders: +2 — #100 0xab…, #101 0xcd…. 101 watched." as Telegram HTML. */
+export function holdersLine(res: RescanResult): string {
+  const link = explorerLinks(res.network).address;
+  const who = res.added.map((a) => {
+    const url = link(a.address);
+    return `#${a.rank} ${url ? `<a href="${escapeHtml(url)}">${shortAddress(a.address)}</a>` : shortAddress(a.address)}`;
+  });
+  const head = `👥 ${res.watchId ?? ""} ${escapeHtml(res.symbol)} holders`.replace(/\s+/g, " ");
+  return res.added.length
+    ? `${head}: +${res.added.length} — ${who.join(", ")}. ${res.members} watched.`
+    : `${head}: nobody new (${res.scan.holders.length} on-chain, ${res.members} watched).`;
+}
+
 /**
  * The portfolio as portfolio_pnl reports it — the brief and the chat must
  * agree on what is held. Null when there is no chain or wallet.
@@ -741,7 +946,11 @@ export function describeWatch(w: Watch, nativeSymbol: string): string {
       `${g.contracts.length ? ` (${g.contracts.length} contracts among them)` : ""}` +
       `${g.telegram ? " → telegram" : ""}${note}` +
       `${g.state.cursor ? ` · at block ${g.state.cursor}` : " · starts next tick"}` +
-      `${g.lastError ? ` · last error: ${g.lastError}` : ""}`
+      `${g.lastError ? ` · last error: ${g.lastError}` : ""}` +
+      (g.holders
+        ? ` · ${g.holders.symbol ?? shortAddress(g.holders.token)} holders join${g.holders.daily ? " daily" : " on rescan"}` +
+          `${g.holders.excluded.length ? `, excluded: ${g.holders.excluded.map(shortAddress).join(", ")}` : ""}`
+        : "")
     );
   }
   const window = hours(w.windowMs ?? DAY_MS);
@@ -1109,6 +1318,112 @@ const watchWalletsAction: Action = {
   },
 };
 
+/** How long rescan_token_holders waits before it hands the scan to the background. */
+const RESCAN_WAIT_MS = 45_000;
+
+const rescanHoldersAction: Action = {
+  name: "rescan_token_holders",
+  similes: ["rescan_holders", "update_holders", "refresh_holders", "add_new_holders", "token_holders"],
+  description:
+    "Find every current holder of an ERC20 from the chain itself (Transfer logs since deployment, resumed from a saved cursor, checked with balanceOf — no explorer or launchpad API) " +
+    "and, given a `watch` (a watch_wallets id), append the holders not yet on its list. Members are never removed or re-ranked: a holder who sold stays watched. " +
+    "`exclude` adds addresses the operator took off the list (e.g. the pool) — saved on the watch and never re-added; on the first rescan of a list, pass every address the operator dropped from it. " +
+    "`daily: true` repeats it every day and sends one Telegram line naming who joined. Long scans finish in the background and report to Telegram. Read-only.",
+  parameters: {
+    type: "object",
+    properties: {
+      watch: { type: "string", description: "Id of the wallets watch to extend, e.g. 'w5'. Omit to only count holders." },
+      token: { type: "string", description: "Token symbol or 0x address. Default: the one the watch was last rescanned for." },
+      network: { type: "string", description: "Without a watch: the network (default the active chain). A watch uses its own." },
+      exclude: { type: "array", items: { type: "string" }, description: "0x addresses never to add to this watch (saved)." },
+      daily: { type: "boolean", description: "Rescan every day (true) or stop doing so (false). Saved on the watch." },
+      dry_run: { type: "boolean", description: "Report who would join without changing the watch." },
+    },
+  },
+  examples: [{ user: "rescan LAIN holders, add new. Don't remove watch if holder sell LAIN", agent: "Rescanning from the chain; nobody leaves the list." }],
+  async validate(runtime) {
+    return Boolean(runtime.getService("sentinel"));
+  },
+  async handler(runtime, _state, params) {
+    const svc = getSentinel(runtime);
+    const exclude = Array.isArray(params.exclude) ? params.exclude.map((a) => String(a).trim()) : [];
+    const bad = exclude.filter((a) => !isAddress(a));
+    if (bad.length) return { ok: false, text: `Not valid 0x addresses: ${bad.slice(0, 5).join(", ")}.` };
+    const watchId = params.watch ? String(params.watch).trim() : "";
+
+    let job: Promise<RescanResult>;
+    if (watchId) {
+      job = svc.rescanHolders(watchId, {
+        token: params.token ? String(params.token) : undefined,
+        exclude,
+        daily: typeof params.daily === "boolean" ? params.daily : undefined,
+        dryRun: params.dry_run === true,
+      });
+    } else {
+      const profile = params.network ? await findNetwork(runtime, String(params.network)) : currentProfile(runtime);
+      if (!profile) return { ok: false, text: "Name the network (e.g. network: robinhood)." };
+      const token = resolveTokenOn(profile, params.token ? String(params.token) : undefined);
+      if (!token) return { ok: false, text: `Which token on ${profile.title}? A symbol from its registry or a 0x address.` };
+      job = svc.scanTokenHolders(profile, token.address).then((scan) => ({
+        token: token.address,
+        symbol: token.symbol,
+        network: profile,
+        scan,
+        added: [],
+        members: 0,
+        excluded: [],
+        dryRun: true,
+      }));
+    }
+
+    const report = (r: RescanResult) => {
+      const s = r.scan;
+      const head =
+        `${s.holders.length} addresses hold ${r.symbol} on ${r.network.title} (blocks ${s.from}–${s.to}, ${s.logs} transfers read` +
+        `${s.mismatched ? `, ${s.mismatched} balances differ from the logs — balanceOf wins` : ""})` +
+        `${s.complete ? "" : " — the scan reached block 0 without accounting for the whole supply, so the list may be short"}.`;
+      if (!r.watchId) {
+        const top = s.holders.slice(0, 10).map((h, i) => `#${i + 1} ${h.address}`).join("\n");
+        return { ok: true, text: `${head}\nLargest:\n${top}`, data: { holders: s.holders.length } };
+      }
+      const verb = r.dryRun ? "would join" : "joined";
+      const added = r.added.length
+        ? `${r.added.length} ${verb} ${r.watchId}: ${r.added.map((a) => `#${a.rank} ${a.address}`).join(", ")}.`
+        : `Nobody new for ${r.watchId}.`;
+      const excluded = r.excluded.length ? ` Excluded, never added: ${r.excluded.join(", ")}.` : "";
+      return {
+        ok: true,
+        text: `${head} ${added} ${r.members} watched; nobody was removed.${excluded}`,
+        data: { watch: r.watchId, added: r.added.map((a) => a.address), members: r.members, holders: s.holders.length },
+      };
+    };
+
+    const timeout = Symbol("timeout");
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const first = await Promise.race([
+      job,
+      new Promise<typeof timeout>((resolve) => {
+        timer = setTimeout(() => resolve(timeout), RESCAN_WAIT_MS);
+      }),
+    ]).catch((err: Error) => err);
+    clearTimeout(timer);
+    if (first instanceof Error) return { ok: false, text: `Holder scan failed: ${first.message.split("\n")[0]}` };
+    if (first !== timeout) return report(first);
+
+    job
+      .then((r) => svc.tellOperator(r.watchId && !r.dryRun ? holdersLine(r) : escapeHtml(report(r).text)))
+      .catch((err: Error) =>
+        svc.tellOperator(`👥 holder scan${watchId ? ` for ${watchId}` : ""} failed: ${escapeHtml(err.message.split("\n")[0])}`),
+      )
+      .catch((err: Error) => log.warn(`holder scan report not delivered: ${err.message}`));
+    return {
+      ok: true,
+      text: `The scan is long (the first one reads the token's whole history); it continues in the background and the result goes to Telegram.`,
+      data: { background: true },
+    };
+  },
+};
+
 const scheduleBriefAction: Action = {
   name: "schedule_brief",
   similes: ["morning_brief_schedule", "daily_brief", "set_brief", "cancel_brief"],
@@ -1170,6 +1485,7 @@ export const sentinelPlugin: Plugin = {
     watchBalanceAction,
     watchWalletAction,
     watchWalletsAction,
+    rescanHoldersAction,
     scheduleBriefAction,
     briefNowAction,
     listWatchesAction,
