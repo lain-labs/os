@@ -698,6 +698,7 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
       model,
       switchable: Boolean(switchable),
       say: (text: string) => pushHistory(sysTurn(text)),
+      reply: (text: string) => pushHistory({ id: nextId(), role: "lain", parts: [{ kind: "text", text }], at: Date.now() }),
       copyOut,
       lastReply,
       // The flat feed is rebuilt from history, so a clear is just state.

@@ -524,6 +524,39 @@ and secret values loaded from the environment.
     (`NVDA·1a2b`).
   - The same from a shell, e.g. a full-history first pass that fills the cache:
     `npm run wallets -- snapshot --file holders.csv --network robinhood --from-block 0`.
+- **digest** — portfolio-aware briefings over *every* token the chain's
+  explorer lists (the operator holds them all). Each token is mapped to its
+  underlying — a T-Capital fund, gold, the rouble, a coin, a brand it is named
+  after, or a coin of the chain itself — and the digest reads, for each:
+  - the underlying's daily move: CoinGecko (coins), Yahoo (gold, silver, SPY),
+    the Bank of Russia (the rouble), MOEX ISS (T-Capital funds, board TQBR;
+    the previous close before the session opens);
+  - the token's own DEX price and pool depth on the chain, and its holder
+    count, against the last digest;
+  - the last 36 hours of news on the underlying (Google News, in Russian or
+    English per asset; nothing shown twice).
+
+  The model writes it for those holdings — the day in two sentences, markets
+  by group, on-chain moves that stand out, at most a dozen news bullets with
+  links — using only numbers from the material. News reaches the model as ids
+  and the real links are put back afterwards, so a source cannot be invented.
+  The material of the last digest is kept in `data/digest-material.txt`.
+
+  ```bash
+  /digest              # TUI or Telegram: write it now (two or three minutes)
+  /digest at 09:00     # daily, to the operator's Telegram (daemon) — or LAINOS_DIGEST_AT
+  /digest off
+  ```
+
+  Lain has `portfolio_digest`, `schedule_digest`, and `digest_assets` (show the
+  token → underlying map, leave tokens out, or correct a token's news
+  searches). Known underlyings are built in; the rest are classified once by
+  the model and cached in `data/digest-assets.json`. LP shares and lending
+  receipts are left out. The digest is written by the operator's own chat
+  provider (`LAINOS_DIGEST_TASK=analysis` routes it like other analysis, with a
+  fallback to chat when that route fails); `LAINOS_DIGEST_NETWORK` names a
+  network other than the active one; `LAINOS_DIGEST_LANG` the language
+  (default Russian).
 - **sentinel** — background chain watches, so the agent is useful even while
   nobody is talking to it:
   - `watch_balance` — watch an address (native currency or a token) and alert

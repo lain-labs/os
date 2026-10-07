@@ -27,6 +27,7 @@ import {
   switchNetwork,
 } from "../../plugins/chain/networks.js";
 import { writeSettings } from "../../plugins/system/settings.js";
+import { digestCommand } from "../../plugins/digest/index.js";
 
 /** Where /login points — same host install.sh offers a free API key from. */
 const LAIN_OS_URL = "https://lain-os.com";
@@ -44,6 +45,8 @@ export type CommandCtx = {
   switchable: boolean;
   /** Print a system turn into the transcript. */
   say: (text: string) => void;
+  /** Print Markdown as one of lain's own replies (rendered, copyable). */
+  reply: (markdown: string) => void;
   copyOut: (text: string, what: string) => void;
   lastReply: () => string;
   clear: () => void;
@@ -196,6 +199,21 @@ export const COMMANDS: readonly Command[] = [
           Math.max(0, all.findIndex((n) => n.chainId === now?.chainId && n.rpcUrl === now?.rpcUrl)),
         );
       })();
+    },
+  },
+  {
+    name: "/digest",
+    desc: "portfolio digest now — /digest at 09:00 | off",
+    help: "the portfolio digest: market moves, on-chain moves and news for every token — /digest at HH:MM schedules it, /digest off stops it",
+    aliases: ["/brief"],
+    run: (ctx) => {
+      if (!ctx.runtime.getService("digest")) return ctx.say("the digest plugin is not loaded.");
+      const schedule = ctx.args.length > 0;
+      if (!schedule) ctx.say("собираю дайджест — пара минут…");
+      void digestCommand(ctx.runtime, ctx.args).then(
+        (text) => (schedule ? ctx.say(text) : ctx.reply(text)),
+        (err: Error) => ctx.say(`дайджест не собрался: ${err.message}`),
+      );
     },
   },
   {

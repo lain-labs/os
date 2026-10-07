@@ -14,6 +14,7 @@ import {
 import { TASKS, TaskKind, isTaskKind } from "../models/tasks.js";
 import { formatForgeJobs, type ForgeService } from "../plugins/forge/index.js";
 import { describeNetworks, switchNetwork } from "../plugins/chain/networks.js";
+import { digestCommand } from "../plugins/digest/index.js";
 import { writeSettings } from "../plugins/system/settings.js";
 import { htmlToText, replyKeyboard } from "../plugins/telegram/index.js";
 import { markdownToTelegramHtml } from "./telegram-format.js";
@@ -117,6 +118,7 @@ const HELP_TEXT = [
   "  · /tasks — which model answers which kind of work (/tasks <kind> <provider[:model]> re-routes one)",
   "  · /model — who answers you now, and switch (/model free — the free pool)",
   "  · /network — which chain i'm on (/network robinhood switches)",
+  "  · /digest — portfolio digest now (/digest at 09:00 — daily, /digest off)",
   "",
   "try: \"watch 0x… and warn me below 5\"",
 ].join("\n");
@@ -365,6 +367,23 @@ export class TelegramClient {
     }
     if (cmd === "/jobs") {
       await this.showForgeJobs(chatId, content.split(/\s+/).slice(1));
+      return;
+    }
+    if (cmd === "/digest" || cmd === "/brief") {
+      const args = content.split(/\s+/).slice(1);
+      if (!this.runtime.getService("digest")) {
+        await this.sendChunked(chatId, "the digest plugin is not loaded.");
+        return;
+      }
+      if (!args.length) await this.sendChunked(chatId, "собираю дайджест — пара минут…");
+      const typing = this.keepTyping(chatId);
+      try {
+        await this.sendChunked(chatId, await digestCommand(this.runtime, args), { markdown: true });
+      } catch (err) {
+        await this.sendChunked(chatId, `дайджест не собрался: ${(err as Error).message}`);
+      } finally {
+        typing();
+      }
       return;
     }
     if (cmd === "/network" || cmd === "/chain") {

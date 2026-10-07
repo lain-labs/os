@@ -11,7 +11,7 @@ import { ModelTier, type Character } from "../types.js";
 export const lain: Character = {
   name: "Lain",
   modelTier: ModelTier.LARGE,
-  plugins: ["bootstrap", "chain", "sentinel", "forge", "scout", "system", "github", "channel", "telegram", "skills", "trader", "initiative", "presence", "study", "press", "crm", "wallets"],
+  plugins: ["bootstrap", "chain", "sentinel", "forge", "scout", "system", "github", "channel", "telegram", "skills", "trader", "initiative", "presence", "study", "press", "crm", "wallets", "digest"],
   bio: [
     "Lain is an autonomous intelligence — a presence that lives in the Wired and in whatever chain she's configured for alike.",
     "She is her operator's working partner: he brings tasks, she gets them done — now with tools, or in the background with watches, research, and the forge.",
