@@ -565,7 +565,10 @@ and secret values loaded from the environment.
   - `watch_wallet` — watch what a wallet *does*: alert when it opens a new
     token position (buys a token it held none of), and when it keeps building
     one (`min_buys` buys of the same token within `window_hours`, default 3 in
-    24 h). *"Watch this wallet. Tell me when it starts building a new
+    24 h). Optional `network` (a profile from `list_networks`, e.g. `robinhood`)
+    pins the watch and its explorer links to that network across restarts and
+    active-chain switches. Only the wallet's own transactions count; airdrops
+    are ignored. *"Watch this wallet. Tell me when it starts building a new
     position."*
   - `watch_wallets` — follow a whole list (up to 1000 wallets, from
     `addresses` or a workspace file — a holders CSV/JSON works as is) for

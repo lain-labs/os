@@ -18,10 +18,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Address } from "viem";
-import { SentinelService, type Alert } from "../src/plugins/sentinel/index.js";
+import { SentinelService, sentinelPlugin, type Alert } from "../src/plugins/sentinel/index.js";
+import { currentProfile, switchNetwork } from "../src/plugins/chain/networks.js";
 import type { ActivitySource, RawTransfer } from "../src/plugins/sentinel/activity.js";
 import { briefMaterial } from "../src/plugins/sentinel/brief.js";
-import type { IAgentRuntime } from "../src/types.js";
+import type { IAgentRuntime, State } from "../src/types.js";
 
 const results: [string, boolean][] = [];
 const check = (name: string, pass: boolean) => results.push([name, pass]);
@@ -214,6 +215,71 @@ head += 1n;
 await again.tick(now + 60_000);
 check("cursors survive a restart (no rescan, no repeats)", quiet.length === 0);
 await again.stop();
+
+// 8. A position watch owns its network, cursor, buys and explorer across switches/restarts.
+const settings: Record<string, string> = {
+  LAINOS_DATA_DIR: join(tmp, "networks"),
+  CHAIN_RPC_URL: "https://rpc.cyberia.church",
+  CHAIN_ID: "49406",
+  CHAIN_NAME: "Cyberia",
+};
+let networkSvc = new SentinelService();
+const networkRuntime = {
+  getSetting: (key: string) => settings[key],
+  getService: (name: string) => name === "sentinel" ? networkSvc : undefined,
+} as unknown as IAgentRuntime;
+const watchWallet = sentinelPlugin.actions!.find((a) => a.name === "watch_wallet")!;
+const watch = (params: Record<string, unknown>) => watchWallet.handler(networkRuntime, {} as State, params);
+const networkAlerts: Alert[] = [];
+const attachSources = () => {
+  networkSvc.activitySource = source;
+  networkSvc.networkActivitySource = (profile) => {
+    if (profile.name !== "robinhood") throw new Error("wrong network");
+    return source;
+  };
+  networkSvc.onAlert((a) => networkAlerts.push(a));
+};
+attachSources();
+await networkSvc.start(networkRuntime);
+check("unknown network is rejected without creating a watch", !(await watch({ address: W1, network: "missing" })).ok && networkSvc.listWatches().length === 0);
+check("watch_wallet accepts a named network", (await watch({ address: W1, network: "Robinhood Chain" })).ok);
+check("watch creation leaves Cyberia active", currentProfile(networkRuntime)?.name === "cyberia");
+const namedWatch = networkSvc.listWatches()[0];
+check("watch stores canonical network name", namedWatch.network === "robinhood");
+await watch({ address: W1 });
+check("omitted network retains legacy active-chain behavior", networkSvc.listWatches()[1].network === undefined);
+await networkSvc.tick(now);
+head += 1n;
+receive(W1, TOKA, 10n);
+await networkSvc.tick(now + 1_000);
+const robinAlerts = () => networkAlerts.filter((a) => a.watchId === namedWatch.id);
+check("Robinhood new position alerts while Cyberia stays active", robinAlerts().length === 1 && /opened a new position/.test(robinAlerts()[0].text) && currentProfile(networkRuntime)?.name === "cyberia");
+check("alert links use the watch network's explorer", /https:\/\/robinhoodchain.blockscout.com\/tx\/0x/.test(robinAlerts()[0]?.text ?? ""));
+head += 1n;
+receive(W1, TOKA, 5n);
+receive(W1, TOKC, 5n, STRANGER);
+await networkSvc.tick(now + 2_000);
+check("airdrop and buys on another network do not trigger accumulation", robinAlerts().length === 1);
+await networkSvc.stop();
+networkSvc = new SentinelService();
+attachSources();
+await networkSvc.start(networkRuntime);
+check("watch network survives restart", networkSvc.listWatches()[0].network === "robinhood");
+await networkSvc.tick(now + 3_000);
+check("network cursor survives restart without replay", robinAlerts().length === 1);
+const switched = await switchNetwork(networkRuntime, "robinhood-testnet", async (_runtime, entries) => {
+  Object.assign(settings, entries);
+  return { file: "in-memory settings" };
+}, async () => 500n);
+check("switch_network succeeds with an offline probe", switched.ok && currentProfile(networkRuntime)?.name === "robinhood-testnet");
+// An unavailable active chain must not prevent an independent network scan.
+networkSvc.activitySource = { ...source, head: async () => { throw new Error("active chain offline"); } };
+head += 1n;
+receive(W1, TOKA, 5n);
+await networkSvc.tick(now + 4_000);
+check("repeated buys survive restart and switch_network even if active RPC fails", robinAlerts().length === 2 && /keeps building TOKA on Robinhood Chain: 3 buys/.test(robinAlerts()[1].text));
+check("accumulation link stays on Robinhood after switching", /robinhoodchain.blockscout.com\/tx\//.test(robinAlerts()[1]?.text ?? ""));
+await networkSvc.stop();
 
 await rm(tmp, { recursive: true, force: true });
 

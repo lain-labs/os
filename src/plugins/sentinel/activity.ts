@@ -15,9 +15,10 @@
  * The chain is reached through {@link ActivitySource}, so the detection logic
  * and the rules built on it (accumulation, convergence) are testable offline.
  */
-import { formatUnits, parseAbiItem, type Address } from "viem";
+import { erc20Abi, formatUnits, parseAbiItem, type Address, type PublicClient } from "viem";
 import { sameAddress } from "../chain/math.js";
 import type { ChainService } from "../chain/index.js";
+import { networkClient, type NetworkProfile } from "../chain/networks.js";
 
 export interface RawTransfer {
   token: Address;
@@ -53,6 +54,8 @@ export interface WalletMove {
   tx: string;
   block: string;
   at: number;
+  /** Network profile name when read off a watch's own network; absent = the active chain. */
+  network?: string;
 }
 
 /** Most transactions per wallet per tick whose sender is looked up. */
@@ -160,7 +163,37 @@ const TRANSFER = parseAbiItem("event Transfer(address indexed from, address inde
 
 /** The live chain behind {@link ActivitySource}. */
 export function chainActivitySource(chain: ChainService): ActivitySource {
-  const pc = chain.publicClient;
+  return {
+    ...clientActivitySource(chain.publicClient),
+    balance: (token, wallet) => chain.rawTokenBalance(token, wallet),
+    ignored() {
+      try {
+        return [chain.dex.wrappedNative];
+      } catch {
+        return [];
+      }
+    },
+  };
+}
+
+/** A network profile's RPC behind {@link ActivitySource} — no active chain needed. */
+export function profileActivitySource(profile: NetworkProfile, pc: PublicClient = networkClient(profile)): ActivitySource {
+  const wrapped = profile.dexWrappedNative?.trim();
+  return {
+    ...clientActivitySource(pc),
+    async balance(token, wallet) {
+      const [raw, decimals, symbol] = await Promise.all([
+        pc.readContract({ address: token, abi: erc20Abi, functionName: "balanceOf", args: [wallet] }),
+        pc.readContract({ address: token, abi: erc20Abi, functionName: "decimals" }),
+        pc.readContract({ address: token, abi: erc20Abi, functionName: "symbol" }).catch(() => "TOKEN"),
+      ]);
+      return { raw, decimals: Number(decimals), symbol };
+    },
+    ignored: () => (wrapped ? [wrapped as Address] : []),
+  };
+}
+
+function clientActivitySource(pc: PublicClient): Pick<ActivitySource, "head" | "transfers" | "txSender"> {
   return {
     head: () => pc.getBlockNumber(),
     async transfers(wallet, fromBlock, toBlock) {
@@ -181,14 +214,6 @@ export function chainActivitySource(chain: ChainService): ActivitySource {
     async txSender(hash) {
       const tx = await pc.getTransaction({ hash: hash as `0x${string}` });
       return tx.from;
-    },
-    balance: (token, wallet) => chain.rawTokenBalance(token, wallet),
-    ignored() {
-      try {
-        return [chain.dex.wrappedNative];
-      } catch {
-        return [];
-      }
     },
   };
 }

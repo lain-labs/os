@@ -19,6 +19,7 @@ import {
   buysWithin,
   chainActivitySource,
   convergingWallets,
+  profileActivitySource,
   scanWallet,
   type ActivitySource,
   type WalletMove,
@@ -63,7 +64,8 @@ const log = createLogger("plugin:sentinel");
  *
  * Beyond balances, the sentinel watches what wallets *do* (see activity.ts):
  *   - `position` — one wallet; alert when it opens a new position, and when it
- *     keeps buying the same token (accumulation);
+ *     keeps buying the same token (accumulation). It reads the active chain, or
+ *     its own `network` when it names one;
  *   - `cohort` — a group of wallets; alert when several of them buy into the
  *     same asset within a window.
  * And once a day, at the time the operator chose, it writes a *brief*: the
@@ -108,6 +110,8 @@ export interface Watch {
   fired?: Record<string, number>;
   /** wallets: a whole list followed for every change, on its own network. */
   group?: GroupWatch;
+  /** position: network profile name it reads, independent of the active chain; absent = the active chain. */
+  network?: string;
 }
 
 /** A `wallets` watch: every token and native move of every member. */
@@ -220,6 +224,8 @@ export class SentinelService implements Service {
   activitySource?: ActivitySource;
   /** Tests inject a fake reader for `wallets` watches; otherwise the network's RPC. */
   groupSource?: (profile: NetworkProfile) => WalletSource;
+  /** Tests inject a fake chain for `position` watches on their own network; otherwise its RPC. */
+  networkActivitySource?: (profile: NetworkProfile) => ActivitySource;
   /** Tests replace Telegram delivery; otherwise the operator chat via the bot. */
   deliverTelegram?: (html: string) => Promise<void>;
   /** Token metadata per chain, kept across ticks. */
@@ -330,6 +336,7 @@ export class SentinelService implements Service {
     minBuys?: number;
     windowMs?: number;
     group?: GroupWatch;
+    network?: string;
   }): Promise<Watch> {
     this.counter += 1;
     const watch: Watch = {
@@ -344,6 +351,7 @@ export class SentinelService implements Service {
       minBuys: input.minBuys,
       windowMs: input.windowMs,
       ...(input.group ? { group: input.group } : {}),
+      ...(input.network ? { network: input.network } : {}),
       createdAt: Date.now(),
     };
     this.watches.push(watch);
@@ -385,7 +393,28 @@ export class SentinelService implements Service {
           }
         }
       }
-      if (source) dirty = (await this.scanActivity(source, now)) || dirty;
+      if (source) {
+        try {
+          dirty = (await this.scanActivity(source, now)) || dirty;
+        } catch (err) {
+          log.warn(`active-chain activity scan failed: ${(err as Error).message?.split("\n")[0]}`);
+        }
+      }
+      // Position watches on their own network, like group watches, run
+      // whatever chain is active here.
+      for (const name of this.activityNetworks()) {
+        const profile = this.runtime ? await findNetwork(this.runtime, name) : null;
+        if (!profile) {
+          log.warn(`position watch on unknown network "${name}"`);
+          continue;
+        }
+        try {
+          const src = this.networkActivitySource ? this.networkActivitySource(profile) : profileActivitySource(profile);
+          dirty = (await this.scanActivity(src, now, profile)) || dirty;
+        } catch (err) {
+          log.warn(`activity scan on ${profile.name} failed: ${(err as Error).message?.split("\n")[0]}`);
+        }
+      }
       if (dirty) await this.persist();
     } finally {
       this.ticking = false;
@@ -584,23 +613,30 @@ export class SentinelService implements Service {
     else await sendToOperator((k) => runtime.getSetting(k), html, { html: true });
   }
 
-  /** Every wallet an activity watch covers, deduplicated. */
-  private trackedWallets(): Address[] {
+  /** Every wallet an activity watch covers on `network` (absent = the active chain), deduplicated. */
+  private trackedWallets(network?: string): Address[] {
     const out = new Map<string, Address>();
     for (const w of this.watches) {
-      if (w.kind === "position") out.set(w.address.toLowerCase(), w.address);
-      if (w.kind === "cohort") for (const m of w.members ?? []) out.set(m.toLowerCase(), m);
+      if (w.kind === "position" && w.network === network) out.set(w.address.toLowerCase(), w.address);
+      if (w.kind === "cohort" && !network) for (const m of w.members ?? []) out.set(m.toLowerCase(), m);
     }
     return [...out.values()];
+  }
+
+  /** Networks that position watches name for themselves. */
+  private activityNetworks(): string[] {
+    return [...new Set(this.watches.flatMap((w) => (w.kind === "position" && w.network ? [w.network] : [])))];
   }
 
   /**
    * Read new transfers for each tracked wallet and apply the activity rules.
    * A wallet seen for the first time starts at the chain head — a new watch
-   * reports what happens from now on, not a replay of its history.
+   * reports what happens from now on, not a replay of its history. With a
+   * `profile`, only the watches on that network, with cursors of their own.
    */
-  private async scanActivity(src: ActivitySource, now: number): Promise<boolean> {
-    const wallets = this.trackedWallets();
+  private async scanActivity(src: ActivitySource, now: number, profile?: NetworkProfile): Promise<boolean> {
+    const network = profile?.name;
+    const wallets = this.trackedWallets(network);
     if (!wallets.length) return false;
     const head = await src.head();
     const maxSpan = BigInt(Math.max(1, Number(this.runtime?.getSetting("LAINOS_SENTINEL_MAX_BLOCKS") ?? 2_000)));
@@ -608,7 +644,7 @@ export class SentinelService implements Service {
     const fresh: WalletMove[] = [];
 
     for (const wallet of wallets) {
-      const key = wallet.toLowerCase();
+      const key = network ? `${network}:${wallet.toLowerCase()}` : wallet.toLowerCase();
       const cursor = this.cursors[key];
       if (cursor === undefined) {
         this.cursors[key] = head.toString();
@@ -623,7 +659,8 @@ export class SentinelService implements Service {
       }
       try {
         const transfers = await src.transfers(wallet, from, head);
-        fresh.push(...(await scanWallet(src, wallet, transfers, now)));
+        const moves = await scanWallet(src, wallet, transfers, now);
+        fresh.push(...(network ? moves.map((m) => ({ ...m, network })) : moves));
         this.cursors[key] = head.toString();
         dirty = true;
       } catch (err) {
@@ -635,36 +672,38 @@ export class SentinelService implements Service {
       this.moves = [...this.moves, ...fresh]
         .filter((m) => now - m.at <= MOVE_RETENTION_MS)
         .slice(-MOVE_CAP);
-      for (const move of fresh) this.applyActivityRules(move, now);
+      for (const move of fresh) this.applyActivityRules(move, now, profile);
     }
     return dirty;
   }
 
-  private applyActivityRules(move: WalletMove, now: number): void {
+  private applyActivityRules(move: WalletMove, now: number, profile?: NetworkProfile): void {
     if (move.side !== "buy") return;
+    // Only moves read on the same chain count toward one rule.
+    const moves = this.moves.filter((m) => m.network === move.network);
     for (const watch of this.watches) {
       const windowMs = watch.windowMs ?? DAY_MS;
-      if (watch.kind === "position" && sameWallet(watch.address, move.wallet)) {
+      if (watch.kind === "position" && watch.network === move.network && sameWallet(watch.address, move.wallet)) {
         const who = this.labelFor(move.wallet);
         if (move.fresh) {
           this.fire(
             watch,
-            `${who} opened a new position: ${move.amount} ${move.symbol} (${move.token}).${this.txSuffix(move.tx)}`,
+            `${who} opened a new position: ${move.amount} ${move.symbol} (${move.token})${onNetwork(profile)}.${this.txSuffix(move.tx, profile)}`,
           );
           continue;
         }
-        const buys = buysWithin(this.moves, move.wallet, move.token, windowMs, now);
+        const buys = buysWithin(moves, move.wallet, move.token, windowMs, now);
         const minBuys = watch.minBuys ?? 3;
         if (buys.length >= minBuys && this.once(watch, `build:${move.token.toLowerCase()}`, windowMs, now)) {
           this.fire(
             watch,
-            `${who} keeps building ${move.symbol}: ${buys.length} buys in ${hours(windowMs)}, now holds ${move.balance}.${this.txSuffix(move.tx)}`,
+            `${who} keeps building ${move.symbol}${onNetwork(profile)}: ${buys.length} buys in ${hours(windowMs)}, now holds ${move.balance}.${this.txSuffix(move.tx, profile)}`,
           );
         }
       }
-      if (watch.kind === "cohort" && watch.members?.some((m) => sameWallet(m, move.wallet))) {
+      if (watch.kind === "cohort" && !move.network && watch.members?.some((m) => sameWallet(m, move.wallet))) {
         const members = watch.members;
-        const buyers = convergingWallets(this.moves, members, move.token, windowMs, now);
+        const buyers = convergingWallets(moves, members, move.token, windowMs, now);
         const min = watch.minWallets ?? Math.min(3, members.length);
         if (buyers.length >= min && this.once(watch, `conv:${move.token.toLowerCase()}`, windowMs, now)) {
           const group = watch.note ?? `cohort ${watch.id}`;
@@ -694,8 +733,11 @@ export class SentinelService implements Service {
     return named ? `${named.note} (${short})` : short;
   }
 
-  private txSuffix(hash: string): string {
-    const url = this.runtime?.getService<ChainService>("chain")?.explorerTxUrl(hash);
+  /** A tx link on the watch's own network's explorer, else the active chain's. */
+  private txSuffix(hash: string, profile?: NetworkProfile): string {
+    const url = profile
+      ? explorerLinks(profile).tx(hash)
+      : this.runtime?.getService<ChainService>("chain")?.explorerTxUrl(hash);
     return url ? ` ${url}` : "";
   }
 
@@ -874,6 +916,11 @@ function sameWallet(a: string, b: string): boolean {
   return a.toLowerCase() === b.toLowerCase();
 }
 
+/** " on Robinhood Chain" for a move read off a watch's own network. */
+function onNetwork(profile: NetworkProfile | undefined): string {
+  return profile ? ` on ${profile.title}` : "";
+}
+
 function hours(ms: number): string {
   const h = ms / 3_600_000;
   return h >= 1 && Number.isInteger(h) ? `${h}h` : `${Math.round(ms / 60_000)}m`;
@@ -955,7 +1002,7 @@ export function describeWatch(w: Watch, nativeSymbol: string): string {
   }
   const window = hours(w.windowMs ?? DAY_MS);
   if (w.kind === "position") {
-    return `${w.id}: activity of ${w.address} — new positions, and ${w.minBuys ?? 3}+ buys of one token in ${window}${note}`;
+    return `${w.id}: activity of ${w.address}${w.network ? ` on ${w.network}` : ""} — new positions, and ${w.minBuys ?? 3}+ buys of one token in ${window}${note}`;
   }
   if (w.kind === "cohort") {
     const members = w.members ?? [];
@@ -1111,7 +1158,8 @@ const watchWalletAction: Action = {
   name: "watch_wallet",
   similes: ["track_wallet", "follow_wallet", "watch_positions", "copy_watch"],
   description:
-    "Watch what a wallet DOES, in the background: alert when it opens a new token position (buys a token it held none of), and when it keeps building one (several buys of the same token within a window). Only the wallet's own transactions count; airdrops are ignored. Use for 'tell me when this wallet starts building a position'. For balance thresholds use watch_balance instead.",
+    "Watch what a wallet DOES, in the background: alert when it opens a new token position (buys a token it held none of), and when it keeps building one (several buys of the same token within a window). Only the wallet's own transactions count; airdrops are ignored. Use for 'tell me when this wallet starts building a position'. " +
+    "Runs on any known network (`network`, e.g. robinhood) without switching the active chain. For balance thresholds use watch_balance instead.",
   parameters: {
     type: "object",
     properties: {
@@ -1122,6 +1170,7 @@ const watchWalletAction: Action = {
         description: "Buys of one token within the window that count as building a position. Default 3.",
       },
       window_hours: { type: "number", description: "Look-back window for repeated buys. Default 24." },
+      network: { type: "string", description: "Network profile (list_networks), e.g. 'robinhood'. Default: the active chain." },
     },
     required: ["address"],
   },
@@ -1139,17 +1188,23 @@ const watchWalletAction: Action = {
     if (windowMs === null) return { ok: false, text: "window_hours must be between 0 and 720." };
     const minBuys = params.min_buys !== undefined ? Math.round(Number(params.min_buys)) : 3;
     if (!Number.isFinite(minBuys) || minBuys < 2) return { ok: false, text: "min_buys must be 2 or more." };
+    let network: NetworkProfile | null = null;
+    if (params.network) {
+      network = await findNetwork(runtime, String(params.network));
+      if (!network) return { ok: false, text: `No network "${String(params.network)}" — list_networks shows the known ones.` };
+    }
     const watch = await svc.addWatch({
       address: address as Address,
       kind: "position",
       note: params.note ? String(params.note) : undefined,
       minBuys,
       windowMs,
+      network: network?.name,
     });
     return {
       ok: true,
       text: `Watching now — ${describeWatch(watch, "")}. I report from the next block on, not its history.`,
-      data: { watch: { ...watch } },
+      data: { watch: { ...watch }, ...(network ? { network: network.name } : {}) },
     };
   },
 };
