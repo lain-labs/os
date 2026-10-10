@@ -27,6 +27,9 @@ import {
 
 const log = createLogger("runtime");
 
+/** Reply budget a tool round gets when its tool call was cut off at the normal one. */
+const ROOMY_TOOL_BUDGET = 8192;
+
 /**
  * Default bound on think→act rounds within one turn (LAINOS_MAX_TOOL_ROUNDS).
  * Six cut real work in half: the turn ended on "next I will…" and the operator
@@ -689,7 +692,7 @@ export class AgentRuntime implements IAgentRuntime {
       try {
         const res = await this.model.stream(request, onText);
         await this.finishModelTranscriptCall(transcript, call, res);
-        return res;
+        return await this.withRoomForTools(request, res, transcript, phase);
       } catch (err) {
         await this.finishModelTranscriptCall(transcript, call, undefined, err);
         log.warn("model stream failed, falling back to generate", err);
@@ -702,10 +705,38 @@ export class AgentRuntime implements IAgentRuntime {
       const res = await this.model.generate(request);
       if (res.text) onText(res.text);
       await this.finishModelTranscriptCall(transcript, fallbackCall, res);
-      return res;
+      return await this.withRoomForTools(request, res, transcript, phase);
     } catch (err) {
       await this.finishModelTranscriptCall(transcript, fallbackCall, undefined, err);
       throw err;
+    }
+  }
+
+  /**
+   * The reply budget is sized for prose (the /effort knob), but a tool call can
+   * carry a whole skill module. When a reply with a tool call hit the budget,
+   * its arguments were cut off — ask once more with room for them. The first
+   * reply's text has already streamed, so the retry is not streamed again.
+   */
+  private async withRoomForTools(
+    request: ModelRequest,
+    res: ModelResponse,
+    transcript: TurnTranscript | null | undefined,
+    phase: string,
+  ): Promise<ModelResponse> {
+    const budget = request.maxTokens ?? this.maxTokens;
+    if (!res.truncated || !res.toolCalls.length || budget >= ROOMY_TOOL_BUDGET) return res;
+    const roomier = { ...request, maxTokens: Math.max(budget * 4, ROOMY_TOOL_BUDGET) };
+    log.warn(`a tool call was cut off at ${budget} tokens — asking again with ${roomier.maxTokens}`);
+    const call = this.beginModelTranscriptCall(transcript, roomier, `${phase}-roomier`);
+    try {
+      const retry = await this.model.generate(roomier);
+      await this.finishModelTranscriptCall(transcript, call, retry);
+      return retry;
+    } catch (err) {
+      await this.finishModelTranscriptCall(transcript, call, undefined, err);
+      log.warn("roomier retry failed; keeping the cut-off reply", err);
+      return res;
     }
   }
 

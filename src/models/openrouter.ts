@@ -50,7 +50,7 @@ interface ORMessage {
   tool_calls?: ORToolCall[];
 }
 interface ORResponse {
-  choices?: { message?: ORMessage }[];
+  choices?: { message?: ORMessage; finish_reason?: string | null }[];
   error?: { message?: string };
   /** The model that answered. OpenRouter resolves `openrouter/free` here. */
   model?: string;
@@ -73,6 +73,7 @@ interface ORStreamChunk {
       reasoning_content?: string | null;
       tool_calls?: { index?: number; function?: { name?: string; arguments?: string } }[];
     };
+    finish_reason?: string | null;
   }[];
 }
 
@@ -329,16 +330,17 @@ export class OpenRouterModelProvider implements ModelProvider {
     const msg = data.choices?.[0]?.message ?? {};
     // msg.reasoning / msg.reasoning_content are deliberately dropped.
     const text = stripReasoning((msg.content ?? "") || "");
-    const toolCalls = (msg.tool_calls ?? [])
-      .filter((tc) => tc.function?.name)
-      .map((tc) => ({
-        name: tc.function!.name as string,
-        input: safeParseArgs(tc.function?.arguments),
-      }));
+    const calls = (msg.tool_calls ?? []).filter((tc) => tc.function?.name);
+    const toolCalls = calls.map((tc) => ({
+      name: tc.function!.name as string,
+      input: safeParseArgs(tc.function?.arguments),
+    }));
 
     const served = servedBy(model, data);
     if (served.model !== model) log.debug(`${model} was served by ${served.model}`);
-    return { text, toolCalls, model: served.model, provider: this.name, upstream: served.upstream };
+    const truncated =
+      data.choices?.[0]?.finish_reason === "length" || calls.some((tc) => argsCutOff(tc.function?.arguments));
+    return { text, toolCalls, model: served.model, provider: this.name, upstream: served.upstream, truncated };
   }
 
   async stream(
@@ -399,6 +401,7 @@ export class OpenRouterModelProvider implements ModelProvider {
     let provenance: { model?: string; provider?: string; served_by?: string } = {};
     const thinkFilter = new ThinkTagFilter();
     const toolAcc: Record<number, { name?: string; args: string }> = {};
+    let finishReason: string | null | undefined;
 
     for (;;) {
       const { done, value } = await reader.read();
@@ -425,6 +428,7 @@ export class OpenRouterModelProvider implements ModelProvider {
             served_by: chunk.served_by ?? provenance.served_by,
           };
         }
+        if (chunk.choices?.[0]?.finish_reason) finishReason = chunk.choices[0].finish_reason;
         const delta = chunk.choices?.[0]?.delta;
         if (!delta) continue;
         // delta.reasoning / delta.reasoning_content are deliberately dropped.
@@ -449,9 +453,8 @@ export class OpenRouterModelProvider implements ModelProvider {
       onText(rest);
     }
 
-    const toolCalls = Object.values(toolAcc)
-      .filter((t) => t.name)
-      .map((t) => ({ name: t.name as string, input: safeParseArgs(t.args) }));
+    const calls = Object.values(toolAcc).filter((t) => t.name);
+    const toolCalls = calls.map((t) => ({ name: t.name as string, input: safeParseArgs(t.args) }));
 
     const served = servedBy(model, provenance);
     return {
@@ -460,7 +463,19 @@ export class OpenRouterModelProvider implements ModelProvider {
       model: served.model,
       provider: this.name,
       upstream: served.upstream,
+      truncated: finishReason === "length" || calls.some((t) => argsCutOff(t.args)),
     };
+  }
+}
+
+/** Tool-call arguments that were started but are not valid JSON: cut off mid-call. */
+function argsCutOff(raw: string | undefined): boolean {
+  if (!raw?.trim()) return false;
+  try {
+    JSON.parse(raw);
+    return false;
+  } catch {
+    return true;
   }
 }
 

@@ -225,6 +225,12 @@ export interface ModelResponse {
    * the provider *is* the runner.
    */
   upstream?: string;
+  /**
+   * The reply ran into its token budget. With a tool call in it, the call's
+   * arguments were cut off (a skill module longer than the budget arrives as
+   * `{}`), so the runtime asks again with more room.
+   */
+  truncated?: boolean;
 }
 
 export interface ModelProvider {

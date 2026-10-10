@@ -13,13 +13,17 @@
  *   6. a sentinel-triggered routine receives the alert as params.event;
  *   7. routines refuse execute/confirm arguments and unknown skills, and pause
  *      after five failures in a row;
- *   8. a routine created by one process is visible to another (shared store).
+ *   8. a routine created by one process is visible to another (shared store);
+ *   9. a skill whose code was cut off by the reply budget is asked for again
+ *      with room, instead of arriving as an empty create_skill.
  *
  * Run: npm run skills:smoke
  */
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { AgentRuntime, FileMemoryStore, type ModelProvider, type ModelRequest } from "../src/index.js";
+import { lain } from "../src/characters/lain.js";
 import { skillsPlugin, SkillsService } from "../src/plugins/skills/index.js";
 import { isDue, parseInterval, RoutineService, type RoutineEvent } from "../src/plugins/skills/routines.js";
 import type { Action, IAgentRuntime, State } from "../src/types.js";
@@ -181,6 +185,38 @@ check("parseInterval reads 15m / 2h / 1d", parseInterval("15m") === 900_000 && p
 
 await routines.stop();
 await skills.stop();
+
+// 9. a tool call cut off by the reply budget is asked for again with room
+const budgets: number[] = [];
+const cutModel: ModelProvider = {
+  name: "cut-stub",
+  modelFor: () => "cut-stub",
+  async generate(request: ModelRequest) {
+    budgets.push(request.maxTokens ?? 0);
+    if (budgets.length === 1) {
+      // What a provider returns when the module did not fit: the call, with its arguments lost.
+      return { text: "", toolCalls: [{ name: "create_skill", input: {} }], model: "cut-stub", truncated: true };
+    }
+    if (budgets.length === 2) {
+      return { text: "", toolCalls: [{ name: "create_skill", input: { name: "roomy_tool", code: v1.replace(/holder_share/g, "roomy_tool") } }], model: "cut-stub" };
+    }
+    return { text: "built it", toolCalls: [], model: "cut-stub" };
+  },
+};
+const cutDir = join(tmp, "cut");
+const cutRuntime = new AgentRuntime({
+  character: lain,
+  memory: new FileMemoryStore(cutDir),
+  model: cutModel,
+  settings: { LAINOS_DATA_DIR: cutDir, LAINOS_SKILLS_DIR: join(cutDir, "skills"), LAINOS_MODEL_TRANSCRIPTS: "0" },
+});
+cutRuntime.use({ ...skillsPlugin, services: [new SkillsService(), new RoutineService()] });
+await cutRuntime.start();
+await cutRuntime.handleMessage({ roomId: "cut", userId: "tester", text: "build me a tool" });
+check("a cut-off tool call is asked for again with an 8192-token budget", budgets[0] === 1024 && budgets[1] === 8192);
+check("…and the full module becomes a live skill", cutRuntime.actions.some((a) => a.name === "roomy_tool"));
+await cutRuntime.stop();
+
 await rm(tmp, { recursive: true, force: true });
 
 let failed = 0;
