@@ -53,6 +53,7 @@ import {
 } from "./layout.js";
 import type { ForgeService } from "../../plugins/forge/index.js";
 import type { ScoutService } from "../../plugins/scout/index.js";
+import type { RoutineService } from "../../plugins/skills/routines.js";
 import { alertLine, type SentinelService } from "../../plugins/sentinel/index.js";
 
 // ------------------------------------------------------------------ model
@@ -376,6 +377,13 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
     const scout = runtime.getService<ScoutService>("scout");
     if (!scout?.onEvent) return;
     return scout.onEvent((ev) => pushHistory(pulseTurn(ev.text)));
+  }, [pushHistory, runtime]);
+
+  // Routine reports (self-written skills on a schedule) too, when routines run in this process.
+  useEffect(() => {
+    const routines = runtime.getService<RoutineService>("routines");
+    if (!routines?.onEvent) return;
+    return routines.onEvent((ev) => pushHistory(pulseTurn(ev.text)));
   }, [pushHistory, runtime]);
 
   const openSkinPicker = useCallback(() => {

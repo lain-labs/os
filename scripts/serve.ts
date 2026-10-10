@@ -7,6 +7,7 @@
  *   - the day's public post, written from the content plan and delivered ready
  *     to publish (press),
  *   - initiative heartbeat + trader loop (daemon-only, see LAINOS_DAEMON),
+ *   - routines: self-written skills run on schedules and sentinel alerts,
  *   - self-restart into freshly forged code after a successful self-upgrade.
  */
 import { resolve } from "node:path";
@@ -19,6 +20,7 @@ import type { ForgeService } from "../src/plugins/forge/index.js";
 import type { GithubStreakService } from "../src/plugins/github/index.js";
 import type { PressService } from "../src/plugins/press/index.js";
 import type { ScoutService } from "../src/plugins/scout/index.js";
+import type { RoutineService } from "../src/plugins/skills/routines.js";
 import { alertLine, type SentinelService } from "../src/plugins/sentinel/index.js";
 import type { TraderService } from "../src/plugins/trader/index.js";
 
@@ -140,6 +142,15 @@ async function main() {
   const scout = agent.getService<ScoutService>("scout");
   if (scout && telegramUp) {
     scout.onEvent((ev) => {
+      if (ev.chatId !== undefined) void telegram.sendTo(ev.chatId, ev.text);
+      else void telegram.broadcast(ev.text);
+    });
+  }
+
+  // Routine reports (self-written skills on schedules and alerts) go to whoever set them up.
+  const routines = agent.getService<RoutineService>("routines");
+  if (routines && telegramUp) {
+    routines.onEvent((ev) => {
       if (ev.chatId !== undefined) void telegram.sendTo(ev.chatId, ev.text);
       else void telegram.broadcast(ev.text);
     });

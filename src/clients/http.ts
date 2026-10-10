@@ -7,6 +7,7 @@ import {
 } from "../models/routing.js";
 import type { ForgeService } from "../plugins/forge/index.js";
 import type { ScoutService } from "../plugins/scout/index.js";
+import type { RoutineService } from "../plugins/skills/routines.js";
 import type { SentinelService } from "../plugins/sentinel/index.js";
 import { buildRecap } from "../memory/recap.js";
 import { TASK_ORDER, isTaskKind } from "../models/tasks.js";
@@ -66,6 +67,11 @@ export function createHttpServer(runtime: IAgentRuntime, opts: HttpOptions = {})
     if (req.method === "GET" && req.url?.startsWith("/research")) {
       const scout = runtime.getService<ScoutService>("scout");
       return json(res, 200, { topics: scout?.listTopics() ?? [] });
+    }
+
+    if (req.method === "GET" && req.url?.startsWith("/routines")) {
+      const routines = runtime.getService<RoutineService>("routines");
+      return json(res, 200, { routines: (await routines?.list()) ?? [] });
     }
 
     // Switching the live daemon (Telegram, sentinel, initiative) between
