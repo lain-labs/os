@@ -15,7 +15,10 @@
  *      after five failures in a row;
  *   8. a routine created by one process is visible to another (shared store);
  *   9. a skill whose code was cut off by the reply budget is asked for again
- *      with room, instead of arriving as an empty create_skill.
+ *      with room, instead of arriving as an empty create_skill;
+ *  10. a reply that blames an outage (an RPC answering 403 behind Cloudflare),
+ *      or says "can't" about something else, is not taken for a missing
+ *      capability: no self-upgrade is forged.
  *
  * Run: npm run skills:smoke
  */
@@ -216,6 +219,52 @@ await cutRuntime.handleMessage({ roomId: "cut", userId: "tester", text: "build m
 check("a cut-off tool call is asked for again with an 8192-token budget", budgets[0] === 1024 && budgets[1] === 8192);
 check("…and the full module becomes a live skill", cutRuntime.actions.some((a) => a.name === "roomy_tool"));
 await cutRuntime.stop();
+
+// 10. an outage is not a missing capability
+const forged: string[] = [];
+const replies = [
+  "r1 is scheduled, but I can't show you its first run: the RPC answered HTTP 403 from Cloudflare.",
+  "r2 is live. It compares the same number r1 does, so the two routines can't contradict each other.",
+];
+const outageModel: ModelProvider = {
+  name: "outage-stub",
+  modelFor: () => "outage-stub",
+  async generate() {
+    return { text: replies.shift() ?? "done", toolCalls: [], model: "outage-stub" };
+  },
+};
+const outageDir = join(tmp, "outage");
+const outageRuntime = new AgentRuntime({
+  character: lain,
+  memory: new FileMemoryStore(outageDir),
+  model: outageModel,
+  settings: { LAINOS_DATA_DIR: outageDir, LAINOS_MODEL_TRANSCRIPTS: "0" },
+});
+outageRuntime.use({
+  name: "forge-stub",
+  description: "records self-upgrades instead of starting a coding agent",
+  actions: [
+    {
+      name: "learn_skill",
+      similes: [],
+      description: "stub",
+      examples: [],
+      async validate() {
+        return true;
+      },
+      async handler(_runtime, _state, params) {
+        forged.push(String(params.title ?? ""));
+        return { ok: true, text: "forged" };
+      },
+    },
+  ],
+});
+await outageRuntime.start();
+await outageRuntime.handleMessage({ roomId: "outage", userId: "tester", text: "make a new test working tool" });
+check("an RPC outage in the reply does not start a self-upgrade", forged.length === 0);
+await outageRuntime.handleMessage({ roomId: "outage", userId: "tester", text: "make a new test working tool" });
+check("a \"can't\" that is not her refusal does not start a self-upgrade", forged.length === 0);
+await outageRuntime.stop();
 
 await rm(tmp, { recursive: true, force: true });
 

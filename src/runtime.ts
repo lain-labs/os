@@ -871,14 +871,18 @@ export class AgentRuntime implements IAgentRuntime {
   }
 
   private isMissingCapabilityRefusal(reply: string): boolean {
-    const text = reply.toLowerCase();
-    return /\b(can't|cannot|unable|not able|no tool|missing (tool|capability)|tools? (are )?(forbidden|disabled|unavailable))\b/i.test(
+    const text = reply.toLowerCase().replace(/[\u2018\u2019]/g, "'");
+    // Her own refusal ("i can't do that", "no tool for it"), not any "can't" in the reply:
+    // "the two routines can't contradict each other" once forged a coding job for a done task.
+    return /(^|[^a-z])(i (can't|cannot|can not|am unable|am not able|have no (tool|way))|i'm (unable|not able)|can't do (it|this|that)|no tool|missing (tool|capability)|tools? (are )?(forbidden|disabled|unavailable))\b/i.test(
       text,
     );
   }
 
   private isExternalBlocker(reply: string): boolean {
-    return /private key|seed phrase|no signer|signer|no wallet|no key|without a key|secret|physically impossible|impossible/i.test(
+    // An outage or a refused request (an RPC behind Cloudflare, a rate limit) is not a missing
+    // capability: forging code for it only rewrites a tool that already works.
+    return /private key|seed phrase|no signer|signer|no wallet|no key|without a key|secret|physically impossible|impossible|\bhttps? (4|5)\d\d\b|\b(403|429|502|503|504)\b|cloudflare|rate.?limit|timed? ?out|unreachable|outage|is down\b/i.test(
       reply,
     );
   }
