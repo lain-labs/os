@@ -315,6 +315,8 @@ export interface IAgentRuntime {
     text: string;
     /** Declare the kind of work instead of letting the classifier guess. */
     task?: TaskKind;
+    /** Stored on the incoming memory (who sent it, as the client matched them). */
+    metadata?: Record<string, unknown>;
   }): Promise<TurnResult>;
 
   /**
@@ -322,7 +324,13 @@ export interface IAgentRuntime {
    * (thinking, text deltas, tool calls). Returns the final turn result.
    */
   handleMessageStream(
-    input: { roomId: string; userId: string; text: string; task?: TaskKind },
+    input: {
+      roomId: string;
+      userId: string;
+      text: string;
+      task?: TaskKind;
+      metadata?: Record<string, unknown>;
+    },
     onEvent: (event: AgentEvent) => void,
   ): Promise<TurnResult>;
 }

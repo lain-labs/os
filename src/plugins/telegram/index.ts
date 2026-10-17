@@ -4,7 +4,8 @@ import { fetch as undiciFetch, ProxyAgent } from "undici";
 import { splitMessage } from "../../clients/telegram.js";
 import { markdownToTelegramHtml } from "../../clients/telegram-format.js";
 import { createLogger } from "../../logger.js";
-import type { Action, Plugin } from "../../types.js";
+import type { Action, Plugin, Provider } from "../../types.js";
+import { roleBrief, type TelegramSender } from "./identity.js";
 
 const log = createLogger("plugin:telegram");
 
@@ -203,8 +204,20 @@ const sendTelegramAction: Action = {
   },
 };
 
+/** Who wrote this turn from Telegram and what they may ask for — matched in code by the client. */
+const telegramSenderProvider: Provider = {
+  name: "telegram_sender",
+  async get(_runtime, state) {
+    const sender = state.message.metadata?.telegram as TelegramSender | undefined;
+    return sender ? roleBrief(sender) : "";
+  },
+};
+
 export const telegramPlugin: Plugin = {
   name: "telegram",
-  description: "Operator Telegram notifications: send_telegram delivers a message to the operator.",
+  description:
+    "Operator Telegram notifications: send_telegram delivers a message to the operator; " +
+    "each Telegram turn says who sent it (operator, guest or unknown).",
   actions: [sendTelegramAction],
+  providers: [telegramSenderProvider],
 };

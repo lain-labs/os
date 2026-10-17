@@ -307,6 +307,7 @@ export class AgentRuntime implements IAgentRuntime {
     userId: string;
     text: string;
     task?: TaskKind;
+    metadata?: Record<string, unknown>;
   }): Promise<TurnResult> {
     return this.handleMessageStream(input, () => {});
   }
@@ -319,7 +320,13 @@ export class AgentRuntime implements IAgentRuntime {
   private turnQueue: Promise<unknown> = Promise.resolve();
 
   async handleMessageStream(
-    input: { roomId: string; userId: string; text: string; task?: TaskKind },
+    input: {
+      roomId: string;
+      userId: string;
+      text: string;
+      task?: TaskKind;
+      metadata?: Record<string, unknown>;
+    },
     onEvent: (event: AgentEvent) => void,
   ): Promise<TurnResult> {
     const run = this.turnQueue.then(() => this.runTurn(input, onEvent));
@@ -328,7 +335,13 @@ export class AgentRuntime implements IAgentRuntime {
   }
 
   private async runTurn(
-    input: { roomId: string; userId: string; text: string; task?: TaskKind },
+    input: {
+      roomId: string;
+      userId: string;
+      text: string;
+      task?: TaskKind;
+      metadata?: Record<string, unknown>;
+    },
     onEvent: (event: AgentEvent) => void,
   ): Promise<TurnResult> {
     const incoming: Memory = {
@@ -338,6 +351,7 @@ export class AgentRuntime implements IAgentRuntime {
       role: "user",
       content: input.text,
       createdAt: Date.now(),
+      ...(input.metadata ? { metadata: input.metadata } : {}),
     };
     await this.memory.add(incoming);
     const transcript = this.createTranscript(incoming);

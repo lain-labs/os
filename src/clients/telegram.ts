@@ -17,6 +17,7 @@ import { describeNetworks, switchNetwork } from "../plugins/chain/networks.js";
 import { digestCommand } from "../plugins/digest/index.js";
 import { writeSettings } from "../plugins/system/settings.js";
 import { htmlToText, replyKeyboard } from "../plugins/telegram/index.js";
+import { defang, resolveTelegramSender, senderHeader, senderTag } from "../plugins/telegram/identity.js";
 import { markdownToTelegramHtml } from "./telegram-format.js";
 import type { IAgentRuntime } from "../types.js";
 
@@ -35,7 +36,11 @@ const log = createLogger("telegram");
  *   - chats the bot has spoken in are persisted to `data/telegram.json`, and
  *     {@link TelegramClient.broadcast} pushes sentinel alerts to all of them;
  *   - `TELEGRAM_ALLOWED_CHATS` (comma-separated chat ids) restricts who may
- *     talk to the agent — recommended when a signer key is configured.
+ *     talk to the agent — recommended when a signer key is configured;
+ *   - every turn starts with a `[telegram from: … role=…]` line naming the
+ *     sender, matched against TELEGRAM_OPERATOR_ID / TELEGRAM_OPERATOR_USERNAME
+ *     / TELEGRAM_GUESTS (see plugins/telegram/identity.ts), so the agent never
+ *     tells the operator and a guest apart by tone.
  */
 
 export interface TelegramOptions {
@@ -103,6 +108,9 @@ export interface SendOptions {
   /** Remove a reply keyboard left by an earlier choice. */
   clearButtons?: boolean;
 }
+
+/** Commands whose arguments change the operator's setup; bare, they only show it. */
+const SETUP_COMMANDS = new Set(["/tasks", "/model", "/network", "/chain", "/digest", "/brief"]);
 
 const HELP_TEXT = [
   "i'm lain. i live in the wired and on whatever chain i'm configured for.",
@@ -348,7 +356,24 @@ export class TelegramClient {
 
     await this.rememberChat(chatId);
 
+    // Who wrote this, matched in code. Settings are read per message, so a
+    // set_setting of the identity keys applies without a restart.
+    const getSetting = (key: string) => this.runtime.getSetting(key);
+    const sender = resolveTelegramSender(msg.from, getSetting);
+
     const cmd = content.split(/\s+/)[0]?.toLowerCase().replace(/@\w+$/, "");
+    const cmdArgs = content.split(/\s+/).slice(1);
+    if (
+      sender.operatorKnown &&
+      sender.role !== "operator" &&
+      cmd &&
+      SETUP_COMMANDS.has(cmd) &&
+      cmdArgs.length &&
+      !/^(when|status)$/i.test(cmdArgs[0])
+    ) {
+      await this.sendChunked(chatId, "only the operator can change that — without arguments it just shows the current state.");
+      return;
+    }
     if (cmd === "/start" || cmd === "/help") {
       await this.sendChunked(chatId, HELP_TEXT);
       return;
@@ -395,20 +420,30 @@ export class TelegramClient {
       return;
     }
 
-    // A reply carries the quoted message as context, so "run this script"
-    // in reply to a code block reaches the agent together with the code.
-    const quoted = msg.reply_to_message?.text?.trim();
+    // A reply carries the quoted message and its author as context, so "run
+    // this script" in reply to a code block reaches the agent together with
+    // the code. The sender's own text can't forge either header line.
+    const lines = [senderHeader(sender)];
+    const reply = msg.reply_to_message;
+    const quoted = reply?.text?.trim();
     if (quoted) {
       const clipped = quoted.length > 600 ? `${quoted.slice(0, 600)}…` : quoted;
-      content = `[in reply to: ${clipped}]\n${content}`;
+      const author = !reply?.from
+        ? ""
+        : reply.from.id === this.me?.id
+          ? " you"
+          : ` ${senderTag(resolveTelegramSender(reply.from, getSetting))}`;
+      lines.push(`[in reply to${author}: ${defang(clipped)}]`);
     }
+    lines.push(defang(content));
 
     const typing = this.keepTyping(chatId);
     try {
       const result = await this.runtime.handleMessage({
         roomId: `tg-${chatId}`,
         userId: `tg:${msg.from.username ?? msg.from.id}`,
-        text: content,
+        text: lines.join("\n"),
+        metadata: { telegram: sender },
       });
       // Provenance receipt: what kind of work this was taken as, and which
       // model actually answered it (the operator must be able to see it's the

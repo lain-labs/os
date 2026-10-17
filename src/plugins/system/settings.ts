@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { chmod, readFile, writeFile } from "node:fs/promises";
 import { envFile } from "../../env.js";
 import type { ChainService } from "../chain/service.js";
+import type { TelegramSender } from "../telegram/identity.js";
 import type { Action, IAgentRuntime, State } from "../../types.js";
 
 /**
@@ -15,7 +16,8 @@ import type { Action, IAgentRuntime, State } from "../../types.js";
  * setting the operator asked for (an RPC URL, a chain id) is written on the
  * first call — the request was the confirmation, and a second round trip for
  * it only cost the operator a turn. Only the operator may do either: the local
- * terminal, or a Telegram user on TELEGRAM_ALLOWED_USERS. Values are never
+ * terminal, or the Telegram operator — TELEGRAM_OPERATOR_ID / _USERNAME once
+ * set, before that any user on TELEGRAM_ALLOWED_USERS. Values are never
  * echoed back.
  */
 
@@ -32,6 +34,10 @@ export function isOperator(state: State, allowedUsers: string | undefined): bool
   const who = state.message.userId;
   if (who === "user") return true; // the TUI / CLI on this machine
   if (!who.startsWith("tg:")) return false;
+  // Once the operator is named, the client's code-matched role decides: a
+  // guest on the allowlist may talk, not configure.
+  const sender = state.message.metadata?.telegram as TelegramSender | undefined;
+  if (sender?.operatorKnown) return sender.role === "operator";
   const allowed = (allowedUsers ?? "")
     .split(",")
     .map((s) => s.trim().replace(/^@/, "").toLowerCase())
