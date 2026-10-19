@@ -21,7 +21,23 @@ interface ExplorerTransaction {
   value?: string;
   fee?: { value?: string } | string;
   method?: string | null;
+  raw_input?: string;
   status?: string;
+}
+
+const SWAP_EXACT_ETH_FOR_TOKENS = "0x7ff36ab5";
+
+/**
+ * Whether an explorer transaction calls swapExactETHForTokens. Blockscout's
+ * `method` is the decoded function name when the called contract is verified
+ * ("swapExactETHForTokens") and the bare selector only when it is not, so the
+ * selector is read from `raw_input` when the explorer sends it.
+ */
+export function isSwapExactEthForTokens(tx: { method?: string | null; raw_input?: string }): boolean {
+  const input = (tx.raw_input ?? "").toLowerCase();
+  if (input.length >= 10) return input.startsWith(SWAP_EXACT_ETH_FOR_TOKENS);
+  const method = (tx.method ?? "").toLowerCase();
+  return method === SWAP_EXACT_ETH_FOR_TOKENS || method === "swapexactethfortokens";
 }
 
 interface ExplorerTokenTransfer {
@@ -100,7 +116,7 @@ export async function reconstructDexBuyBasis(
     if (!tx || tx.status !== "ok") continue;
     if (!sameAddress(tx.from?.hash ?? "", address)) continue;
     if (!sameAddress(tx.to?.hash ?? "", dexRouter)) continue;
-    if ((tx.method ?? "").toLowerCase() !== "0x7ff36ab5") continue; // swapExactETHForTokens
+    if (!isSwapExactEthForTokens(tx)) continue;
 
     const costWei = BigInt(tx.value ?? "0");
     if (costWei <= 0n) continue;
