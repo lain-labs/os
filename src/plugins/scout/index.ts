@@ -440,25 +440,41 @@ export class ScoutService implements Service {
       `Plain text only, no markdown headers. ` +
       `If nothing clears the bar, reply with exactly the single word: NOTHING — ` +
       `never write "nothing found", "no relevant news", or any other explanation instead.`;
+    const content =
+      `Topic: ${topic.query}\n` +
+      `Subscriber instruction: ${topic.note ?? "report only really important changes"}\n\n` +
+      `New items since the last sweep:\n${lines}`;
     const res = await this.runtime.model.generate({
       tier: ModelTier.MEDIUM,
       // A digest is drudgery by definition — routed by kind, so an operator
       // can put every one of them on a free model without touching the chat.
       task: TaskKind.DIGEST,
       system,
-      messages: [
-        {
-          role: "user",
-          content:
-            `Topic: ${topic.query}\n` +
-            `Subscriber instruction: ${topic.note ?? "report only really important changes"}\n\n` +
-            `New items since the last sweep:\n${lines}`,
-        },
-      ],
+      messages: [{ role: "user", content }],
       maxTokens: 900,
       temperature: 0.4,
     });
-    const text = res.text.trim();
+    let text = res.text.trim();
+    if (looksLikeToolCall(text)) {
+      // The digest model has no tools here; markup means it tried to call one
+      // it imagined (news_search…). Ask once more without the digest route,
+      // so the main provider answers, and say plainly there is nothing to call.
+      log.warn(`${topic.id} digest from ${res.provider ?? "?"}/${res.model} was tool-call markup — retrying on the main provider`);
+      const retry = await this.runtime.model.generate({
+        tier: ModelTier.MEDIUM,
+        system:
+          `${system} You have no tools: never emit tool calls or function-call markup; ` +
+          `write the digest from the items given.`,
+        messages: [{ role: "user", content }],
+        maxTokens: 900,
+        temperature: 0.4,
+      });
+      text = retry.text.trim();
+      if (looksLikeToolCall(text)) {
+        log.warn(`${topic.id} digest from ${retry.provider ?? "?"}/${retry.model} was tool-call markup again — nothing delivered`);
+        return null;
+      }
+    }
     if (looksLikeNothing(text)) return null;
     return text;
   }
@@ -494,6 +510,28 @@ export function looksLikeNothing(text: string): boolean {
       first,
     )
   );
+}
+
+/**
+ * Tags and tokens models use for a tool call they print instead of making:
+ * Qwen/Hermes `<tool_call>`, `<function=…>`/`<parameter=…>`, Anthropic-style
+ * `<function_calls>`/`<invoke name=…>`, DeepSeek's `<｜tool▁calls▁begin｜>`,
+ * Mistral's `[TOOL_CALLS]`.
+ */
+const TOOL_CALL_MARKUP =
+  /<\/?(?:tool_calls?|tool_use|function_calls)\b[^>]*>|<(?:function|parameter)=[^>]*>|<invoke\s+name=|<[|｜]tool[▁_]calls?[▁_](?:begin|end)[|｜]>|\[TOOL_CALLS\]/i;
+/** `{"name": "news_search", "arguments": {…}}` and its spellings, anywhere in the text. */
+const TOOL_CALL_JSON =
+  /\{\s*"(?:name|function|tool)"\s*:\s*"[^"]+"\s*,\s*"(?:arguments|parameters|input|args)"\s*:|"(?:tool_calls|function_call)"\s*:\s*[[{]/;
+
+/**
+ * True when a model reply carries tool-call markup — XML-style tags or a JSON
+ * call — rather than prose. A digest is never sent with it: the scout offers
+ * no tools, so such a call can only be one the model imagined, and the raw
+ * text would reach Telegram as-is. Exported for tests.
+ */
+export function looksLikeToolCall(text: string): boolean {
+  return TOOL_CALL_MARKUP.test(text) || TOOL_CALL_JSON.test(text);
 }
 
 /** Minimal RSS/Atom feed parser (dependency-free). Exported for tests. */
