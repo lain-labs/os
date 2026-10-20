@@ -389,11 +389,13 @@ const plain = (l: Line): string => l.map((s) => s.t).join("");
 // The same renderer the app paints with, flattened back to plain text.
 const theme = THEMES[DEFAULT_THEME];
 const flat = turns.flatMap((t) => turnLines(t, new Set(["c1"]), theme, 40, "⠋").lines.map(plain));
+// Speakers are badges (" ▸ you "), and what they said sits indented under them.
 check(
   "labels every speaker ",
-  flat[0] === "▸ you" && flat.some((l) => l.startsWith("◆ lain · stub")),
+  flat[0] === " ▸ you " && flat.some((l) => l.startsWith(" ◆ lain  · stub")),
 );
-check("keeps the turn order ", flat.indexOf("  first question") < flat.findIndex((l) => l.startsWith("◆ lain")));
+const asked = flat.findIndex((l) => l.trim() === "first question");
+check("keeps the turn order ", asked > 0 && asked < flat.findIndex((l) => l.startsWith(" ◆ lain")));
 check("wraps to the width   ", flat.every((l) => [...l].length <= 40) && flat.length > 8);
 check("renders tool calls   ", flat.some((l) => l.includes("get_balance") && l.includes("address=0xbeef")));
 

@@ -120,6 +120,12 @@ export class TradeJournal {
     this.loaded = true;
   }
 
+  /** Forget every trade and position (a paper account starting over). */
+  async clear(): Promise<void> {
+    this.data = { trades: [], positions: {}, liquidity: [] };
+    await this.persist();
+  }
+
   positions(): Position[] {
     return Object.values(this.data.positions).filter((p) => BigInt(p.qtyWei) > 0n);
   }

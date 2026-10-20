@@ -8,8 +8,8 @@
  */
 import { formatEther, formatUnits, type Address } from "viem";
 import type { Action } from "../../../types.js";
-import { ROUTER_ABI } from "../abi.js";
-import { getService, type ChainService, type NativeBuyQuote } from "../service.js";
+import { fillNote, getService, type ChainService, type NativeBuyQuote } from "../service.js";
+import { tradeTarget, WALLET_PARAM } from "./paper.js";
 import { quoteData } from "./trade.js";
 import {
   getAmountOut,
@@ -36,7 +36,7 @@ export const speculateTokenAction: Action = {
   name: "speculate_token",
   similes: ["autonomous_buy", "agent_buy", "ape_token", "take_position", "buy_without_amount"],
   description:
-    "Autonomously take a small speculative position in a token on the configured DEX when the user asks to buy without specifying an amount or explicitly wants the agent to decide. Chooses spend from wallet balance, gas reserve, max-risk cap and pool-liquidity cap, then executes with slippage protection.",
+    "Autonomously take a small speculative position in a token on the configured DEX when the user asks to buy without specifying an amount or explicitly wants the agent to decide. Chooses spend from wallet balance, gas reserve, max-risk cap and pool-liquidity cap, then executes with slippage protection. In paper mode it sizes against the paper balance and simulates the fill.",
   parameters: {
     type: "object",
     properties: {
@@ -49,6 +49,7 @@ export const speculateTokenAction: Action = {
         type: "string",
         description: "Optional one-trade cap in native currency. Defaults to LAINOS_SPECULATE_MAX_NATIVE or 0.05.",
       },
+      wallet: WALLET_PARAM,
     },
     required: ["token"],
   },
@@ -58,10 +59,12 @@ export const speculateTokenAction: Action = {
   async validate() {
     return true;
   },
-  async handler(runtime, _state, params) {
+  async handler(runtime, state, params) {
     const svc = getService(runtime);
     const sym = svc.nativeSymbol;
-    if (!svc.walletClient || !svc.agentAddress) {
+    const target = await tradeTarget(svc, state, params.wallet);
+    if (target.error) return { ok: false, text: target.error };
+    if (!target.book && !svc.canTrade) {
       return { ok: false, text: "No signer configured; I can think and quote, but I cannot take positions." };
     }
     const token = svc.resolveToken(String(params.token ?? ""));
@@ -69,7 +72,7 @@ export const speculateTokenAction: Action = {
 
     try {
       const cfg = speculateConfig(runtime, params.maxNative);
-      const balance = await svc.publicClient.getBalance({ address: svc.agentAddress });
+      const balance = await svc.tradingBalance(target.book);
       const walletSpend = chooseSpeculativeSpend(balance, cfg, sym);
       if (typeof walletSpend === "string") return { ok: false, text: walletSpend };
 
@@ -104,41 +107,24 @@ export const speculateTokenAction: Action = {
       }
 
       const minOut = minOutForSlippage(quote.amountOut, cfg.slippageBps);
-      const deadline = BigInt(Math.floor(Date.now() / 1000) + cfg.deadlineSeconds);
-      const hash = await svc.walletClient.writeContract({
-        account: svc.walletClient.account!,
-        chain: svc.chain,
-        address: svc.dex.router,
-        abi: ROUTER_ABI,
-        functionName: "swapExactETHForTokens",
-        args: [minOut, quote.path, svc.agentAddress, deadline],
-        value: spend,
-      });
-      const receipt = await svc.publicClient.waitForTransactionReceipt({ hash });
-      const explorer = svc.explorerTxUrl(hash);
       const thesis = String(params.thesis ?? "").trim();
-      if (receipt.status !== "success") {
-        return { ok: false, text: `Speculative buy reverted: ${hash}`, data: { hash, explorer, status: receipt.status } };
+      const fill = await svc.executeBuy(quote, minOut, cfg.deadlineSeconds, thesis || "speculate_token", target.book);
+      const { hash, explorer, status, paper } = fill;
+      if (status !== "success") {
+        return { ok: false, text: `Speculative buy reverted: ${hash}`, data: { hash, explorer, status } };
       }
-      await svc.journal.recordBuy({
-        token,
-        symbol: quote.symbol,
-        qtyWei: quote.amountOut,
-        nativeWei: spend,
-        txHash: hash,
-        reason: thesis || "speculate_token",
-      });
       return {
         ok: true,
         text:
-          `I took the risk: bought ${quote.symbol} for ${formatEther(spend)} ${sym}. ` +
+          `I took the risk${paper ? ` on paper (wallet ${target.wallet})` : ""}: bought ${quote.symbol} for ${formatEther(spend)} ${sym}. ` +
           `Expected ~${formatUnits(quote.amountOut, quote.decimals)} ${quote.symbol}, ` +
           `minOut ${formatUnits(minOut, quote.decimals)}, impact ~${quote.priceImpactBps / 100}%. ` +
-          `${thesis ? `Thesis: ${thesis}. ` : ""}Tx: ${hash}`,
+          `${thesis ? `Thesis: ${thesis}. ` : ""}${fillNote(fill)}`,
         data: {
           hash,
           explorer,
-          status: receipt.status,
+          status,
+          paper,
           policy: speculatePolicyData(cfg, balance),
           ...quoteData(quote, minOut, cfg.slippageBps, svc.dex.router),
         },
@@ -153,7 +139,7 @@ export const speculateBasketAction: Action = {
   name: "speculate_basket",
   similes: ["buy_basket", "autonomous_basket", "buy_several_tokens", "spend_budget", "portfolio_buy"],
   description:
-    "Autonomously spend a user-approved native-currency budget across several tokens on the configured DEX. Use this when the user says to buy several tokens, spend a total budget, or choose tokens at the agent's discretion. By default the action scans all live wrapped-native pairs on the DEX factory, splits the budget, skips unsafe pools, and executes multiple swaps with slippage protection.",
+    "Autonomously spend a user-approved native-currency budget across several tokens on the configured DEX. Use this when the user says to buy several tokens, spend a total budget, or choose tokens at the agent's discretion. By default the action scans all live wrapped-native pairs on the DEX factory, splits the budget, skips unsafe pools, and executes multiple swaps with slippage protection. In paper mode the budget comes from the paper balance and every swap is simulated.",
   parameters: {
     type: "object",
     properties: {
@@ -170,6 +156,7 @@ export const speculateBasketAction: Action = {
         type: "string",
         description: "Optional short reason for the basket.",
       },
+      wallet: WALLET_PARAM,
       maxImpactBps: {
         type: "number",
         description: "Optional max estimated price impact per swap, in bps. Default 500 = 5%.",
@@ -183,10 +170,12 @@ export const speculateBasketAction: Action = {
   async validate() {
     return true;
   },
-  async handler(runtime, _state, params) {
+  async handler(runtime, state, params) {
     const svc = getService(runtime);
     const sym = svc.nativeSymbol;
-    if (!svc.walletClient || !svc.agentAddress) {
+    const target = await tradeTarget(svc, state, params.wallet);
+    if (target.error) return { ok: false, text: target.error };
+    if (!target.book && !svc.canTrade) {
       return { ok: false, text: "No signer configured; I can only quote a basket, not buy it." };
     }
     const budgetNative = String(params.budgetNative ?? "");
@@ -195,7 +184,7 @@ export const speculateBasketAction: Action = {
 
     try {
       const cfg = basketConfig(runtime, params);
-      const balance = await svc.publicClient.getBalance({ address: svc.agentAddress });
+      const balance = await svc.tradingBalance(target.book);
       if (balance <= cfg.gasReserveWei) {
         return { ok: false, text: `I only have ${formatEther(balance)} ${sym}; gas reserve is ${formatEther(cfg.gasReserveWei)}.` };
       }
@@ -234,34 +223,17 @@ export const speculateBasketAction: Action = {
             continue;
           }
           const minOut = minOutForSlippage(quote.amountOut, cfg.slippageBps);
-          const deadline = BigInt(Math.floor(Date.now() / 1000) + cfg.deadlineSeconds);
-          const hash = await svc.walletClient.writeContract({
-            account: svc.walletClient.account!,
-            chain: svc.chain,
-            address: svc.dex.router,
-            abi: ROUTER_ABI,
-            functionName: "swapExactETHForTokens",
-            args: [minOut, quote.path, svc.agentAddress, deadline],
-            value: item.spendWei,
-          });
-          const receipt = await svc.publicClient.waitForTransactionReceipt({ hash });
-          if (receipt.status !== "success") {
-            skipped.push(`${item.symbol}: reverted ${hash}`);
+          const fill = await svc.executeBuy(quote, minOut, cfg.deadlineSeconds, String(params.thesis ?? "speculate_basket"), target.book);
+          if (fill.status !== "success") {
+            skipped.push(`${item.symbol}: reverted ${fill.hash}`);
             continue;
           }
-          await svc.journal.recordBuy({
-            token: item.token,
-            symbol: quote.symbol,
-            qtyWei: quote.amountOut,
-            nativeWei: item.spendWei,
-            txHash: hash,
-            reason: String(params.thesis ?? "speculate_basket"),
-          });
           spent += item.spendWei;
           buys.push({
-            hash,
-            explorer: svc.explorerTxUrl(hash),
-            status: receipt.status,
+            hash: fill.hash,
+            explorer: fill.explorer,
+            status: fill.status,
+            paper: fill.paper,
             ...quoteData(quote, minOut, cfg.slippageBps, svc.dex.router),
           });
         } catch (err) {
@@ -278,14 +250,16 @@ export const speculateBasketAction: Action = {
       }
 
       const thesis = String(params.thesis ?? "").trim();
+      const paper = Boolean(target.wallet);
       const lines = buys.map((b) => {
         const symbol = String(b.symbol);
-        return `${symbol}: ${b.amountInNative} ${sym} -> ~${b.amountOut} ${symbol} (${b.explorer ?? "no explorer configured"})`;
+        const where = paper ? "paper" : (b.explorer ?? "no explorer configured");
+        return `${symbol}: ${b.amountInNative} ${sym} -> ~${b.amountOut} ${symbol} (${where})`;
       });
       return {
         ok: true,
         text:
-          `Basket bought ${buys.length} token(s), spent ${formatEther(spent)} of ${budgetNative} ${sym}. ` +
+          `${paper ? `Paper basket (wallet ${target.wallet})` : "Basket"} bought ${buys.length} token(s), spent ${formatEther(spent)} of ${budgetNative} ${sym}. ` +
           `${thesis ? `Thesis: ${thesis}. ` : ""}` +
           lines.join(" | ") +
           (skipped.length ? ` | skipped: ${skipped.join("; ")}` : ""),

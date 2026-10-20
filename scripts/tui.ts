@@ -4,11 +4,19 @@ import React from "react";
 import { render } from "ink";
 import { createAgent } from "../src/index.js";
 import { lain } from "../src/characters/lain.js";
-import { setLogMuted } from "../src/logger.js";
+import { createLogger, setLogMuted } from "../src/logger.js";
 import { ensureLogin } from "../src/setup/login-gate.js";
 import { setTextPictographWidth } from "../src/clients/tui/markdown.js";
 import { App } from "../src/clients/tui/App.js";
 import { smoothFrames } from "../src/clients/tui/smooth.js";
+
+// A flaky RPC somewhere (a background watch, a status poll) must not take the
+// whole session down with it, the same rule the daemon keeps. Log, keep going.
+const log = createLogger("tui");
+process.on("uncaughtException", (err) => log.error(`uncaught exception — session continues: ${err.message}`));
+process.on("unhandledRejection", (reason) =>
+  log.error(`unhandled rejection — session continues: ${reason instanceof Error ? reason.message : String(reason)}`),
+);
 
 async function main() {
   // Required before the TUI takes over the screen, so the prompt (and any

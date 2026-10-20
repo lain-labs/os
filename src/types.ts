@@ -132,6 +132,12 @@ export interface ActionResult {
   data?: Record<string, unknown>;
   /** If false, the runtime treats the action as a no-op/decline. */
   ok: boolean;
+  /**
+   * The model needs this verbatim for the rest of the turn — a source it is
+   * about to edit, a reference it writes code against. Not clipped in later
+   * rounds, and given a larger budget than an ordinary result.
+   */
+  keep?: boolean;
 }
 
 export interface Action {
@@ -231,6 +237,11 @@ export interface ModelResponse {
    * `{}`), so the runtime asks again with more room.
    */
   truncated?: boolean;
+  /**
+   * The model's chain of thought, kept out of `text` so it never reaches memory
+   * or a chat client as part of the reply. The TUI shows it folded.
+   */
+  reasoning?: string;
 }
 
 export interface ModelProvider {
@@ -275,12 +286,14 @@ export interface TurnResult {
 
 /**
  * Live events emitted while a turn is produced — the spine of the TUI. A turn
- * is: `thinking` → (`text` deltas) → optional (`tool` → `tool_result`)* →
- * (more `text` deltas) → `done`.
+ * is: `thinking` → (`reasoning`, `text` deltas) → optional (`tool` →
+ * `tool_result`)* → (more `reasoning`, `text` deltas) → `done`.
  */
 export type AgentEvent =
   | { type: "thinking" }
   | { type: "task"; kind: TaskKind; signal: string; escalated?: boolean }
+  /** The model's chain of thought — shown folded, never part of the reply. */
+  | { type: "reasoning"; delta: string }
   | { type: "text"; delta: string }
   | { type: "tool"; id: string; name: string; input: Record<string, unknown> }
   | { type: "tool_result"; id: string; name: string; ok: boolean; summary: string }

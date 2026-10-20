@@ -114,7 +114,7 @@ export function shortAddress(a: string): string {
   return `${a.slice(0, 6)}…${a.slice(-4)}`;
 }
 
-/** "#3 ты (0xbe0b…c8d9)" — how a wallet is named in reports and alerts. */
+/** "#3 you (0xbe0b…c8d9)" — how a wallet is named in reports and alerts. */
 export function walletName(e: Pick<WalletEntry, "address" | "rank" | "label">): string {
   return `#${e.rank}${e.label ? ` ${e.label}` : ""} ${shortAddress(e.address)}`;
 }

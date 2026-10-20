@@ -11,7 +11,7 @@
  *
  * The switch is immediate and persisted (data/chat-provider.json), so it also
  * survives the daemon's next restart. The TUI is a separate process with its
- * own runtime: use /model there.
+ * own runtime: use /agent there.
  */
 import "dotenv/config";
 import { CHAT_PROVIDER_CHOICES, chatProviderLabel } from "../src/models/routing.js";

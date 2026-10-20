@@ -21,6 +21,7 @@ import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createLogger } from "../../logger.js";
 import { TradeJournal } from "./journal.js";
+import { PaperDesk, paperStartWei, type PaperAccount } from "./paper.js";
 import type { IAgentRuntime, Service } from "../../types.js";
 import { loadChainConfig, loadChainTokens, loadDexConfig, ZERO_ADDRESS, type ChainDexConfig } from "./chain.js";
 import { ERC20_ABI, FACTORY_ABI, PAIR_ABI, ROUTER_ABI } from "./abi.js";
@@ -64,6 +65,36 @@ export interface NativeSellQuote {
   reserveToken: bigint;
   priceImpactBps: number;
   path: [Address, Address];
+}
+
+/** A buy or sell that went through — on the chain, or into the paper account. */
+export interface TradeFill {
+  /** The tx hash, or a `paper-…` id for a paper fill. */
+  hash: string;
+  status: "success" | "reverted";
+  explorer?: string;
+  /** True when nothing was sent: paper mode booked it. */
+  paper: boolean;
+  /** Realised PnL against the journal's basis, native wei (sells only). */
+  realizedWei?: bigint;
+}
+
+/**
+ * A market outside the configured DEX that holds some paper positions — the
+ * PONS bonding curves the trench engine trades on, say. The paper report
+ * values those positions through it, and the trader loop leaves them to it.
+ */
+export interface PaperVenue {
+  name: string;
+  /** True when this venue manages the position in `token`. */
+  owns(token: string): boolean;
+  /** What selling `qty` would return now, native wei; null when it cannot say. */
+  value(token: string, qty: bigint): Promise<bigint | null>;
+}
+
+/** How a fill is cited in an action's reply. */
+export function fillNote(fill: TradeFill): string {
+  return fill.paper ? "📝 paper fill — nothing was sent" : `Tx: ${fill.hash}`;
 }
 
 export interface LiquidityAsset {
@@ -113,8 +144,16 @@ export class ChainService implements Service {
   public explorerApiUrl?: string;
   public tokens: Record<string, Address> = {};
 
-  /** Every DEX trade is journaled here with its native-currency cost basis. */
+  /**
+   * Every real DEX trade is journaled here with its native-currency cost basis.
+   * Trading code reads {@link tradeJournal}, which is the paper account's
+   * journal while paper mode is on; this one only ever holds real trades.
+   */
   public journal!: TradeJournal;
+  /** The paper-trading switch and its per-chain virtual accounts. */
+  public paper!: PaperDesk;
+  private paperAccount?: PaperAccount;
+  private venues: PaperVenue[] = [];
 
   private _publicClient?: PublicClient;
   private _chain?: Chain;
@@ -127,6 +166,12 @@ export class ChainService implements Service {
     this.walletFile = join(dataDir, "wallet.json");
     this.journal = new TradeJournal(join(dataDir, "trades.json"));
     await this.journal.load();
+    this.paper = new PaperDesk(
+      join(dataDir, "paper"),
+      paperStartWei(runtime.getSetting("LAINOS_PAPER_START_NATIVE")),
+      runtime.getSetting("LAINOS_PAPER") === "1",
+    );
+    await this.paper.load();
     await this.configure(runtime);
   }
 
@@ -146,6 +191,7 @@ export class ChainService implements Service {
     this._chain = undefined;
     this._publicClient = undefined;
     this._dex = undefined;
+    this.paperAccount = undefined;
     this.walletClient = undefined;
     this.agentAddress = undefined;
     this.tokens = {};
@@ -163,6 +209,8 @@ export class ChainService implements Service {
     }
     const { chain, nativeSymbol, explorerUrl } = chainConfig;
     this._chain = chain;
+    // Opened whether or not paper mode is on, so flipping it needs no reload.
+    this.paperAccount = await this.paper.account(chain.id, this.paper.current("lain"));
     this.nativeSymbol = nativeSymbol;
     this.explorerUrl = explorerUrl;
     this.explorerApiUrl = getSetting("CHAIN_EXPLORER_API_URL")?.trim() || (explorerUrl ? `${explorerUrl}/api/v2` : undefined);
@@ -285,6 +333,160 @@ export class ChainService implements Service {
   /** The RPC endpoint in use, or "" when unconfigured. */
   get rpcUrl(): string {
     return this.configured ? this.rpc : "";
+  }
+
+  // ------------------------------------------------------------ trading
+  //
+  // Everything that buys or sells goes through these, so paper mode is one
+  // switch here rather than a branch in every action.
+
+  /** Add a venue that values (and manages) some paper positions; returns its removal. */
+  registerVenue(venue: PaperVenue): () => void {
+    this.venues.push(venue);
+    return () => {
+      this.venues = this.venues.filter((v) => v !== venue);
+    };
+  }
+
+  /** The venue managing a token's paper position, if one claims it. */
+  venueFor(token: string): PaperVenue | undefined {
+    return this.venues.find((v) => v.owns(token));
+  }
+
+  /** True while trades are simulated into the paper account. */
+  get paperMode(): boolean {
+    return this.paper.enabled;
+  }
+
+  /** Lain's current paper wallet on the active chain. Throws when no chain is configured. */
+  get paperBook(): PaperAccount {
+    if (!this.paperAccount) throw new Error("no chain is configured to paper-trade against");
+    return this.paperAccount;
+  }
+
+  /** A paper wallet's account on the active chain. */
+  async paperWallet(name: string): Promise<PaperAccount> {
+    if (!this._chain) throw new Error("no chain is configured to paper-trade against");
+    return this.paper.account(this._chain.id, name);
+  }
+
+  /** Make `name` Lain's current paper wallet — what her trades go into when they name none. */
+  async useLainWallet(name: string): Promise<void> {
+    await this.paper.select("lain", name);
+    if (this._chain) this.paperAccount = await this.paper.account(this._chain.id, this.paper.current("lain"));
+  }
+
+  /** Every paper wallet Lain trades, on the active chain — what her background loops manage. */
+  async lainPaperBooks(): Promise<{ wallet: string; book: PaperAccount }[]> {
+    if (!this._chain) return [];
+    const out: { wallet: string; book: PaperAccount }[] = [];
+    for (const w of this.paper.wallets()) if (w.lain) out.push({ wallet: w.name, book: await this.paperWallet(w.name) });
+    return out;
+  }
+
+  /** The journal trades are booked into right now: paper in paper mode, the wallet's otherwise. */
+  get tradeJournal(): TradeJournal {
+    return this.paper.enabled && this.paperAccount ? this.paperAccount.journal : this.journal;
+  }
+
+  /** Whether a trade can be placed: paper mode needs a chain, a real trade needs a signer. */
+  get canTrade(): boolean {
+    return this.paper.enabled ? Boolean(this.paperAccount) : Boolean(this.walletClient && this.agentAddress);
+  }
+
+  /**
+   * The paper account a trade books into: the one it names, else Lain's current wallet in
+   * paper mode, else none — a real trade. A named paper account is paper whatever the switch says.
+   */
+  private bookFor(book?: PaperAccount): PaperAccount | undefined {
+    return book ?? (this.paper.enabled ? this.paperBook : undefined);
+  }
+
+  /** The native balance trades are sized against: the paper balance, or the wallet's. */
+  async tradingBalance(book?: PaperAccount): Promise<bigint> {
+    const paper = this.bookFor(book);
+    if (paper) return paper.cashWei;
+    if (!this.agentAddress) throw new Error("no wallet configured");
+    return this.publicClient.getBalance({ address: this.agentAddress });
+  }
+
+  /** A holding trades can sell: the paper position, or the wallet's token balance. */
+  async tradingHolding(token: Address, book?: PaperAccount): Promise<{ raw: bigint; decimals: number; symbol: string }> {
+    const paper = this.bookFor(book);
+    if (paper) {
+      const info = await this.tokenInfo(token);
+      return { raw: paper.holding(token), decimals: info.decimals, symbol: info.symbol };
+    }
+    if (!this.agentAddress) throw new Error("no wallet configured");
+    return this.rawTokenBalance(token, this.agentAddress);
+  }
+
+  /**
+   * Buy along a quote and journal it: a swap signed and sent to the DEX, or —
+   * in paper mode — a fill at the quoted output, booked into the paper account.
+   */
+  async executeBuy(
+    quote: NativeBuyQuote,
+    minOut: bigint,
+    deadlineSeconds: number,
+    reason: string,
+    book?: PaperAccount,
+  ): Promise<TradeFill> {
+    const booking = {
+      token: quote.token,
+      symbol: quote.symbol,
+      qtyWei: quote.amountOut,
+      nativeWei: quote.amountInWei,
+      reason,
+    };
+    const paper = this.bookFor(book);
+    if (paper) {
+      const fill = await paper.buy(booking);
+      return { hash: fill.hash, status: "success", paper: true };
+    }
+    if (!this.walletClient || !this.agentAddress) throw new Error("no signer configured");
+    const deadline = BigInt(Math.floor(Date.now() / 1000) + deadlineSeconds);
+    const hash = await this.walletClient.writeContract({
+      account: this.walletClient.account!,
+      chain: this.chain,
+      address: this.dex.router,
+      abi: ROUTER_ABI,
+      functionName: "swapExactETHForTokens",
+      args: [minOut, quote.path, this.agentAddress, deadline],
+      value: quote.amountInWei,
+    });
+    const receipt = await this.publicClient.waitForTransactionReceipt({ hash });
+    const explorer = this.explorerTxUrl(hash);
+    if (receipt.status !== "success") return { hash, status: "reverted", explorer, paper: false };
+    await this.journal.recordBuy({ ...booking, txHash: hash });
+    return { hash, status: "success", explorer, paper: false };
+  }
+
+  /** Sell along a quote and journal it (with realised PnL): on the DEX, or into the paper account. */
+  async executeSell(
+    quote: NativeSellQuote,
+    minOut: bigint,
+    deadlineSeconds: number,
+    reason: string,
+    book?: PaperAccount,
+  ): Promise<TradeFill> {
+    const booking = {
+      token: quote.token,
+      symbol: quote.symbol,
+      qtyWei: quote.amountInWei,
+      nativeWei: quote.amountOut,
+      reason,
+    };
+    const paper = this.bookFor(book);
+    if (paper) {
+      const fill = await paper.sell(booking);
+      return { hash: fill.hash, status: "success", paper: true, realizedWei: fill.realizedWei };
+    }
+    const { hash, status } = await this.sellExactTokens(quote, minOut, deadlineSeconds);
+    const explorer = this.explorerTxUrl(hash);
+    if (status !== "success") return { hash, status, explorer, paper: false };
+    const realizedWei = await this.journal.recordSell({ ...booking, txHash: hash });
+    return { hash, status, explorer, paper: false, realizedWei };
   }
 
   resolveToken(token: string): Address | undefined {

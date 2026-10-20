@@ -6,6 +6,7 @@
  * Run: npm run markdown:smoke
  */
 import { THEMES } from "../src/clients/tui/theme.js";
+import { turnLines } from "../src/clients/tui/layout.js";
 import stringWidth from "string-width";
 import {
   fitToWidth,
@@ -99,6 +100,17 @@ check(
   "wrap counts columns    ",
   wrapSpans([{ t: "⚙⚙ ⚙⚙ ⚙⚙" }], 5).every((l) => lineWidth(l) <= 5),
 );
+
+// A list item's text carries its own inline tokens; a model's reply is full of them.
+const asText = (md: string) => mdToLines(md, theme, 120).map((l) => l.map((sp) => sp.t).join(""));
+const item = mdToLines("- **BSKCAT**: 7 wallets", theme, 120)[0];
+check("bold inside a list item ", asText("- **BSKCAT**: 7 wallets")[0] === "• BSKCAT: 7 wallets" && item.some((sp) => sp.b && sp.t === "BSKCAT:".slice(0, 6)));
+check("no space before a comma ", asText("made **578 buys**, and more")[0] === "made 578 buys, and more");
+
+// A system message (/help, /skills) keeps its lines and their indent (under the body's own two columns).
+const sysText = turnLines({ id: "s", role: "sys", parts: [{ kind: "text", text: "Tools (2):\n· a — one\n  last change: edit" }] }, new Set(), theme, 80, "")
+  .lines.map((l) => l.map((sp) => sp.t).join(""));
+check("sys lines stay lines    ", sysText.some((l) => l.trimEnd() === "  Tools (2):") && sysText.some((l) => l.trimEnd() === "  · a — one") && sysText.some((l) => l.trimEnd() === "    last change: edit"));
 
 let ok = true;
 for (const [name, pass] of results) {

@@ -4,6 +4,7 @@ import { mkdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createLogger } from "../logger.js";
+import { parseUsageLimit } from "./limits.js";
 import {
   ModelTier,
   type ModelProvider,
@@ -132,6 +133,8 @@ export class CodexModelProvider implements ModelProvider {
       } catch (err) {
         lastErr = err;
         if (err instanceof Error && err.message.includes("timed out")) break;
+        // Out of quota stays out of quota two seconds later.
+        if (err instanceof Error && parseUsageLimit(err.message)) break;
       }
     }
     await rm(outFile, { force: true }).catch(() => {});

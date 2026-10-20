@@ -109,6 +109,10 @@ export const addLiquidityAction: Action = {
   },
   async handler(runtime, _state, params) {
     const svc = getService(runtime);
+    if (svc.paperMode) {
+      // Liquidity is not simulated: a paper LP position would have no honest value.
+      return { ok: false, text: "Paper mode is on and liquidity isn't simulated — quote_liquidity still works; turn paper mode off to add real liquidity." };
+    }
     if (!svc.walletClient || !svc.agentAddress) {
       return { ok: false, text: "No signer configured; I can only quote LP adds." };
     }

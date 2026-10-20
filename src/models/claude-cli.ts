@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { createLogger } from "../logger.js";
+import { parseUsageLimit } from "./limits.js";
 import {
   ModelTier,
   type ModelProvider,
@@ -142,6 +143,8 @@ export class ClaudeCliModelProvider implements ModelProvider {
       } catch (err) {
         lastErr = err;
         if (err instanceof Error && err.message.includes("timed out")) break;
+        // Out of quota stays out of quota two seconds later.
+        if (err instanceof Error && parseUsageLimit(err.message)) break;
       }
     }
     throw lastErr;
@@ -182,7 +185,13 @@ export class ClaudeCliModelProvider implements ModelProvider {
           return reject(new Error(`claude timed out after ${Math.round(this.timeoutMs / 1000)}s`));
         }
         if (code !== 0) {
-          const reason = stderrTail.trim().split("\n").slice(-3).join(" · ").slice(-300);
+          // A spent subscription exits 1 with its notice in the JSON envelope
+          // on stdout ("You've hit your weekly limit · resets …"), not on stderr.
+          const said = envelopeText(stdout);
+          const reason = [said, stderrTail.trim().split("\n").slice(-3).join(" · ")]
+            .filter(Boolean)
+            .join(" · ")
+            .slice(-300);
           return reject(new Error(`claude exited ${code}${reason ? `: ${reason}` : ""}`));
         }
         let envelope: ClaudeResult;
@@ -192,8 +201,10 @@ export class ClaudeCliModelProvider implements ModelProvider {
           return reject(new Error(`claude returned no JSON envelope: ${stdout.trim().slice(-300)}`));
         }
         if (envelope.is_error) {
-          const detail = envelope.subtype ?? envelope.result ?? "unknown error";
-          return reject(new Error(`claude reported an error: ${String(detail).slice(0, 300)}`));
+          // `subtype` alone ("success", "error_during_execution") hid the
+          // sentence that says what went wrong.
+          const detail = [envelope.result, envelope.subtype].filter(Boolean).join(" · ") || "unknown error";
+          return reject(new Error(`claude reported an error: ${detail.slice(0, 300)}`));
         }
         resolvePromise(envelope);
       });
@@ -242,6 +253,17 @@ export function renderPrompt(request: ModelRequest): string {
  * calls to a cheap model, so the busiest entry in `modelUsage` is not the one
  * that wrote the reply — match the requested name instead.
  */
+/** The `result` sentence of a JSON envelope on stdout, when there is one. */
+function envelopeText(stdout: string): string {
+  try {
+    const envelope = JSON.parse(stdout.trim()) as ClaudeResult;
+    return typeof envelope.result === "string" ? envelope.result.trim() : "";
+  } catch {
+    // Not JSON: the last line of whatever it printed is still its reason.
+    return stdout.trim().split("\n").at(-1)?.trim() ?? "";
+  }
+}
+
 function observedModel(envelope: ClaudeResult, requested: string): string | undefined {
   const keys = Object.keys(envelope.modelUsage ?? {});
   const want = requested.toLowerCase();

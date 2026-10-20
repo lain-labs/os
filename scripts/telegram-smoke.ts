@@ -28,9 +28,9 @@ check(
   md("[0xbe0b…c8d9](https://robinhoodchain.blockscout.com/address/0xbe0b)") ===
     '<a href="https://robinhoodchain.blockscout.com/address/0xbe0b">0xbe0b…c8d9</a>',
 );
-check("headings become bold", md("## что сделано") === "<b>что сделано</b>");
+check("headings become bold", md("## what changed") === "<b>what changed</b>");
 check("fenced code becomes <pre>", md("```js\nconst a = 1 < 2;\n```") === "<pre>const a = 1 &lt; 2;</pre>");
-const table = md("| ключ | значение |\n|---|---|\n| `CHAIN_ID` | **4663** |");
+const table = md("| key | value |\n|---|---|\n| `CHAIN_ID` | **4663** |");
 check("tables become aligned monospace", table.startsWith("<pre>") && table.includes("CHAIN_ID  4663") && !table.includes("|"));
 check("single * and snake_case stay as they are", md("5 * 3 and my_var_name") === "5 * 3 and my_var_name");
 check("quotes become blockquote", md("> note") === "<blockquote>note</blockquote>");

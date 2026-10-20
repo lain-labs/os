@@ -3,7 +3,9 @@
  * TUI smoke test: renders the ink App against fake stdio and drives the
  * keyboard — message round-trip, markdown-flat feed, /copy (OSC 52), /clear,
  * the arrow-key pickers, in-app scrolling layout, and the idle blink pause
- * that keeps terminal text selectable. Run: npm run tui:smoke
+ * that keeps terminal text selectable, the sidebar's windows (the wallet's
+ * balance and P&L, folding, poking Lain) and the spinning welcome logo.
+ * Run: npm run tui:smoke
  */
 import { EventEmitter } from "node:events";
 import { mkdtempSync } from "node:fs";
@@ -22,6 +24,10 @@ import { FileMemoryStore } from "../src/memory/store.js";
 import { SessionStore } from "../src/memory/sessions.js";
 import { SwitchableModelProvider } from "../src/models/routing.js";
 import { lain } from "../src/characters/lain.js";
+import { acceptCompletion, completionsFor } from "../src/clients/tui/commands.js";
+import { MASCOT_LINES } from "../src/clients/tui/mascot.js";
+import { PaperDesk } from "../src/plugins/chain/paper.js";
+import { parseEther } from "viem";
 import type { ModelRequest, ModelResponse } from "../src/types.js";
 
 const REPLY = "the wired says: privet";
@@ -77,7 +83,7 @@ async function main() {
       return { text: REPLY, toolCalls: [], model: "stub", provider: "gw", upstream: "groq" };
     },
   };
-  // The daemon's chat model is switchable (/model claude|codex), so the probe
+  // The daemon's chat model is switchable (/agent claude|codex), so the probe
   // wraps the stub the same way — "anthropic" stands in for a route that has
   // neither a key nor a CLI on this machine.
   const switchable = new SwitchableModelProvider({
@@ -112,9 +118,39 @@ async function main() {
     })),
   });
 
+  // A chain service holding a real paper desk (no coins, so no price lookups):
+  // what the sidebar's wallet window reads its balance and P&L from.
+  const desk = new PaperDesk(mkdtempSync(join(tmpdir(), "lainos-tui-paper-")), parseEther("1"), true);
+  await desk.load();
+  const book = await desk.account(46630);
+  runtime.use({
+    name: "smoke-chain",
+    description: "a paper wallet for the sidebar",
+    actions: [],
+    services: [
+      {
+        name: "chain",
+        configured: true,
+        chain: { id: 46630, name: "Robinhood Chain" },
+        nativeSymbol: "ETH",
+        paper: desk,
+        paperMode: true,
+        paperBook: book,
+        paperWallet: (name: string) => desk.account(46630, name),
+        venueFor: () => undefined,
+      } as never,
+    ],
+  });
+
   const stdout = new FakeStdout();
   const stdin = new FakeStdin();
-  const app = render(<App runtime={runtime} />, {
+  // Fake stdio captures OSC 52; the local helper must be isolated as well.
+  const clipboardWrites: string[] = [];
+  const copyToClipboard = async (text: string): Promise<string | null> => {
+    clipboardWrites.push(text);
+    return null;
+  };
+  const app = render(<App runtime={runtime} copyToClipboard={copyToClipboard} />, {
     stdout: stdout as never,
     stdin: stdin as never,
     exitOnCtrlC: false,
@@ -138,6 +174,49 @@ async function main() {
 
   // 0) the tab/window title is claimed via OSC 0
   results.push(["sets terminal title  ", anyWrite("\x1b]0;Lain OS")]);
+
+  // 0.5) an empty session opens on the welcome screen: the 3D logo turning,
+  // drawn from a luminance ramp, a different frame every few writes.
+  const lastFrame = () => stripAnsi(stdout.writes.at(-1) ?? "");
+  const rowOf = (needle: string): number => lastFrame().split("\n").findIndex((l) => l.includes(needle));
+  const frames = new Set(stdout.writes.filter((w) => stripAnsi(w).includes("the wired remembers")).map(stripAnsi));
+  results.push(["welcome logo spins   ", frames.size >= 3 && /[#@$]{3}/.test(lastFrame())]);
+
+  // 0.6) the sidebar's wallet window: Lain's paper wallet, its equity and P&L.
+  await sleep(300);
+  results.push([
+    "sidebar shows wallet ",
+    anyPlain("◈ paper · main") && anyPlain("1.0000 ETH") && anyPlain("P&L"),
+  ]);
+  // A click on a window's title bar folds it to that bar, and another opens it.
+  const sidebarCol = stdout.columns - 30 + 4; // inside the 30-column sidebar
+  const click = async (x: number, y: number) => {
+    stdin.write(`\x1b[<0;${x};${y}M`);
+    await sleep(30);
+    stdin.write(`\x1b[<0;${x};${y}m`);
+    await sleep(250);
+  };
+  await click(sidebarCol, rowOf("◈ paper") + 1);
+  results.push(["title click folds it ", lastFrame().includes("▸ ◈ paper") && !lastFrame().includes("equity")]);
+  await click(sidebarCol, rowOf("◈ paper") + 1);
+  results.push(["second click opens it", lastFrame().includes("▾ ◈ paper") && lastFrame().includes("equity")]);
+  // Opening the key list leaves no room for every window, so the session one
+  // folds itself — and a click on a window that folded itself opens it.
+  await click(sidebarCol, rowOf("⌥ keys") + 1);
+  results.push(["opening one folds another", lastFrame().includes("▾ ⌥ keys") && lastFrame().includes("▸ ◷ session")]);
+  await click(sidebarCol, rowOf("◷ session") + 1);
+  results.push(["a self-folded one opens", lastFrame().includes("▾ ◷ session")]);
+  // Lain herself answers a click: a hop, then a line in a speech bubble.
+  await click(sidebarCol + 6, rowOf("◆ lain") + 5);
+  await sleep(300);
+  // The bubble wraps her line over a few rows beside the sprite; read them back as one.
+  const bubbleText = lastFrame()
+    .split("\n")
+    .map((l) => [...l].slice(stdout.columns - 30 + 18).join(""))
+    .join(" ")
+    .replace(/[│╭╮╰╯─◂]/g, " ")
+    .replace(/\s+/g, " ");
+  results.push(["poked Lain says a line", MASCOT_LINES.some((l) => bubbleText.includes(l))]);
 
   // 1) a normal message round-trip lands in the flat feed
   await type("hi\r");
@@ -189,6 +268,32 @@ async function main() {
   await press("\x15"); // ctrl+u — back to an empty composer
   await sleep(100);
 
+  // 1.7) Tab completes: a command name, then the command's next word
+  const names = (v: string, cursor?: number) => completionsFor(v, undefined, cursor).items.map((c) => c.name).join(",");
+  results.push(["completes names, args", names("/pap") === "/paper" && names("/paper s") === "status,sell,set,swap" && completionsFor("/paper s").kind === "arg"]);
+  results.push([
+    "args follow the verb  ",
+    names("/paper swap ") === "all" && !names("/paper swap 1 SOL ").split(",").includes("SOL") && names("/paper swap 1 SOL ").includes("USDC") &&
+      names("/coder codex ").includes("low") && names("/jobs ").startsWith("all"),
+  ]);
+  results.push([
+    "menu stays out of way ",
+    names("/paper on") === "" && names("/paper swap 1 SOL USDC ") === "" && names("/metamask ") === "" && names("/paper s", 3) === "" && names("hello /pa") === "",
+  ]);
+  results.push(["accept replaces word  ", acceptCompletion("/paper sw", completionsFor("/paper sw"), { name: "swap", desc: "" }) === "/paper swap "]);
+  const beforeTab = stdout.writes.length;
+  await type("/pap");
+  await press("\t");
+  await sleep(150);
+  results.push(["tab fills the command", anyPlain("/paper ", beforeTab) && anyPlain("at the spot price", beforeTab)]);
+  const beforeTab2 = stdout.writes.length;
+  await type("sw");
+  await press("\t");
+  await sleep(150);
+  results.push(["tab fills the arg    ", anyPlain("/paper swap ", beforeTab2) && anyPlain("the whole balance of the coin", beforeTab2)]);
+  await press("\x15"); // ctrl+u — back to an empty composer
+  await sleep(100);
+
   // 2) /copy emits OSC 52 with the reply, confirms in the feed
   const beforeCopy = stdout.writes.length;
   await type("/copy");
@@ -202,6 +307,7 @@ async function main() {
     oscOk = Buffer.from(b64, "base64").toString("utf8") === REPLY;
   }
   results.push(["/copy OSC52 payload  ", oscOk]);
+  results.push(["/copy uses test clipboard", clipboardWrites.length === 1 && clipboardWrites[0] === REPLY]);
   results.push(["/copy confirmation   ", anyPlain("copied lain's last reply", beforeCopy)]);
 
   // 2.5) sessions: the run is one, /sessions can see it, /new starts another
@@ -257,10 +363,6 @@ async function main() {
 
   // 4.6) a picker is a mouse target too: clicking a row picks it. Arrow keys
   // alone are not an answer when the same list opens by clicking the sidebar.
-  const rowOf = (needle: string): number =>
-    stripAnsi(stdout.writes.at(-1) ?? "")
-      .split("\n")
-      .findIndex((l) => l.includes(needle));
   await type("/skin");
   await sleep(30);
   await type("\r");
@@ -299,6 +401,7 @@ async function main() {
     dragged.includes("welcome to the wired") && dragged.includes("\n"),
   ]);
   results.push(["drag says what it did", anyPlain("chars copied", beforeDrag)]);
+  results.push(["drag uses test clipboard", dragged.length > 0 && clipboardWrites.at(-1) === dragged]);
 
   // 4.66) a drag held below the transcript scrolls it, and the copy takes what
   // scrolled past — not just the rows one screen shows.
@@ -325,16 +428,21 @@ async function main() {
   await type("/clear\r"); // the rest expects the short boot feed
   await sleep(200);
 
-  // 4.7) /model re-routes the replies in place, and a route that cannot be
+  // 4.7) /agent re-routes the replies in place, and a route that cannot be
   // built says so instead of silently dropping the chat on another model.
+  const beforeAgent = stdout.writes.length;
+  await type("/agent claude\r");
+  await sleep(300);
+  results.push(["/agent switches      ", anyPlain("replies now go through claude", beforeAgent)]);
+  const beforeBadAgent = stdout.writes.length;
+  await type("/agent claude-api\r");
+  await sleep(300);
+  results.push(["/agent failure loud  ", anyPlain("unavailable", beforeBadAgent)]);
+  // /model picks inside the agent: one with no list takes the id as typed.
   const beforeModel = stdout.writes.length;
-  await type("/model claude\r");
+  await type("/model sonnet-x\r");
   await sleep(300);
-  results.push(["/model switches      ", anyPlain("replies now go through claude", beforeModel)]);
-  const beforeBadModel = stdout.writes.length;
-  await type("/model claude-api\r");
-  await sleep(300);
-  results.push(["/model failure loud  ", anyPlain("unavailable", beforeBadModel)]);
+  results.push(["/model pins in agent ", anyPlain("now answers on claude-model", beforeModel)]);
 
   // 4.5) nothing ever draws wider than the terminal.
   const wideLine = stdout.writes
@@ -406,7 +514,7 @@ async function main() {
   await sleep(600);
   results.push([
     "resize drops sidebar ",
-    !anyPlain("╭─ session", beforeResize) && anyPlain("LAIN OS", beforeResize),
+    anyPlain("◈ paper", 0) && !anyPlain("◈ paper", beforeResize) && anyPlain("LAIN OS", beforeResize),
   ]);
 
   // 5.5) a slash menu taller than the window scrolls inside it instead of
@@ -486,6 +594,10 @@ async function main() {
   // …and every frame stays inside the window, or ink wraps a line and clears.
   const tallest = Math.max(...stdout.writes.map((w) => stripAnsi(w).split("\n").length));
   results.push(["frame fits the window ", tallest <= stdout.rows]);
+  results.push([
+    "all copies stay in test",
+    clipboardWrites.length === stdout.writes.filter((w) => w.includes("\x1b]52;c;")).length,
+  ]);
 
   app.unmount();
   let ok = true;

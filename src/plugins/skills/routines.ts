@@ -26,7 +26,7 @@ const log = createLogger("plugin:routines");
 
 export type RoutineTrigger =
   | { kind: "every"; ms: number }
-  | { kind: "daily"; at: string }
+  | { kind: "daily"; at: string; timeZone?: string }
   | { kind: "event"; source: "sentinel"; watchId?: string };
 
 export type RoutineNotify = "change" | "always";
@@ -85,7 +85,14 @@ export interface NewRoutine {
 }
 
 const MIN_INTERVAL_MS = 5 * 60_000;
-const RUN_TIMEOUT_MS = 120_000;
+/** A background run may take a while — a scan over two days of blocks does. */
+const RUN_TIMEOUT_MS = 300_000;
+/**
+ * The first run happens inside the conversation, which waits this long for
+ * it; a longer one (a two-day scan of thirty wallets) finishes in the
+ * background and is reported like any routine result.
+ */
+const FIRST_RUN_WAIT_MS = 90_000;
 const MAX_FAILURES = 5;
 const LATE_DAILY_MS = 3 * 3_600_000;
 const TEXT_CAP = 3_500;
@@ -159,6 +166,9 @@ export class RoutineService implements Service {
     if (input.trigger.kind === "daily" && !parseClock(input.trigger.at)) {
       throw new Error("a daily time must look like HH:MM (24h, host-local)");
     }
+    if (input.trigger.kind === "daily" && input.trigger.timeZone) {
+      new Intl.DateTimeFormat("en-US", { timeZone: input.trigger.timeZone });
+    }
     await this.load();
     const routine: Routine = {
       id: `r${++this.counter}`,
@@ -191,7 +201,11 @@ export class RoutineService implements Service {
    * Run one routine now. `deliver` pushes the result to subscribers under the
    * routine's notify rule; a manual run returns it to the caller instead.
    */
-  async run(id: string, opts: { deliver: boolean; event?: Record<string, unknown> }): Promise<RoutineRun> {
+  async run(
+    id: string,
+    opts: { deliver: boolean; event?: Record<string, unknown>; timeoutMs?: number },
+  ): Promise<RoutineRun> {
+    // opts.deliver is read when the run ends, not now (schedule_skill relies on that).
     await this.load();
     const routine = this.routines.find((r) => r.id === id);
     if (!routine) throw new Error(`no routine ${id}`);
@@ -200,7 +214,8 @@ export class RoutineService implements Service {
     let result: ActionResult;
     try {
       this.assertSchedulable(routine.skill, routine.params);
-      result = await withTimeout(this.callSkill(routine, params), RUN_TIMEOUT_MS);
+      const limit = opts.timeoutMs ?? (Number(this.runtime?.getSetting("LAINOS_ROUTINE_TIMEOUT_MS")) || RUN_TIMEOUT_MS);
+      result = await withTimeout(this.callSkill(routine, params), limit);
     } catch (err) {
       result = { ok: false, text: (err as Error).message };
     }
@@ -344,7 +359,7 @@ export function isDue(routine: Routine, now: number): boolean {
   const t = routine.trigger;
   if (t.kind === "every") return (routine.lastRunAt ?? 0) + t.ms <= now;
   if (t.kind === "daily") {
-    const slot = todayAt(t.at, now);
+    const slot = todayAt(t.at, now, t.timeZone);
     if (slot === null || now < slot) return false;
     // A desk that slept through the slot skips it instead of reporting at lunch.
     return (routine.lastRunAt ?? 0) < slot && now - slot < LATE_DAILY_MS;
@@ -367,7 +382,7 @@ export function describeTrigger(t: RoutineTrigger): string {
     const h = t.ms / 3_600_000;
     return h >= 1 && Number.isInteger(h) ? `every ${h}h` : `every ${Math.round(t.ms / 60_000)}m`;
   }
-  if (t.kind === "daily") return `daily at ${t.at}`;
+  if (t.kind === "daily") return `daily at ${t.at}${t.timeZone ? ` ${t.timeZone}` : ""}`;
   return `on sentinel alerts${t.watchId ? ` from ${t.watchId}` : ""}`;
 }
 
@@ -376,9 +391,30 @@ function parseClock(at: string): { h: number; m: number } | null {
   return m ? { h: Number(m[1]), m: Number(m[2]) } : null;
 }
 
-function todayAt(at: string, now: number): number | null {
+function todayAt(at: string, now: number, timeZone?: string): number | null {
   const clock = parseClock(at);
   if (!clock) return null;
+  if (timeZone) {
+    const formatter = new Intl.DateTimeFormat("en-CA", {
+      timeZone, year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+    });
+    const local = (ms: number) => Object.fromEntries(
+      formatter.formatToParts(ms).filter((p) => p.type !== "literal").map((p) => [p.type, Number(p.value)]),
+    );
+    const day = local(now);
+    const target = Date.UTC(day.year!, day.month! - 1, day.day!, clock.h, clock.m);
+    let slot = target;
+    for (let i = 0; i < 3; i++) {
+      const p = local(slot);
+      const offset = Date.UTC(p.year!, p.month! - 1, p.day!, p.hour!, p.minute!, p.second!) - slot;
+      slot = target - offset;
+    }
+    const p = local(slot);
+    // Skip a clock time that does not exist on a daylight-saving transition.
+    return p.year === day.year && p.month === day.month && p.day === day.day &&
+      p.hour === clock.h && p.minute === clock.m ? slot : null;
+  }
   const d = new Date(now);
   d.setHours(clock.h, clock.m, 0, 0);
   return d.getTime();
@@ -447,7 +483,7 @@ export const scheduleSkillAction: Action = {
     "or whenever the sentinel fires (`on`: 'sentinel', optionally one `watch` id — the alert arrives in params.event). " +
     "By default it reports only when the result changed since the last run (`notify`: 'change'); 'always' reports every run. " +
     "Use it when the user wants a tool to keep working: 'check this every hour', 'tell me when it changes', 'run it whenever my watch fires'. " +
-    "The first run happens right away and its result comes back to you.",
+    "The first run happens right away and its result comes back to you; a slow one (a long chain scan) is reported when it finishes.",
   parameters: {
     type: "object",
     properties: {
@@ -519,12 +555,27 @@ export const scheduleSkillAction: Action = {
       };
     }
     // The first run sets the baseline that "changed" is measured against.
-    const first = await svc.run(routine.id, { deliver: false });
+    // `deliver` is read when the run ends: a run that outlasts the wait is
+    // reported through the routine's channel instead of being lost.
+    const opts = { deliver: false };
+    const run = svc.run(routine.id, opts);
+    const wait = Math.max(100, Number(runtime.getSetting("LAINOS_ROUTINE_FIRST_WAIT_MS")) || FIRST_RUN_WAIT_MS);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const first = await Promise.race([run, new Promise<null>((r) => (timer = setTimeout(() => r(null), wait)))]);
+    if (timer) clearTimeout(timer);
+    const head = `Routine ${routine.id}: ${routine.skill} ${describeTrigger(trigger)}, reports ${notify === "always" ? "every run" : "on change"}.${where}`;
+    if (!first) {
+      opts.deliver = true;
+      run.catch((err) => log.warn(`routine ${routine.id} first run failed`, err));
+      return {
+        ok: true,
+        text: `${head}\nFirst run is still going after ${Math.round(wait / 1000)}s — its result will be reported here when it finishes; nothing more to do now.`,
+        data: { routine, firstRun: "running" },
+      };
+    }
     return {
       ok: true,
-      text:
-        `Routine ${routine.id}: ${routine.skill} ${describeTrigger(trigger)}, reports ${notify === "always" ? "every run" : "on change"}.${where}\n` +
-        `First run (${first.ok ? "ok" : "failed"}): ${first.text}`,
+      text: `${head}\nFirst run (${first.ok ? "ok" : "failed"}): ${first.text}`,
       data: { routine: { ...routine, runs: 1 }, firstRun: first },
     };
   },

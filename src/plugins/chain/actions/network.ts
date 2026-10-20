@@ -7,7 +7,7 @@ export const listNetworksAction: Action = {
   similes: ["networks", "show_networks", "which_network"],
   description: "List the chain profiles Lain knows (built-in and saved) and which one is active.",
   parameters: { type: "object", properties: {} },
-  examples: [{ user: "на какой ты сети?", agent: "смотрю." }],
+  examples: [{ user: "which network are you on?", agent: "checking." }],
   async validate() {
     return true;
   },
@@ -32,7 +32,7 @@ export const switchNetworkAction: Action = {
       save_as: { type: "string", description: "Save the current CHAIN_* configuration as this profile name (no switch)." },
     },
   },
-  examples: [{ user: "переключись на мейннет робинхуда", agent: "переключаю." }],
+  examples: [{ user: "switch to the Robinhood mainnet", agent: "switching." }],
   async validate() {
     return true;
   },

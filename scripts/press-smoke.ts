@@ -172,7 +172,7 @@ const slot = slotFor(shipped, "2026-08-25")!;
 const system = writerSystemPrompt(shipped);
 check("writer is told the language  ", system.includes("English"));
 check("writer is barred from internals", /Never name a library/.test(system));
-check("writer is told to end on one question", /exactly one question/.test(system));
+check("writer ends on the day's CTA ", /day's CTA/.test(system) && /Never "thoughts\?"/.test(system));
 check("writer returns only the post ", /OUTPUT: the post text and nothing else/.test(system));
 
 const brief = writerBrief(shipped, slot, commits, ["previous post"], "do it about the bridge");

@@ -45,10 +45,28 @@ const MAX_TOOL_ROUNDS = 12;
  */
 const TOOL_RESULT_MAX_CHARS = 6000;
 const OLD_TOOL_RESULT_MAX_CHARS = 1500;
+/** Budget of a result marked `keep` (a skill's source, the kit reference). */
+const KEPT_TOOL_RESULT_MAX_CHARS = 16000;
+/**
+ * Tools that only look around. A run of rounds made of nothing else is a
+ * search, not the work: a yes/no question once spent twelve rounds and seven
+ * minutes grepping for her own source in directories that did not exist.
+ */
+const LOOK_AROUND_TOOLS = new Set(["run_shell", "read_file", "list_dir"]);
+/** Rounds of only looking around before the turn is told to answer… */
+const LOOK_AROUND_NUDGE = 3;
+/** …and before it must (LAINOS_MAX_LOOK_AROUND_ROUNDS). */
+const LOOK_AROUND_MAX = 5;
 const SECRET_KEY_RE = /(KEY|TOKEN|SECRET|MNEMONIC|COOKIE|PASSWORD|PK|PRIVATE)/i;
 
+/**
+ * One turn on disk. Every model call of a turn resends the same system prompt
+ * and tool list and the conversation so far; written per call, that was 97%
+ * of a 1.9 MB file for one question. So the shared parts are written once and
+ * each call names the messages it was sent.
+ */
 interface TurnTranscript {
-  version: 1;
+  version: 2;
   id: string;
   path: string;
   roomId: string;
@@ -61,6 +79,12 @@ interface TurnTranscript {
   taskSignal?: string;
   escalatedFrom?: string;
   forcedAction?: string;
+  /** The system prompt the turn's calls were sent; a call that differs carries its own. */
+  system?: string;
+  /** Names of the tools offered (their schemas live in the code). */
+  tools?: string[];
+  /** Every distinct message the calls were sent, in first-seen order. */
+  messages: TranscriptMessage[];
   modelCalls: TranscriptModelCall[];
   toolResults: TranscriptToolResult[];
   /** Long tool outputs cut for the model, kept whole on disk. */
@@ -73,12 +97,22 @@ interface TurnTranscript {
   };
 }
 
+type TranscriptMessage = ModelRequest["messages"][number];
+
 interface TranscriptModelCall {
   phase: string;
   startedAt: string;
   endedAt?: string;
   provider: string;
-  request: ModelRequest;
+  tier: ModelRequest["tier"];
+  task?: string;
+  maxTokens?: number;
+  /** What this call was sent: indices into the turn's `messages`, as ranges ("0-13,20,15-19"). */
+  messages: string;
+  /** How many of the turn's tools were offered (0 on a round that must answer). */
+  tools: number;
+  /** Only when it differs from the turn's. */
+  system?: string;
   response?: {
     model: string;
     text: string;
@@ -92,6 +126,8 @@ interface TranscriptToolResult {
   name: string;
   input: Record<string, unknown>;
   ok: boolean;
+  /** How long the tool ran. */
+  ms: number;
   summary: string;
 }
 
@@ -125,6 +161,8 @@ export class AgentRuntime implements IAgentRuntime {
 
   private readonly services = new Map<string, Service>();
   private readonly settings: Record<string, string | undefined>;
+  /** Per transcript: message → its index in `messages`, so a resent message is written once. */
+  private readonly transcriptMessageIndex = new WeakMap<TurnTranscript, Map<string, number>>();
 
   constructor(opts: RuntimeOptions) {
     this.character = opts.character;
@@ -264,6 +302,8 @@ export class AgentRuntime implements IAgentRuntime {
         `- Deliver the best version you can now, with honest caveats inside it — never withhold the deliverable to investigate further, to ask, or because the data is imperfect. ` +
         `If part of it is impossible, deliver the rest and say what is missing. A side issue you notice is one line at the end, not a replacement for the task.\n` +
         `- Do not substitute your own task for theirs. Don't fix, rebuild or re-check what they didn't ask about unless it blocks the request.\n` +
+        `- A question gets an answer: once a tool has answered it, reply — "is anything being built?" is one forge_status, not an investigation. ` +
+        `The "next step" you named in an earlier reply is a proposal, not an order: carry it out only when the operator says so.\n` +
         `- An explicit instruction is the confirmation. Never ask again for what they just told you to do; ask only before something irreversible that they did not name (moving funds, deleting, publishing).\n` +
         `- When a request genuinely has several readings that lead to different work, call offer_choices (2–5 options, one recommended) — never an open question, never a refusal. ` +
         `If one reading is clearly most likely, just do it and say which you chose.\n` +
@@ -434,7 +474,7 @@ export class AgentRuntime implements IAgentRuntime {
       );
       res = await this.streamOrGenerate(
         { tier, task, system, messages: convo, maxTokens: this.maxTokens, conversationId: input.roomId },
-        (delta) => onEvent({ type: "text", delta }),
+        onEvent,
         transcript,
         "forced-action-summary",
       );
@@ -452,7 +492,7 @@ export class AgentRuntime implements IAgentRuntime {
       onEvent({ type: "thinking" });
       res = await this.streamOrGenerate(
         { tier, task, system, messages, tools, maxTokens: this.maxTokens, conversationId: input.roomId },
-        (delta) => onEvent({ type: "text", delta }),
+        onEvent,
         transcript,
         "initial",
       );
@@ -462,15 +502,25 @@ export class AgentRuntime implements IAgentRuntime {
     }
     // Provenance: which model produced the text the user will actually see.
     const seenCalls = new Set<string>();
-    const toolResultIdx: number[] = [];
+    /** Each round's tool-results message: where it is, and what of it must stay verbatim. */
+    const toolRounds: { idx: number; kept: string[]; rest: string[]; tail: string }[] = [];
     let choices: TurnResult["choices"];
     let rounds = 0;
+    /** Consecutive rounds of nothing but shell and file reads. */
+    let lookingAround = 0;
+    const asked = isQuestion(input.text);
 
     while (res.toolCalls.length) {
       rounds += 1;
       escalate();
       const toolSummaries: string[] = [];
+      const keptSummaries = new Set<string>();
       let sawRepeat = false;
+      const onlyLooked = res.toolCalls.every((call) => {
+        const action = this.actions.find((a) => a.name === call.name || a.similes.includes(call.name));
+        return LOOK_AROUND_TOOLS.has(action?.name ?? call.name);
+      });
+      lookingAround = onlyLooked ? lookingAround + 1 : 0;
 
       for (const call of res.toolCalls) {
         const action = this.actions.find(
@@ -495,9 +545,9 @@ export class AgentRuntime implements IAgentRuntime {
         }
         seenCalls.add(callKey);
 
-        toolSummaries.push(
-          await this.executeAction(action, state, call.input, onEvent, ranActions, transcript),
-        );
+        const summary = await this.executeAction(action, state, call.input, onEvent, ranActions, transcript);
+        toolSummaries.push(summary);
+        if (ranActions.at(-1)?.result.keep) keptSummaries.add(summary);
       }
 
       // Offering choices ends the turn: the options are the reply, and a
@@ -510,16 +560,39 @@ export class AgentRuntime implements IAgentRuntime {
       }
 
       const maxRounds = Number(this.getSetting("LAINOS_MAX_TOOL_ROUNDS")) || MAX_TOOL_ROUNDS;
-      const canContinue = rounds < maxRounds && !sawRepeat;
+      const maxLookAround = Number(this.getSetting("LAINOS_MAX_LOOK_AROUND_ROUNDS")) || LOOK_AROUND_MAX;
+      const canContinue = rounds < maxRounds && !sawRepeat && lookingAround < maxLookAround;
       // The model has read the earlier rounds' output and acted on it; keep
-      // their gist, not their bulk, in what every later call resends.
-      for (const i of toolResultIdx) {
-        const m = convo[i];
-        if (m.content.length > OLD_TOOL_RESULT_MAX_CHARS) {
-          convo[i] = { ...m, content: clipMiddle(m.content, OLD_TOOL_RESULT_MAX_CHARS, "earlier round") };
-        }
+      // their gist, not their bulk, in what every later call resends — except
+      // results marked `keep` (the source it is editing, the reference it is
+      // writing against), which a gist would turn into guesswork.
+      for (const round of toolRounds) {
+        const m = convo[round.idx];
+        if (m.content.length <= OLD_TOOL_RESULT_MAX_CHARS + round.kept.reduce((n, k) => n + k.length + 1, 0)) continue;
+        const rest = round.rest.join("\n");
+        convo[round.idx] = {
+          ...m,
+          content:
+            `Tool results:\n${[...round.kept, rest ? clipMiddle(rest, OLD_TOOL_RESULT_MAX_CHARS, "earlier round") : ""].filter(Boolean).join("\n")}` +
+            `\n\n${round.tail}`,
+        };
       }
-      toolResultIdx.push(convo.length + 1);
+      const tail = !canContinue
+        ? `That was the last tool round of this turn. Reply now in character: what is done (with the actual results), ` +
+          `what is not done yet, and the one next step — I will say "go on" if I want it. Do not call more tools.`
+        : lookingAround >= LOOK_AROUND_NUDGE
+          ? `That is ${lookingAround} rounds in a row of shell and file reads. Stop searching unless the very next call finishes the job: ` +
+            `reply now with what you found, and hand a change to your own code to the forge (build_wish) instead of digging for it.`
+          : asked
+            ? `I asked a question. If these results answer it, reply now in character — don't go on to work I didn't ask for in this message. ` +
+              `Otherwise call the tool that answers it.`
+            : `Continue. Call another tool if the task needs it, otherwise reply to me in character using these results.`;
+      toolRounds.push({
+        idx: convo.length + 1,
+        kept: toolSummaries.filter((t) => keptSummaries.has(t)),
+        rest: toolSummaries.filter((t) => !keptSummaries.has(t)),
+        tail,
+      });
       convo.push(
         {
           role: "assistant",
@@ -528,12 +601,7 @@ export class AgentRuntime implements IAgentRuntime {
         },
         {
           role: "user",
-          content:
-            `Tool results:\n${toolSummaries.join("\n") || "(no tool output)"}\n\n` +
-            (canContinue
-              ? `Continue. Call another tool if the task needs it, otherwise reply to me in character using these results.`
-              : `That was the last tool round of this turn. Reply now in character: what is done (with the actual results), ` +
-                `what is not done yet, and the one next step — I will say "go on" if I want it. Do not call more tools.`),
+          content: `Tool results:\n${toolSummaries.join("\n") || "(no tool output)"}\n\n${tail}`,
         },
       );
 
@@ -548,7 +616,7 @@ export class AgentRuntime implements IAgentRuntime {
           messages: convo,
           tools: canContinue ? tools : undefined,
         },
-        (delta) => onEvent({ type: "text", delta }),
+        onEvent,
         transcript,
         `tool-followup-${rounds}`,
       );
@@ -584,7 +652,7 @@ export class AgentRuntime implements IAgentRuntime {
               },
             ],
           },
-          (delta) => onEvent({ type: "text", delta }),
+          onEvent,
           transcript,
           "empty-reply-retry",
         );
@@ -697,14 +765,16 @@ export class AgentRuntime implements IAgentRuntime {
   /** Stream when the provider supports it, otherwise fall back to one generate. */
   private async streamOrGenerate(
     request: ModelRequest,
-    onText: (delta: string) => void,
+    onEvent: (event: AgentEvent) => void,
     transcript?: TurnTranscript | null,
     phase = "model-call",
   ): Promise<ModelResponse> {
+    const onText = (delta: string) => onEvent({ type: "text", delta });
     const call = this.beginModelTranscriptCall(transcript, request, phase);
     if (this.model.stream) {
       try {
         const res = await this.model.stream(request, onText);
+        if (res.reasoning) onEvent({ type: "reasoning", delta: res.reasoning });
         await this.finishModelTranscriptCall(transcript, call, res);
         return await this.withRoomForTools(request, res, transcript, phase);
       } catch (err) {
@@ -717,6 +787,8 @@ export class AgentRuntime implements IAgentRuntime {
       : call;
     try {
       const res = await this.model.generate(request);
+      // The thought comes first, the way it happened.
+      if (res.reasoning) onEvent({ type: "reasoning", delta: res.reasoning });
       if (res.text) onText(res.text);
       await this.finishModelTranscriptCall(transcript, fallbackCall, res);
       return await this.withRoomForTools(request, res, transcript, phase);
@@ -775,6 +847,7 @@ export class AgentRuntime implements IAgentRuntime {
   ): Promise<string> {
     const id = randomUUID();
     onEvent({ type: "tool", id, name: action.name, input });
+    const started = Date.now();
     let result: ActionResult;
     try {
       result = await action.handler(this, state, input);
@@ -792,35 +865,44 @@ export class AgentRuntime implements IAgentRuntime {
       ok: result.ok,
       summary: summariseResult(result),
     });
-    const summary = summariseResult(result);
     if (transcript) {
       transcript.toolResults.push({
         at: new Date().toISOString(),
         name: action.name,
         input,
         ok: result.ok,
-        summary,
+        ms: Date.now() - started,
+        // `data` that only repeats the input (run_shell's command) is noise here.
+        summary: summariseResult({ ...result, data: withoutEchoedInput(result.data, input) }),
       });
       await this.persistTranscript(transcript);
     }
-    return this.capToolOutput(`Tool ${action.name} -> ${serializeActionResult(result)}`, action.name, transcript);
+    return this.capToolOutput(`Tool ${action.name} -> ${serializeActionResult(result)}`, action.name, transcript, result);
   }
 
   /** Cut an oversized tool result for the model, keeping the whole of it on disk. */
-  private async capToolOutput(text: string, name: string, transcript?: TurnTranscript | null): Promise<string> {
-    const max = Number(this.getSetting("LAINOS_TOOL_RESULT_MAX_CHARS")) || TOOL_RESULT_MAX_CHARS;
+  private async capToolOutput(
+    text: string,
+    name: string,
+    transcript?: TurnTranscript | null,
+    result?: ActionResult,
+  ): Promise<string> {
+    const base = Number(this.getSetting("LAINOS_TOOL_RESULT_MAX_CHARS")) || TOOL_RESULT_MAX_CHARS;
+    const max = result?.keep ? Math.max(base, KEPT_TOOL_RESULT_MAX_CHARS) : base;
     if (text.length <= max) return text;
     const dir = resolve(join(this.getSetting("LAINOS_DATA_DIR") || "./data", "tool-outputs"));
     const file = join(dir, `${new Date().toISOString().replace(/[:.]/g, "-")}-${safeSegment(name)}-${randomUUID().slice(0, 8)}.txt`);
+    let note: string;
     try {
       await mkdir(dir, { recursive: true });
       await writeFile(file, this.redactString(text), "utf8");
       if (transcript) (transcript.savedOutputs ??= []).push(file);
-      return clipMiddle(text, max, `full output saved to ${file} — grep or sed it with run_shell if the rest matters`);
+      note = `full output saved to ${file} — grep or sed it with run_shell if the rest matters`;
     } catch (err) {
       log.warn("could not save a long tool output", err);
-      return clipMiddle(text, max, "rest not kept");
+      note = "rest not kept";
     }
+    return result?.text ? fitResult(name, result, max, note) : clipMiddle(text, max, note);
   }
 
   private async maybeStartSelfUpgrade(
@@ -912,7 +994,7 @@ export class AgentRuntime implements IAgentRuntime {
     const stamp = new Date(message.createdAt).toISOString().replace(/[:.]/g, "-");
     const file = `${stamp}-${safeSegment(message.roomId)}-${message.id.slice(0, 8)}.json`;
     return {
-      version: 1,
+      version: 2,
       id: message.id,
       path: join(dir, file),
       roomId: message.roomId,
@@ -920,6 +1002,7 @@ export class AgentRuntime implements IAgentRuntime {
       userText: message.content,
       startedAt: new Date(message.createdAt).toISOString(),
       modelProvider: this.model.name,
+      messages: [],
       modelCalls: [],
       toolResults: [],
     };
@@ -930,15 +1013,35 @@ export class AgentRuntime implements IAgentRuntime {
     request: ModelRequest,
     phase: string,
   ): TranscriptModelCall {
+    const tools = request.tools?.map((t) => t.name) ?? [];
     const call: TranscriptModelCall = {
       phase,
       startedAt: new Date().toISOString(),
       provider: this.model.name,
-      // A snapshot: the conversation array keeps growing after this call, and
-      // a reference made every call in the transcript look like the last one.
-      request: { ...request, messages: request.messages.map((m) => ({ ...m })) },
+      tier: request.tier,
+      ...(request.task ? { task: request.task } : {}),
+      ...(request.maxTokens ? { maxTokens: request.maxTokens } : {}),
+      messages: "",
+      tools: tools.length,
     };
-    if (transcript) transcript.modelCalls.push(call);
+    if (!transcript) return call;
+    transcript.system ??= request.system;
+    if (request.system !== transcript.system) call.system = request.system;
+    if (tools.length > (transcript.tools?.length ?? 0)) transcript.tools = tools;
+    // Copied, not referenced: the conversation keeps changing after this call.
+    let index = this.transcriptMessageIndex.get(transcript);
+    if (!index) this.transcriptMessageIndex.set(transcript, (index = new Map()));
+    const sent = request.messages.map((m) => {
+      const key = `${m.role}\u0000${m.content}`;
+      let at = index.get(key);
+      if (at === undefined) {
+        at = transcript.messages.push({ role: m.role, content: m.content }) - 1;
+        index.set(key, at);
+      }
+      return at;
+    });
+    call.messages = toRanges(sent);
+    transcript.modelCalls.push(call);
     return call;
   }
 
@@ -1012,6 +1115,39 @@ function toolTrace(m: Memory): string {
   return `\n\n[tools that turn: ${parts.join("; ")}]`;
 }
 
+/** True when the operator's message is a question rather than an instruction. */
+function isQuestion(text: string): boolean {
+  return /[?？]\s*$/.test(text.trim());
+}
+
+/** `data` minus the fields that only echo the tool's own input back. */
+function withoutEchoedInput(
+  data: ActionResult["data"],
+  input: Record<string, unknown>,
+): ActionResult["data"] {
+  if (!data) return data;
+  const kept = Object.entries(data).filter(
+    ([key, value]) => !(key in input) || JSON.stringify(input[key]) !== JSON.stringify(value),
+  );
+  return kept.length ? Object.fromEntries(kept) : undefined;
+}
+
+/** [0,1,2,3,7,4,5] → "0-3,7,4-5": the order is kept, runs are folded. */
+function toRanges(indices: number[]): string {
+  const parts: string[] = [];
+  let start = indices[0];
+  let prev = start;
+  for (const i of [...indices.slice(1), Number.NaN]) {
+    if (i === prev + 1) {
+      prev = i;
+      continue;
+    }
+    if (start !== undefined) parts.push(start === prev ? `${start}` : `${start}-${prev}`);
+    start = prev = i;
+  }
+  return parts.join(",");
+}
+
 /** Compact, human-readable summary of an action result for the tool card. */
 function summariseResult(result: ActionResult): string {
   const text = result.text?.trim();
@@ -1031,6 +1167,33 @@ function serializeActionResult(result: ActionResult): string {
     ...(result.text ? { text: result.text } : {}),
     ...(result.data ? { data: result.data } : {}),
   });
+}
+
+/**
+ * An oversized result as the model sees it: the `text` — the answer, written
+ * for a person — kept whole as far as the budget allows, and `data` cut
+ * instead. Clipping the middle of the serialised JSON dropped the end of the
+ * text and kept the tail of a data dump: in a live run the model got token
+ * addresses with counts and never the symbols the text had named.
+ */
+function fitResult(name: string, result: ActionResult, max: number, note: string): string {
+  const tail = `\n[${note}]`;
+  const reserve = result.data ? Math.min(1_200, Math.floor(max / 4)) : 0;
+  const budget = Math.max(200, max - tail.length - reserve - name.length - 40);
+  let text = result.text ?? "";
+  let head = `Tool ${name} -> ${JSON.stringify({ ok: result.ok, text })}`;
+  // JSON escaping inflates text by a varying amount, so shrink until it fits.
+  for (let room = budget; head.length > budget + name.length + 40 && room > 100; room = Math.floor(room * 0.85)) {
+    text = clipMiddle(result.text ?? "", room, "text cut");
+    head = `Tool ${name} -> ${JSON.stringify({ ok: result.ok, text })}`;
+  }
+  let data = "";
+  if (result.data) {
+    const json = JSON.stringify(result.data);
+    const room = max - head.length - tail.length - 40;
+    if (room > 120) data = `\n[data, ${json.length} chars: ${json.length > room ? `${json.slice(0, room)}…` : json}]`;
+  }
+  return `${head}${data}${tail}`;
 }
 
 /** Keep the head and tail of `text` within `max` characters, saying what was cut. */

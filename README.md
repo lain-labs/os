@@ -71,7 +71,7 @@ The live chat routing is switchable at runtime — same switch behind three
 surfaces, all taking `claude` | `codex` | `opencode` | `claude-api`:
 
 ```bash
-/model                      # in the TUI: pick with the arrows (/model codex switches straight away)
+/agent                      # in the TUI: pick with the arrows (/agent codex switches straight away)
 npm run provider claude     # from a shell, against the running daemon
 curl -s localhost:7777/provider                                    # who answers now
 curl -sX POST localhost:7777/provider -d '{"provider":"codex"}'    # switch it
@@ -82,8 +82,15 @@ Lain can also do it herself when asked (`set_chat_provider`, and
 replies without a restart and persists the choice in `data/chat-provider.json`,
 which wins over the env selection on the next boot; a route that cannot be
 built (no key, no CLI) fails loudly and the current one stays. The TUI runs its
-own process, so its `/model` switches that session and leaves the choice for
+own process, so its `/agent` switches that session and leaves the choice for
 the daemon's next restart — use `npm run provider` to move the daemon now.
+
+Inside the agent, the TUI's `/model` picks the model it runs: a searchable
+list of what the agent offers (every `provider/model` of the machine's
+OpenCode, the claude CLI's `opus`/`sonnet`/`haiku`, the OpenRouter free pool),
+`/model <id or words>` straight to one, `/model default` back to the `.env`
+tiers. Each agent keeps its own pick in `data/chat-provider.json`, so
+switching agents and back finds it still there.
 Forge coding jobs have their own switch (`set_forge_provider`).
 
 Model tiers map to the latest Claude family:
@@ -326,7 +333,7 @@ click, because an editor hosting the terminal can keep the chord for itself —
 VS Code answers ctrl+s with a file save — but never the click.
 
 The transcript scrolls in-app: wheel, PgUp/PgDn, `ctrl+↑/↓`. `/help` lists the
-rest; `/skin`, `/effort`, `/cursor`, `/model` and `/resume` open pickers that
+rest; `/skin`, `/effort`, `/cursor`, `/agent`, `/model` and `/resume` open pickers that
 take the arrow keys, the wheel, and a click on the row you want. `/new` starts
 a session, `/recap` sums one up, and `/tasks` says who answers what — see
 [Sessions](#sessions) and [Task routing](#task-routing--who-answers-which-kind-of-work).
@@ -437,6 +444,16 @@ keys, and bot-token-shaped strings are redacted before the file is written.
 
 Forge coding-agent jobs have their own longer transcripts in `data/forge/*.log`.
 
+What the model sees of a tool result is bounded: 6000 characters per result
+(`LAINOS_TOOL_RESULT_MAX_CHARS`), the full output saved under
+`data/tool-outputs/`. An oversized result keeps its `text` — the answer, written
+for a person — whole and cuts its `data` instead. Results of earlier rounds
+shrink to their gist (1500 characters) in what every later call resends,
+except results an action marks `keep`: the source of a skill about to be
+edited, the skill kit reference, an Agent Skill playbook. Those stay verbatim
+for the rest of the turn (up to 16000 characters), because an edit copied from
+a gist is a guess.
+
 Summarise retained conversations and execution traces without dumping full
 prompts or raw secrets:
 
@@ -493,6 +510,125 @@ and secret values loaded from the environment.
   cost, keeping a moving-average cost basis per token — this is what makes
   "sell all profitable positions" and the auto take-profit loop possible.
 
+  **Paper trading.** One switch turns every trade into a simulation:
+  `buy_token`, `sell_token`, `speculate_token`, `speculate_basket` and the
+  trader loop keep their exact sizing and limits, but size against a virtual
+  native balance, fill at the live DEX quote and book into
+  `data/paper/<chainId>/` — no transaction is sent, the real wallet and
+  `data/trades.json` are untouched, and no signer is needed. `add_liquidity`
+  and MetaMask swap executions are refused while it is on. A paper result
+  is the real code's result with three honest gaps: the pool does not move
+  after a paper trade, no gas is paid, nobody front-runs it.
+
+  ```bash
+  /paper                     # in the TUI: equity, return since start, positions at live value
+  /paper on 5                # paper mode on, account (re)started with 5 native
+  /paper buy LAIN 0.1        # through buy_token — refused while paper mode is off
+  /paper sell LAIN all
+  /paper reset 10 · /paper off
+  ```
+
+  **Trenching on paper.** The `trench` plugin trades the memecoin trenches of
+  Robinhood Chain — fresh PONS v2 launches on their bonding curves — on paper
+  only, with no execution path at all. Every 5 s it reads the new curve trades
+  and launches and enters young curves whose last five minutes clear the rules
+  (buys, distinct wallets, net ETH inflow, progress to graduation, creator tax);
+  open positions exit half at the take-profit and the rest on a trailing stop,
+  on the stop-loss, at a time limit, or at graduation. Fills are the curve's own
+  math (1 % fee + creator tax), marked as if our buy were in the reserves, and
+  book into the Robinhood paper account, so `/paper` adds them up with the rest.
+
+  ```bash
+  /trench on                 # start it, and open the live board in place of the transcript (esc closes)
+  /trench                    # the board: equity curve, positions (PnL sparkline, SL→TP gauge,
+                             #   progress to graduation), the radar of hottest curves and why each
+                             #   is in or out, a tape of every launchpad trade, the journal
+  /trench status             # the same as text
+  /trench set stopLossPct 20 # any rule: /trench rules lists them
+  /trench close all · /trench off
+  ```
+
+  Lain watches it through the `trench` tool: she reports it, comments, and
+  closes positions or changes rules when asked. What a paper trench result
+  cannot show: our orders never move the curve, pay no gas, never lose a race
+  to a sniper.
+
+  **The stock desk.** The `stocks` plugin paper-trades what Robinhood Chain
+  is for: Robinhood's tokenized stocks — NVDA, SPY, TSLA, GOOGL, MSTR, CRCL,
+  HIMS, GLD, SPCX — plus BTC (Coinbase's cbBTC) and ETH, at the fills their
+  Uniswap v3/v4 pools would give (the live pool state, every hop's fee, a v4
+  pool's protocol fee on top of its LP fee: TSLA routes USDG→WETH→SPY→TSLA).
+  An asset with more than one pool fills wherever a trade returns most: BTC
+  takes its thin 0.05% pool for small orders and the deep 0.15% one for big
+  ones. BTC and ETH are the only big coins with a real market on the chain —
+  the "SOL", "XRP", "BNB" tokens there are look-alikes.
+  Each token is set against its Wall Street price. Two strategies can run:
+  *basis* buys a token trading below Wall Street by more than a round trip
+  costs at that size, and sells when the gap has closed; *trend* rides a token
+  up `trendPct` over `trendWindowMin` on a trailing stop, around the clock.
+  Orders by hand work any time, from the operator or from Lain (`stock_desk`).
+
+  ```bash
+  /stocks                    # the live board: prices vs Wall Street, premium gauges,
+                             #   trend sparklines, positions, the swap tape, the US session clock
+  /stocks buy NVDA 500       # a paper order at the live pool · /stocks sell NVDA all|$200
+  /stocks buy BTC 1000       # bitcoin, as cbBTC, at the better of its two pools
+  /stocks on                 # the strategies (basis + trend) · /stocks set trendPct 0.8
+  /stocks reset 25000        # a fresh dollar account
+  ```
+
+  **Backtests.** The `backtest` plugin tests strategies on years of history,
+  which Robinhood Chain is too young to have. By default it is on-chain:
+  candles rebuilt from every swap of a Uniswap v3 pool on Ethereum — WBTC/USDC
+  for BTC, WETH/USDC for ETH, or any v3 pool by address — exact to the swap,
+  from Uniswap v3's launch (2021-05) on. For the years before DEXes,
+  `source: "cex"` reads Binance spot candles with Bitstamp before Binance
+  listed the pair: ten years of bitcoin (Bitstamp BTC/USD to 2017-08, Binance
+  BTC/USDT after). Swaps and candles are cached under `data/market`, so only
+  the first run of a pool or pair downloads (a pool takes a minute or two).
+  A strategy is long-only and goes all in or all out; its rules are conditions
+  in a small language — `ema(close, 12) > ema(close, 26)`,
+  `close > highest(high, 20)[1]`, `rsi(close, 14) < 30 and close > sma(close, 200)`
+  — read at a bar's close and filled at the next open, with fees and
+  slippage on every fill and stops, trailing stops and take-profits inside
+  the bar. Strategies are ranked on the first 70% of the window; the last 30%
+  is shown as *held-out* and never used to rank, so a rule tuned to the past
+  shows itself. Lain writes strategies in the `backtest` tool — several at
+  once, with parameter sweeps (`params: {fast: [10, 20], slow: [50, 100]}`) —
+  and every report, with each trade, is saved to `data/backtests`.
+
+  ```bash
+  /backtest btc 5y           # every preset against buy & hold, on-chain (WBTC/USDC swaps on Ethereum)
+  /backtest btc 10y cex      # ten years from the exchanges (Bitstamp, then Binance)
+  /backtest eth 3y 4h donchian ema_cross fee=0.075
+  /backtest 0x…pool 2y       # any Uniswap v3 pool on Ethereum
+  /backtest presets          # what each preset does, and the rule functions
+  ```
+
+  **Live on paper.** A tested strategy carries on at today's prices: the same
+  rules over the same history as its backtest, read at each bar's close once
+  the bar has closed, with the fills at Robinhood Chain's live pools through
+  the stock desk (BTC as cbBTC, or ETH) — so the position sits on `/stocks`
+  with everything else, and nothing is sent. A run starts where the strategy
+  stands: when its rules have it in the market at the last close it buys at
+  once, otherwise it waits for the entry. Stops, trailing stops and
+  take-profits are watched against the live pool price between closes; the
+  whole budget goes in and out, as in the backtest. Lain starts and reports
+  runs through `live_strategy` ("run the best one live with $5,000"); runs
+  are saved in `data/backtests/live.json` and resume after a restart.
+
+  ```bash
+  /backtest live trend_200 btc 1d $5000   # a preset, live on paper
+  /backtest live                          # every run: in or out, value vs budget, BTC since the start, next close
+  /backtest stop s1                       # sell what it holds and stop
+  ```
+
+  Lain has the same through `paper_trading` (status / on / off / reset), and
+  `portfolio_pnl` reports the paper account while paper mode is on. The switch
+  is per process (`data/paper/mode.json`, default `LAINOS_PAPER`); a new
+  account starts with `LAINOS_PAPER_START_NATIVE` (1). Paper trades need a DEX
+  on the active network, the same as real ones.
+
   The token registry is empty by default and entirely operator-configured:
   set `CHAIN_TOKENS` (`SYMBOL:0xaddr,SYMBOL2:0xaddr2`) to the deployments that
   exist on your chain.
@@ -533,8 +669,7 @@ and secret values loaded from the environment.
     the previous close before the session opens);
   - the token's own DEX price and pool depth on the chain, and its holder
     count, against the last digest;
-  - the last 36 hours of news on the underlying (Google News, in Russian or
-    English per asset; nothing shown twice).
+  - the last 36 hours of news on the underlying (Google News, in English; nothing shown twice).
 
   The model writes it for those holdings — the day in two sentences, markets
   by group, on-chain moves that stand out, at most a dozen news bullets with
@@ -555,8 +690,7 @@ and secret values loaded from the environment.
   receipts are left out. The digest is written by the operator's own chat
   provider (`LAINOS_DIGEST_TASK=analysis` routes it like other analysis, with a
   fallback to chat when that route fails); `LAINOS_DIGEST_NETWORK` names a
-  network other than the active one; `LAINOS_DIGEST_LANG` the language
-  (default Russian).
+  network other than the active one. Digests are always written in English.
 - **sentinel** — background chain watches, so the agent is useful even while
   nobody is talking to it:
   - `watch_balance` — watch an address (native currency or a token) and alert
@@ -640,16 +774,56 @@ and secret values loaded from the environment.
   `ExecStartPre` rebuilds `dist/`) — set `LAINOS_FORGE_RESTART=0` to opt out.
 - **skills** — instant self-extension, no restart needed: `skills/*.mjs`
   modules (each default-exporting `{ name, description, parameters, handler }`)
-  are hot-loaded as live tools, and the directory is watched for changes.
+  are hot-loaded as live tools, and the directory is watched for changes. This
+  is phase 2 of the roadmap — if a tool does not exist, Lain builds it, keeps
+  it, changes it and runs it on her own:
   - `create_skill` — Lain writes herself a new tool mid-conversation and calls
     it seconds later; broken modules are rejected with the load error so she
     can fix and retry;
-  - `list_skills` / `reload_skills` — inventory and manual resync.
+  - `skill_kit` — the reference for `kit`, the fourth handler argument: the
+    chain read the way the built-in tools read it (`transfers` in RPC-sized
+    windows, `trades` — one buy or sell per wallet, transaction and token,
+    counted only when the wallet signed it, so airdrops are not buys), token
+    prices and liquidity from DexScreener, wallet lists, any read-only tool
+    (`kit.tool`; tools that move funds or change Lain are refused), the
+    skill's own state across runs, `http` that names a Cloudflare wall for
+    what it is, and `viem`;
+  - `edit_skill` — "ignore trades below $500" changes the exact spots of the
+    tool (each `old` must occur once) and shows the before/after, instead of
+    resending a 200-line module; `read_skill` shows the source with its change
+    log in the operator's words, `revert_skill` steps back, `remove_skill`
+    unloads and keeps history (`data/skills-history/<name>/`);
+  - `schedule_skill` / `list_routines` / `run_routine` / `stop_routine` —
+    routines: a skill on an interval, daily, or on sentinel alerts, reporting
+    only when its result changed (see `skills/README.md`);
+  - `list_skills` / `reload_skills` — inventory (with versions and the last
+    change) and manual resync.
+
+  The kit reads a public RPC politely: settled log windows and transaction
+  signers are cached — in memory and in `data/kit-cache.json` — so a re-run
+  after an edit, a routine every few minutes or a fresh process reads only the
+  newest blocks (a 48-hour scan of 30 Robinhood wallets: ~130 s cold, ~2 s
+  warm); a Cloudflare challenge page in place of an RPC answer is waited out
+  like a 429 and reported as throttling, not quoted as HTML.
 
   Skills live inside the repo (not `data/`) so her learning is versioned and
-  committed like any other code. `LAINOS_SKILLS_DIR` overrides the location.
-  Built-in tools can never be shadowed by a skill.
-- **trader** — the autonomous money loop (daemon-only by default): every
+  committed like any other code. `LAINOS_SKILLS_DIR` overrides the location;
+  a directory outside the package gets a `node_modules` link to the
+  package's, so a skill can `import "viem"` there too. Built-in tools can
+  never be shadowed by a skill.
+
+  **Agent Skills from [skills.sh](https://skills.sh)** are playbooks
+  (`SKILL.md` + reference files), not code she runs. `find_skills` searches
+  the directory (most installed first), `use_agent_skill` previews one by id
+  or opens an installed one, `install_agent_skill` puts it on her shelf
+  (`data/agent-skills/<name>/`, paths that leave the folder refused) and
+  `remove_agent_skill` takes it off. The shelf's names and descriptions sit in
+  her context; the full instructions load only when a task calls for them,
+  marked as third-party text. In the TUI and Telegram, `/skills` lists her own
+  tools, routines and shelf, and `/skills find <query>` searches skills.sh
+  without a model call (the TUI offers a picker to install).
+- **trader** — the autonomous money loop (real selling is daemon-only by
+  default; in paper mode it sells paper positions in any process): every
   `LAINOS_TRADER_INTERVAL_MS` (15 min) it walks the trade journal
   (`data/trades.json`, moving-average cost basis written by every buy/sell) and
   sells positions whose live DEX quote clears
@@ -661,6 +835,51 @@ and secret values loaded from the environment.
   `trader_status` reports thresholds, positions and recent trades;
   `portfolio_pnl` (chain plugin) values the whole treasury against basis and
   `sell_token` exits a position on demand.
+- **metamask** — a second wallet, held by
+  [MetaMask Agent Wallet](https://docs.metamask.io/agent-wallet/) instead of by
+  Lain's own key, on Ethereum, Base, Arbitrum, Optimism, Polygon, BNB,
+  Robinhood Chain and the other chains `mm chains list` names. She drives the
+  operator's `mm` CLI headless (`--json`); the package is not a LainOS
+  dependency — its license forbids redistribution — so install it on the host:
+
+  ```bash
+  npm install -g @metamask/agent-wallet@latest   # Node.js 22.18+
+  ```
+
+  In the TUI, link it with `/metamask <CLI token>`: the token is drawn masked as you type
+  it, kept out of the input history and handled by the command itself — it never reaches the
+  model (`/metamask` alone shows the wallet, `/metamask logout` unlinks). `LAINOS_MM_HOME`
+  gives an instance a wallet session of its own instead of the host's `~/.metamask`.
+
+  Or ask her to set it up and she walks the quickstart in chat:
+  `metamask_status` says where setup stands; `metamask_login` hands out the
+  dashboard link (Google or email → **Authorize**) and takes back the CLI token
+  it shows, passing it to `mm` through `MM_CLI_TOKEN` and masking it in
+  transcripts; `metamask_setup` picks a server wallet in Guard Mode (or Beast
+  Mode; a bring-your-own wallet only when `MM_MNEMONIC` is set on the host).
+  Signing in from a terminal (`mm login`, `mm login qr` for MetaMask Mobile,
+  `mm init`) works too — the session in `~/.metamask` is shared. Google, email
+  and MetaMask Mobile each open a *different* wallet; stick to one.
+
+  Sends and swaps default to the active network when MetaMask supports it —
+  Robinhood Chain on a Robinhood profile — or to `LAINOS_MM_CHAIN`; on a
+  network where Lain's own DEX is not configured she is told that swaps there
+  go through MetaMask. On Robinhood MetaMask swaps, but has no gasless relay:
+  keep a little ETH there for gas.
+
+  After that: `metamask_balance`, `metamask_send` (`mm transfer`),
+  `metamask_swap` (quote, then execute by `quote_id`; set `to_chain` to
+  bridge), `metamask_requests`, and `metamask` for the rest of the CLI —
+  Hyperliquid perps, Polymarket, yield vaults, prices, token discovery,
+  `tx history`, calldata decoding, signing. MetaMask simulates and
+  threat-scans every transaction; in Guard Mode whatever falls outside the
+  wallet's policy waits for the operator's approval (email link, or a
+  MetaMask Mobile push). A send waits `LAINOS_MM_WALLET_TIMEOUT` (45 s) for
+  that; past it the job is tracked in `data/metamask-jobs.json` and its
+  outcome — confirmed with the tx, declined, expired — is reported to the
+  chat that asked when it lands. The `metamask` tool never puts a seed phrase,
+  password or token on a command line, and leaves `mm login`, `mm reset`,
+  wallet passwords and `mm plugins install` to the operator in a terminal.
 - **initiative** — she writes first (daemon-only by default): on a jittered
   ~3 h heartbeat Lain privately reviews her watches, trades, research and the
   conversation, then either sends the operator a Telegram message in her own
@@ -670,6 +889,18 @@ and secret values loaded from the environment.
   asks for what **changed** — restating an unchanged portfolio is named as
   forbidden, because "same positions" four times a day is how a heartbeat stops
   being read at all.
+- **journal** — the version journal: facts survive a restart, intent does
+  not, so before a restart or a rewrite the running version leaves the next
+  one a short note in `data/version-journal.md` — what she was working on,
+  the open threads, the decisions she made and why. One markdown file,
+  append-only, one entry per run. `write_version_note` writes it by hand (a
+  second note in the same run continues the entry); the daemon's shutdown and
+  forge-restart hooks close it with the reason, or, when she left none, write
+  a plain automatic entry: why the run ended, which wishes wait in the forge,
+  what was talked about. The next version wakes with the note in her prompt
+  for a day, then keeps a one-line pointer to it, and `recall` finds it any
+  time. Anything that looks like a key, token, seed phrase or `.env` line is
+  masked before it reaches the file.
 - **scout** — an autonomous researcher. *"Watch Solana and only tell me about
   genuinely important changes"* or *"collect everything about zkVM every
   day"* becomes a subscribed topic:
@@ -752,9 +983,31 @@ and secret values loaded from the environment.
 
   The queue is a **calendar**: an operator-supplied `content-plan.json` next
   to `soul.md`, a slot per day carrying its pillar, its thesis, the material
-  the operator attaches and the one question the post ends on — plus the
-  standing brief (series, rules, voice). It is data, not code, because it
+  the operator attaches and the one action or question the post ends on — plus
+  the standing brief (series, rules, voice). It is data, not code, because it
   comes from outside the daemon; a new month is a new file.
+
+  The file is cut by the **content mill** (`npm run content:mill`), not by
+  hand. Give it the two X analytics exports — one row per post, one row per
+  day, Russian or English headers — and it writes the next 28 days from what
+  those posts actually did. One original post a day: something a person can
+  do, or something that just went live. A paid reply is scored and then left
+  off the calendar. Coins for a reply buy a follow from someone who came for
+  the transfer, and that post is what got the account banned. Replies are a
+  second sheet, `content-distribution.json`: the same action, posted under
+  someone else's post, with no payment attached. A reply that only comments
+  on their topic is the impression firehose the mill is there to stop.
+  Metaphor posts are scored and then left off the calendar. `--write` replaces both
+  files; the daemon reads the plan at boot, so restart it after. Nothing in
+  the mill publishes.
+
+  `npm run content:trends` is the timeline check. It reads Hacker News, Reddit,
+  and Google News (and X, when `LAINOS_SCOUT_NITTER` points at a Nitter
+  instance) for the day's loud topics, then says which to use and which to
+  leave alone. A price flush and a memecoin callout become one paste-ready
+  post each. Politics, a war clip, a regulation rumor from a single account,
+  and anything that pays for a reply are skipped. A number from the timeline
+  is repeated only when two items carry it. Publish one of the usable posts.
 
   The material is **the repository's own commit log** since the last post went
   out — the only record of what was actually built that nobody has to be asked
@@ -975,7 +1228,17 @@ GET  /sessions[?client=&limit=]       -> { sessions } (the conversation index)
 GET  /sessions/{id}                   -> { session, messages }
 POST /sessions/{id}/recap             -> { recap }
 POST /chat { roomId, userId, text, task? } -> { text, actions, model, provider, task }
+POST /acp/tools { tool, arguments }   -> report (Bearer LAINOS_ACP_API_KEY)
 ```
+
+`/acp/tools` serves what Lain sells on the Virtuals ACP marketplace. The local
+`lain-acp-bridge` calls it after a buyer funds a job. Today it has one tool,
+`token_info` (alias `token_research`), with arguments `{ chainId, tokenAddress }`.
+It returns a JSON token report built only from checkable sources: the contract
+read over the chain's RPC, DexScreener markets and a GoPlus security scan. The
+risk flags and summary are rules over those facts, and a source that failed is
+listed in `errors`. It accepts any chain with a known network profile (Base and
+Robinhood among them). The route stays off until `LAINOS_ACP_API_KEY` is set.
 
 The **Wired** Godot game (`game/wired/`) drives its Lain NPC through this
 endpoint — the same agent, one mind across the terminal and the 3D world.
@@ -996,26 +1259,37 @@ src/
   plugins/bootstrap/  time provider + fact extractor + remember/recall
   plugins/chain/      the chain: chain.ts (registry) + abi.ts + math.ts (pure AMM)
                       + config.ts (trading policy) + service.ts (client + journal)
-                      + explorer.ts + actions/{wallet,trade,liquidity,speculate,portfolio}
+                      + paper.ts (paper mode + virtual accounts) + explorer.ts
+                      + actions/{wallet,trade,liquidity,speculate,portfolio,paper}
   plugins/sentinel/   balance + wallet-activity watches -> alerts, daily brief
   plugins/forge/      wishboard + coding-agent jobs (wishes -> direct commits)
   plugins/skills/     hot-loaded self-written tools (skills/*.mjs, no restart)
   plugins/trader/     autonomous take-profit loop over the trade journal
+  plugins/trench/     paper memecoin trenching: pons.ts (PONS v2 reads + curve math), engine.ts
+  plugins/stocks/     paper stock desk: robinhood.ts (stock tokens, v3/v4 pools, Wall Street, NY clock), engine.ts
+  plugins/backtest/   strategy backtests: dex.ts (Uniswap v3 swaps on Ethereum → candles), candles.ts (Binance + Bitstamp),
+                      rules.ts (the rule language), engine.ts (fills, metrics, presets), live.ts (tested strategies live on paper)
+  plugins/metamask/   MetaMask Agent Wallet via the operator's `mm` CLI
+                      (cli.ts = headless runner + guards, index.ts = tools + job watcher)
   plugins/initiative/ her heartbeat: unprompted Telegram messages that matter
+  plugins/journal/    version journal: a note from each version to the next
   plugins/scout/      autonomous researcher (topics -> scheduled digests)
   plugins/study/      self-teaching: read-only repo analysis -> real findings
   plugins/github/     commit-streak keeper (daily reminder on commitless days)
   plugins/channel/    telegram channel keeper (daily reminder on postless days)
   plugins/press/      the press room: the day's post, written from the plan
-                      (plan.ts = calendar + brief, commits.ts = the material)
+                      (plan.ts = calendar + brief, commits.ts = the material,
+                      analytics.ts + mill.ts = the export → next month)
   plugins/system/     terminal + filesystem skills (sandboxed workspace)
   plugins/crm/        files every task-shaped thing onto the operators' board
                       (durable outbox in data/crm.json, sender-minted ids)
   clients/            cli.ts (REPL) | http.ts (bridge) | telegram.ts (bot) | tui/
   characters/lain.ts  Lain, the resident mind
-content-plan.json     operator-supplied content calendar the press room writes from (not shipped)
+content-plan.json     calendar the press room writes from (not shipped; cut by content:mill)
+content-distribution.json
+                      paste-ready post and reply line for each day (not shipped)
 scripts/              chat.ts | tui.ts | serve.ts | smoke.ts | tasks-smoke.ts
-                      | press-smoke.ts | crm-smoke.ts
+                      | press-smoke.ts | content-mill.ts | crm-smoke.ts | metamask-smoke.ts
 ```
 
 ## Safety
@@ -1024,6 +1298,13 @@ scripts/              chat.ts | tui.ts | serve.ts | smoke.ts | tasks-smoke.ts
 `.env` (gitignored). Without a key, the agent is strictly read-only on-chain.
 With a signer configured, set `TELEGRAM_ALLOWED_CHATS` so strangers cannot ask
 the bot to move funds. Never commit secrets.
+
+The MetaMask Agent Wallet session lives in `~/.metamask`, outside the repo,
+and its keys stay with MetaMask (server wallet) or in that directory (bring
+your own). A CLI token pasted into chat stays in the chat history and memory
+like any other message; sign in from a terminal (`mm login`) when you'd
+rather it didn't. `TELEGRAM_ALLOWED_CHATS` matters here as much as for the
+chain signer.
 
 The forge gives coding agents write access to the repo and commits directly to
 the current branch — Lain's learning lands in place. Its guardrails: one job at

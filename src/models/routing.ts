@@ -13,6 +13,7 @@ import {
   parseTaskRoute,
   type TaskRoute,
 } from "./tasks.js";
+import type { UsageLimits } from "./limits.js";
 
 const log = createLogger("model:routing");
 
@@ -159,6 +160,14 @@ export interface ChatProviderState {
   envKind: string;
   /** True when a runtime override (set_chat_provider) diverges from the env. */
   overridden: boolean;
+  /** The model the operator picked inside this agent (/model); absent = the agent's own default. */
+  pinned?: string;
+}
+
+/** One row of the /model picker: a model id, and whether running it costs nothing. */
+export interface ModelChoice {
+  id: string;
+  free: boolean;
 }
 
 /**
@@ -171,14 +180,20 @@ export class SwitchableModelProvider implements ModelProvider {
   private active: ModelProvider;
   private kind: string;
   private readonly envKind: string;
-  private readonly assemble: (kind: string) => ModelProvider | undefined;
-  private readonly persist: (kind: string | null) => void;
+  private readonly assemble: (kind: string, model?: string) => ModelProvider | undefined;
+  private readonly persist: (kind: string | null, models: Record<string, string>) => void;
+  /** The model picked per agent — switching agents and back keeps each one's choice. */
+  private pins: Record<string, string>;
+  private readonly listModels?: (kind: string) => Promise<ModelChoice[]>;
   /** Standing policy from the environment (LAINOS_TASK_*, LAINOS_TASK_CHEAP). */
   private readonly baseRoutes: Partial<Record<TaskKind, TaskRouteEntry>>;
   /** Routes the operator set at runtime — they win, and they are persisted. */
   private operatorRoutes: Partial<Record<TaskKind, TaskRoute>>;
   private readonly buildRoute?: (route: TaskRoute) => ModelProvider | undefined;
   private readonly persistRoutes?: (routes: Record<string, string>) => void;
+  /** Who is out of quota (shared with the forge), and who answers then. */
+  private readonly limits?: UsageLimits;
+  private readonly standbys: string[];
   /** Built providers keyed by formatted route, and the routes that failed. */
   private readonly routeCache = new Map<string, ModelProvider>();
   private readonly routeErrors = new Map<string, string>();
@@ -187,10 +202,17 @@ export class SwitchableModelProvider implements ModelProvider {
     initial: ModelProvider;
     kind: string;
     envKind: string;
-    /** Rebuild the full ensemble (base + fallback + tiers) for a base kind. */
-    assemble: (kind: string) => ModelProvider | undefined;
-    /** Store the override; null clears it (choice matches the env default). */
-    persist: (kind: string | null) => void;
+    /** Rebuild the full ensemble (base + fallback + tiers) for a base kind, optionally on one model. */
+    assemble: (kind: string, model?: string) => ModelProvider | undefined;
+    /**
+     * Store the override and the per-agent models; a null kind clears the
+     * agent override (it matches the env default and no model is pinned).
+     */
+    persist: (kind: string | null, models: Record<string, string>) => void;
+    /** Models an operator picked per agent in an earlier run. */
+    pins?: Record<string, string>;
+    /** The models an agent can run, for the /model picker ([] = type an id). */
+    listModels?: (kind: string) => Promise<ModelChoice[]>;
     /** Per-task routes read from the environment at boot. */
     routes?: Partial<Record<TaskKind, TaskRouteEntry>>;
     /** Per-task routes the operator set in an earlier run. */
@@ -199,16 +221,24 @@ export class SwitchableModelProvider implements ModelProvider {
     buildRoute?: (route: TaskRoute) => ModelProvider | undefined;
     /** Store the operator's routes so a restart keeps them. */
     persistRoutes?: (routes: Record<string, string>) => void;
+    /** The shared usage-limit book; without one a spent agent simply fails. */
+    limits?: UsageLimits;
+    /** Agent kinds that answer, in order, when the chosen one is out of quota. */
+    standbys?: string[];
   }) {
     this.active = opts.initial;
     this.kind = opts.kind;
     this.envKind = opts.envKind;
     this.assemble = opts.assemble;
     this.persist = opts.persist;
+    this.pins = { ...(opts.pins ?? {}) };
+    this.listModels = opts.listModels;
     this.baseRoutes = opts.routes ?? {};
     this.operatorRoutes = { ...(opts.operatorRoutes ?? {}) };
     this.buildRoute = opts.buildRoute;
     this.persistRoutes = opts.persistRoutes;
+    this.limits = opts.limits;
+    this.standbys = opts.standbys ?? [];
   }
 
   get name(): string {
@@ -220,14 +250,110 @@ export class SwitchableModelProvider implements ModelProvider {
   }
 
   generate(request: ModelRequest): Promise<ModelResponse> {
-    return this.providerFor(request.task).generate(request);
+    return this.answer(request, (provider) => provider.generate(request), () => false);
   }
 
   stream(
     request: ModelRequest,
     onText: (delta: string) => void,
   ): Promise<ModelResponse> {
-    return callProvider(this.providerFor(request.task), request, onText);
+    let emitted = false;
+    const guarded = (delta: string) => {
+      emitted = true;
+      onText(delta);
+    };
+    return this.answer(request, (provider) => callProvider(provider, request, guarded), () => emitted);
+  }
+
+  /**
+   * Ask whoever this kind of work is routed to. When that agent is out of
+   * quota — it says so, or the shared book already knows — ask the next one
+   * that is not: the live chat provider, then the standbys. Any other failure
+   * still fails loudly: only a spent subscription moves a reply to a model
+   * the operator did not pick, because the alternative is a Lain who cannot
+   * say a word until next week. The reply's stamp names who answered.
+   */
+  private async answer(
+    request: ModelRequest,
+    call: (provider: ModelProvider) => Promise<ModelResponse>,
+    emitted: () => boolean,
+  ): Promise<ModelResponse> {
+    const chosen = this.chosenFor(request.task);
+    const limits = this.limits;
+    if (!limits) return call(chosen.provider);
+    const passed: string[] = [];
+    let calls = 0;
+    for (const candidate of this.candidates(chosen)) {
+      // A keyless "anthropic" is the claude CLI under another name.
+      const spent = limits.active(candidate.kind) ? candidate.kind : limits.active(candidate.provider.name) ? candidate.provider.name : null;
+      if (spent) {
+        if (spent === candidate.kind) passed.push(limits.describe(spent) ?? spent);
+        continue;
+      }
+      calls += 1;
+      try {
+        const res = await call(candidate.provider);
+        if (candidate.kind !== chosen.kind) {
+          log.warn(`${passed.join("; ") || `${chosen.kind} is out of quota`} — ${candidate.kind} answered instead`);
+        }
+        return res;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (emitted() || !limits.note(candidate.kind, message)) {
+          // The chosen agent failing for real is the operator's to see; a
+          // standby failing is one more reason to try the next.
+          if (candidate.kind === chosen.kind || emitted()) throw err;
+          passed.push(`${candidate.kind}: ${message.split("\n")[0].slice(0, 160)}`);
+          continue;
+        }
+        passed.push(limits.describe(candidate.kind) ?? candidate.kind);
+      }
+    }
+    // The book can outlive a limit lifted early: with nobody else left, the
+    // chosen agent gets one real try before the turn gives up.
+    if (!calls) return call(chosen.provider);
+    throw new Error(`no model can answer right now — ${passed.join("; ")}`);
+  }
+
+  /** The agent this kind of work is routed to, by kind (the key of the limits book). */
+  private chosenFor(task?: TaskKind): { kind: string; provider: ModelProvider } {
+    const entry = this.routeEntry(task);
+    const routed = entry ? this.buildCached(entry.route) : undefined;
+    return entry && routed
+      ? { kind: entry.route.provider, provider: routed }
+      : { kind: this.kind, provider: this.active };
+  }
+
+  /** The chosen agent, then the live chat provider, then each standby that can be built. */
+  private *candidates(
+    chosen: { kind: string; provider: ModelProvider },
+  ): Generator<{ kind: string; provider: ModelProvider }> {
+    const seen = new Set([chosen.kind]);
+    const asked = new Set([chosen.provider]);
+    yield chosen;
+    if (!seen.has(this.kind) && !asked.has(this.active)) {
+      seen.add(this.kind);
+      asked.add(this.active);
+      yield { kind: this.kind, provider: this.active };
+    }
+    for (const kind of this.standbys) {
+      if (seen.has(kind)) continue;
+      seen.add(kind);
+      const provider = this.standby(kind);
+      if (!provider || asked.has(provider)) continue;
+      asked.add(provider);
+      yield { kind, provider };
+    }
+  }
+
+  /** Build a standby on first need; one that cannot be built (no key, no CLI) is skipped quietly. */
+  private standby(kind: string): ModelProvider | undefined {
+    const key = formatTaskRoute({ provider: kind });
+    const cached = this.routeCache.get(key);
+    if (cached) return cached;
+    const built = this.buildRoute?.({ provider: kind });
+    if (built) this.routeCache.set(key, built);
+    return built;
   }
 
   // ------------------------------------------------------------ task routes
@@ -359,28 +485,63 @@ export class SwitchableModelProvider implements ModelProvider {
    * never silently land the chat on the mock model.
    */
   switchTo(kind: string): ChatProviderState | string {
-    const next = this.assemble(kind);
+    const next = this.assemble(kind, this.pins[kind]);
     if (!next) {
       return `provider "${kind}" is unavailable (missing API key or CLI?) — staying on ${this.kind}`;
     }
     this.active = next;
     this.kind = kind;
-    try {
-      this.persist(kind === this.envKind ? null : kind);
-    } catch (err) {
-      log.warn("could not persist chat provider override", err);
-    }
+    this.save();
     log.info(`live chat provider switched to ${kind} (${next.name})`);
     return this.state();
   }
 
+  /**
+   * Pick the model inside the current agent (`/model`); null returns the agent
+   * to its own default (the env's per-tier models). The choice is the agent's:
+   * switching to another agent and back finds it still in place.
+   */
+  setModel(model: string | null): ChatProviderState | string {
+    const id = model?.trim() || undefined;
+    const next = this.assemble(this.kind, id);
+    if (!next) return `${this.kind} cannot run "${id}" — model unchanged`;
+    this.active = next;
+    if (id) this.pins[this.kind] = id;
+    else delete this.pins[this.kind];
+    this.save();
+    log.info(`live chat model for ${this.kind}: ${id ?? "agent default"}`);
+    return this.state();
+  }
+
+  /** What `/model` can offer for an agent (the current one by default). */
+  async models(kind = this.kind): Promise<ModelChoice[]> {
+    if (!this.listModels) return [];
+    try {
+      return await this.listModels(kind);
+    } catch (err) {
+      log.warn(`could not list ${kind} models`, err);
+      return [];
+    }
+  }
+
+  private save(): void {
+    const plain = this.kind === this.envKind && !Object.keys(this.pins).length;
+    try {
+      this.persist(plain ? null : this.kind, { ...this.pins });
+    } catch (err) {
+      log.warn("could not persist chat provider override", err);
+    }
+  }
+
   state(): ChatProviderState {
+    const pinned = this.pins[this.kind];
     return {
       kind: this.kind,
       name: this.active.name,
       model: this.active.modelFor(ModelTier.LARGE),
       envKind: this.envKind,
       overridden: this.kind !== this.envKind,
+      ...(pinned ? { pinned } : {}),
     };
   }
 }

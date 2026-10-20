@@ -1,4 +1,5 @@
 import { createServer, type Server } from "node:http";
+import { handleAcpTool } from "../acp/tools.js";
 import { createLogger } from "../logger.js";
 import {
   CHAT_PROVIDER_CHOICES,
@@ -36,6 +37,7 @@ export interface HttpOptions {
  *   GET  /sessions/{id}      -> { session, messages }
  *   POST /sessions/{id}/recap -> { recap }
  *   POST /chat {roomId,userId,text,task} -> { text, actions, model, provider, task }
+ *   POST /acp/tools {tool,arguments} -> report (bearer LAINOS_ACP_API_KEY; see src/acp/tools.ts)
  */
 export function createHttpServer(runtime: IAgentRuntime, opts: HttpOptions = {}): Server {
   const host = opts.host ?? process.env.LAINOS_HTTP_HOST ?? "127.0.0.1";
@@ -164,6 +166,18 @@ export function createHttpServer(runtime: IAgentRuntime, opts: HttpOptions = {})
         });
       }
       return json(res, 200, { recap: result });
+    }
+
+    // Paid jobs from the Virtuals ACP marketplace, relayed by the local
+    // lain-acp-bridge after the buyer funds them (see src/acp/tools.ts).
+    if (req.method === "POST" && req.url === "/acp/tools") {
+      try {
+        const result = await handleAcpTool(runtime, req.headers.authorization, await readBody(req));
+        return json(res, result.status, result.body);
+      } catch (err) {
+        log.error("acp tool failed", err);
+        return json(res, 500, { error: "internal error" });
+      }
     }
 
     if (req.method === "POST" && req.url === "/chat") {

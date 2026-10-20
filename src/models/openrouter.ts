@@ -109,13 +109,32 @@ export function servedBy(
  * dangling `</think>` arrives before the real reply.
  */
 export function stripReasoning(raw: string): string {
-  let text = raw.replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, "");
+  return splitReasoning(raw).text;
+}
+
+/** {@link stripReasoning}, keeping what was stripped as `reasoning`. */
+export function splitReasoning(raw: string): { text: string; reasoning: string } {
+  const thoughts: string[] = [];
+  let text = raw.replace(/<think(?:ing)?>([\s\S]*?)<\/think(?:ing)?>/gi, (_, thought: string) => {
+    thoughts.push(thought);
+    return "";
+  });
   // Dangling closer: the opener was swallowed upstream — the reply follows it.
   const close = text.match(/[\s\S]*<\/think(?:ing)?>/i);
-  if (close) text = text.slice(close[0].length);
+  if (close) {
+    thoughts.push(close[0].replace(/<\/think(?:ing)?>/gi, ""));
+    text = text.slice(close[0].length);
+  }
   // Dangling opener: the model ran out of tokens mid-thought — nothing usable.
-  text = text.replace(/<think(?:ing)?>[\s\S]*$/i, "");
-  return text.trim();
+  const open = text.match(/<think(?:ing)?>([\s\S]*)$/i);
+  if (open) {
+    thoughts.push(open[1]);
+    text = text.slice(0, open.index);
+  }
+  return {
+    text: text.trim(),
+    reasoning: thoughts.map((t) => t.trim()).filter(Boolean).join("\n\n"),
+  };
 }
 
 /**

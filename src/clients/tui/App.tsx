@@ -18,20 +18,31 @@ import {
   isViewPref,
   loadCursor,
   loadEffort,
+  loadFolded,
   loadPulse,
   loadSkin,
   loadView,
   saveCursor,
   saveEffort,
+  saveFolded,
   savePulse,
   saveSkin,
   saveView,
 } from "./theme.js";
 import { blank, concat, fitLine, sp, terminalText, type Line } from "./markdown.js";
-import { chromeLines, menuLines, pickerLines } from "./chrome.js";
-import { runCommand as dispatchCommand, suggestionsFor } from "./commands.js";
+import { chromeLines, filterOptions, menuLines, pickerLines } from "./chrome.js";
+import { acceptCompletion, completionsFor, runCommand as dispatchCommand, isSecretCommand, maskSecrets } from "./commands.js";
 import { composeFrame, type ComposerWrap } from "./frame.js";
-import { useChainHeight, useOutputFlowing, usePersistedPref, useSpin, useStdoutDimensions } from "./hooks.js";
+import {
+  useBlink,
+  useChainHeight,
+  useOutputFlowing,
+  usePersistedPref,
+  usePolled,
+  useSpin,
+  useStdoutDimensions,
+  useTicker,
+} from "./hooks.js";
 import { handleKey, type KeyCtx, type PickerState } from "./keymap.js";
 import { handleMouse as handleMouse_, type Drag, type MouseCtx } from "./mouse.js";
 import { localClipboard, osc52 } from "./clipboard.js";
@@ -40,20 +51,21 @@ import { cursorToWrap, wrapIndices } from "./editor.js";
 import { InputHistory, loadInputHistory, saveInputHistory } from "./history.js";
 import { ESC_TIMEOUT_MS, KeyReader, type KeyPress, type MouseInfo, type TuiKey } from "./keys.js";
 import { ChainPulse } from "./pulse.js";
-import {
-  bannerLines,
-  bootLines,
-  sidebarLines,
-  spinnerChar,
-  turnLines,
-  turnText,
-  type FeedRegion,
-  type SidebarRegion,
-  type Turn,
-} from "./layout.js";
+import { bannerLines, bootLines, spinnerChar, turnLines, turnText, welcomeLines, type FeedRegion, type Turn } from "./layout.js";
+import { sidebarLines, type PanelId, type SidebarHit } from "./sidebar.js";
+import { MASCOT_LINES, POKE_MS, mascotPose, type Poke } from "./mascot.js";
+import { INTRO_MS, spinPose } from "./logo3d.js";
+import { readPortfolio } from "./portfolio.js";
 import type { ForgeService } from "../../plugins/forge/index.js";
+import type { MetaMaskService } from "../../plugins/metamask/index.js";
 import type { ScoutService } from "../../plugins/scout/index.js";
 import type { RoutineService } from "../../plugins/skills/routines.js";
+import type { TraderService } from "../../plugins/trader/index.js";
+import type { TrenchService } from "../../plugins/trench/index.js";
+import type { TrenchSnapshot } from "../../plugins/trench/engine.js";
+import type { DeskSnapshot, StockDeskService } from "../../plugins/stocks/index.js";
+import { boardLines } from "./trench.js";
+import { stocksBoardLines } from "./stocks.js";
 import { alertLine, type SentinelService } from "../../plugins/sentinel/index.js";
 
 // ------------------------------------------------------------------ model
@@ -94,13 +106,40 @@ function estimateTokens(history: Turn[], live: Turn | null): number {
   let chars = 0;
   const add = (t: Turn) => {
     for (const p of t.parts) {
-      if (p.kind === "text") chars += p.text.length;
-      else chars += p.tool.name.length + (p.tool.summary?.length ?? 0);
+      if (p.kind === "tool") chars += p.tool.name.length + (p.tool.summary?.length ?? 0);
+      else chars += p.text.length;
     }
   };
   history.forEach(add);
   if (live) add(live);
   return Math.round(chars / 4);
+}
+
+/** The sidebar's code row: "codex/gpt-6.1-sol low", with ⚠ while that agent is out of quota. */
+function sidebarCoder(forge: ForgeService): string {
+  const p = forge.forgeProvider();
+  if (p.selected === "none") return "none";
+  const spent = p.spent.some((line) => line.startsWith(`${p.selected} `));
+  return `${spent ? "⚠ " : ""}${forge.coderLabel().replace(" · ", " ")}`;
+}
+
+/** The sidebar's forge row: "idle", or the running job, its age and how many wait. */
+function sidebarForge(forge: ForgeService): string {
+  const active = forge.activeJob();
+  const waiting = forge.queuedJobs().length;
+  if (!active) return waiting ? `${waiting} queued` : "idle";
+  const mins = active.startedAt ? Math.floor((Date.now() - active.startedAt) / 60_000) : 0;
+  return `${active.id} ${active.agent} · ${mins}m${waiting ? ` +${waiting}` : ""}`;
+}
+
+function sidebarLastForge(forge: ForgeService): string {
+  const last = forge
+    .listJobs()
+    .filter((job) => job.status === "ok" || job.status === "failed")
+    .at(-1);
+  if (!last) return "none";
+  const summary = (last.summary ?? "").split("\n").map((line) => line.trim()).filter(Boolean).at(-1) ?? last.status;
+  return `${last.status} · ${summary}`;
 }
 
 // ------------------------------------------------------------ components
@@ -191,7 +230,10 @@ function InputCapture({ onKey, mouse }: { onKey: (input: string, key: TuiKey) =>
 
 // ------------------------------------------------------------------ app
 
-export function App({ runtime }: { runtime: IAgentRuntime }) {
+export function App({ runtime, copyToClipboard = localClipboard }: {
+  runtime: IAgentRuntime;
+  copyToClipboard?: typeof localClipboard;
+}) {
   const { exit } = useApp();
   const { isRawModeSupported } = useStdin();
   const { stdout } = useStdout();
@@ -255,8 +297,14 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
   const [picker, setPicker] = useState<PickerState | null>(null);
   // true while walking history — suppresses the slash menu so ↑/↓ stay on history
   const [browsing, setBrowsing] = useState(false);
-  // which tool calls are expanded in the feed (click to toggle)
-  const [expandedTools, setExpandedTools] = useState<ReadonlySet<string>>(new Set());
+  // a live board (trench, stocks), drawn in place of the transcript while open
+  const [board, setBoard] = useState<"trench" | "stocks" | null>(null);
+  const [boardSnap, setBoardSnap] = useState<
+    { kind: "trench"; snap: TrenchSnapshot } | { kind: "stocks"; snap: DeskSnapshot } | null
+  >(null);
+  const [boardFrame, setBoardFrame] = useState(0);
+  // which tool calls and thoughts are unfolded in the feed (click to toggle)
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   // selection mode: the frame is frozen and the mouse belongs to the terminal
   const [selectMode, setSelectMode] = useState(false);
   const frozenRef = useRef<Line[] | null>(null);
@@ -284,8 +332,58 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
   const tokens = useMemo(() => estimateTokens(history, live), [history, live]);
   const [pulseOn, setPulseOn] = usePersistedPref(loadPulse, savePulse);
 
-  const suggestions = useMemo(() => suggestionsFor(value), [value]);
-  const menuItems = browsing ? [] : suggestions;
+  // The sidebar's windows: folded by a click on the title bar, remembered across
+  // runs. The one opened last is the last to fold itself for room.
+  const [folded, setFolded] = usePersistedPref(loadFolded, saveFolded);
+  const foldedSet = useMemo(() => new Set(folded as PanelId[]), [folded]);
+  const [pinnedPanel, setPinnedPanel] = useState<PanelId | undefined>(undefined);
+  // A click goes by what the window shows: one that folded itself for room
+  // opens, and is the one that stays open while others fold instead.
+  const togglePanel = useCallback(
+    (panel: PanelId, open: boolean) => {
+      setFolded((prev) => [...prev.filter((p) => p !== panel), ...(open ? [panel] : [])]);
+      setPinnedPanel(open ? undefined : panel);
+    },
+    [setFolded],
+  );
+
+  // The masthead's logo spins when the welcome screen appears and when clicked;
+  // Lain in the sidebar hops and says something when poked.
+  const [logoSpin, setLogoSpin] = useState(() => ({ at: Date.now(), turns: 1.5, ms: INTRO_MS }));
+  const spinLogo = useCallback(() => setLogoSpin({ at: Date.now(), turns: 1, ms: 1800 }), []);
+  const [poke, setPoke] = useState<Poke | null>(null);
+  const pokeMascot = useCallback(() => {
+    setPoke((prev) => {
+      const pool = MASCOT_LINES.filter((l) => l !== prev?.say);
+      return { at: Date.now(), say: pool[Math.floor(Math.random() * pool.length)] };
+    });
+  }, []);
+
+  // Balances and P&L for the wallet window: once a minute, and shortly after
+  // each new turn (a trade, a /paper), never more than every 15 seconds.
+  const portfolio = usePolled(() => readPortfolio(runtime), history.length, 60_000, 15_000);
+  const [equityFlash, setEquityFlash] = useState<"up" | "down" | undefined>(undefined);
+  const lastEquityRef = useRef<number | null>(null);
+  const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    const eq = portfolio?.equity;
+    if (eq === null || eq === undefined || !Number.isFinite(eq)) return;
+    const prev = lastEquityRef.current;
+    lastEquityRef.current = eq;
+    if (prev === null || Math.abs(eq - prev) < 1e-12) return;
+    setEquityFlash(eq > prev ? "up" : "down");
+    if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+    flashTimerRef.current = setTimeout(() => setEquityFlash(undefined), 1800);
+  }, [portfolio]);
+  useEffect(
+    () => () => {
+      if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+    },
+    [],
+  );
+
+  const completion = useMemo(() => completionsFor(value, runtime, cursor), [value, runtime, cursor]);
+  const menuItems = browsing ? [] : completion.items;
   const acIdx = menuItems.length ? Math.min(acIndex, menuItems.length - 1) : 0;
   // first visible row of the menu / picker when they are taller than the screen
   const menuStartRef = useRef(0);
@@ -305,7 +403,7 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
         return;
       }
       osc52(body, (s) => void stdout?.write(s));
-      void localClipboard(body);
+      void copyToClipboard(body);
       pushHistory(
         sysTurn(
           `copied ${what} (${body.length} chars).` +
@@ -313,7 +411,7 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
         ),
       );
     },
-    [pushHistory, stdout],
+    [copyToClipboard, pushHistory, stdout],
   );
 
   const lastReply = useCallback((): string => {
@@ -379,6 +477,68 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
     return scout.onEvent((ev) => pushHistory(pulseTurn(ev.text)));
   }, [pushHistory, runtime]);
 
+  // MetaMask Agent Wallet jobs that waited on an approval report how they ended.
+  useEffect(() => {
+    const metamask = runtime.getService<MetaMaskService>("metamask");
+    if (!metamask?.onEvent) return;
+    return metamask.onEvent((ev) => pushHistory(pulseTurn(ev.text)));
+  }, [pushHistory, runtime]);
+
+  // The take-profit loop's sells — on paper here, unless this process trades for real.
+  useEffect(() => {
+    const trader = runtime.getService<TraderService>("trader");
+    if (!trader?.onEvent) return;
+    return trader.onEvent((ev) => pushHistory(pulseTurn(ev.text)));
+  }, [pushHistory, runtime]);
+
+  // Paper trenching: every entry and exit the moment it happens.
+  useEffect(() => {
+    const trench = runtime.getService<TrenchService>("trench");
+    if (!trench?.onEvent) return;
+    return trench.onEvent((ev) => {
+      if (ev.kind !== "tick") pushHistory(pulseTurn(ev.text));
+    });
+  }, [pushHistory, runtime]);
+
+  // While the board is open: a fresh snapshot on every scan and every event,
+  // and a redraw twice a second so the tape drips and LIVE blinks.
+  useEffect(() => {
+    if (!board) return;
+    let alive = true;
+    const offs: (() => void)[] = [];
+    if (board === "trench") {
+      const trench = runtime.getService<TrenchService>("trench");
+      if (!trench) return;
+      const pull = () => void trench.snapshot().then((snap) => alive && setBoardSnap({ kind: "trench", snap }));
+      pull();
+      offs.push(trench.onEvent(pull));
+    } else {
+      const desk = runtime.getService<StockDeskService>("stocks");
+      if (!desk) return;
+      const pull = () => void desk.snapshot().then((snap) => alive && setBoardSnap({ kind: "stocks", snap }));
+      pull();
+      offs.push(desk.onEvent(pull));
+      // Someone is watching: the desk scans even with auto-trading off.
+      offs.push(desk.watch());
+    }
+    const timer = setInterval(() => setBoardFrame((f) => f + 1), 500);
+    return () => {
+      alive = false;
+      for (const off of offs) off();
+      clearInterval(timer);
+      setBoardSnap(null);
+    };
+  }, [board, runtime]);
+
+  // The stock desk's fills land in the feed as well.
+  useEffect(() => {
+    const desk = runtime.getService<StockDeskService>("stocks");
+    if (!desk?.onEvent) return;
+    return desk.onEvent((ev) => {
+      if (ev.kind !== "tick") pushHistory(pulseTurn(ev.text));
+    });
+  }, [pushHistory, runtime]);
+
   // Routine reports (self-written skills on a schedule) too, when routines run in this process.
   useEffect(() => {
     const routines = runtime.getService<RoutineService>("routines");
@@ -421,8 +581,9 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
     });
   }, [cursorPref]);
 
-  // The live chat model is a SwitchableModelProvider, so /model re-routes
-  // replies mid-session. The choice is persisted for the next boot.
+  // The live chat model is a SwitchableModelProvider, so /agent re-routes
+  // replies mid-session and /model picks the model inside the agent. Both
+  // choices are persisted for the next boot.
   const switchable = useMemo(
     () => (runtime.model instanceof SwitchableModelProvider ? runtime.model : undefined),
     [runtime],
@@ -459,12 +620,12 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
     [pushHistory, switchable],
   );
 
-  const openModelPicker = useCallback(() => {
+  const openAgentPicker = useCallback(() => {
     const current = switchable?.state();
     setPicker({
       title: current
-        ? `chat model — now ${chatProviderLabel(current.kind)} ${GLYPH.dot} ${current.model}`
-        : "chat model",
+        ? `agent — now ${chatProviderLabel(current.kind)} ${GLYPH.dot} ${current.model}`
+        : "agent",
       kind: "plain",
       options: CHAT_PROVIDER_CHOICES.map((p) => ({ value: p.name, label: p.name, hint: `  ${p.desc}` })),
       index: Math.max(
@@ -474,6 +635,77 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
       onPick: (v) => switchProvider(v),
     });
   }, [switchable, switchProvider]);
+
+  /** Pin a model inside the current agent (null = the agent's own default) and say so. */
+  const applyModel = useCallback(
+    (id: string | null) => {
+      if (!switchable) return;
+      const result = switchable.setModel(id);
+      if (typeof result === "string") {
+        pushHistory(sysTurn(result));
+        return;
+      }
+      pushHistory(
+        sysTurn(
+          `${chatProviderLabel(result.kind)} now answers on ${result.model}` +
+            (result.pinned ? "  (saved for this agent)" : "  (the agent's own default)"),
+        ),
+      );
+    },
+    [pushHistory, switchable],
+  );
+
+  /**
+   * /model: the models the current agent can run, searchable — or, with an
+   * argument, straight to the one it names (the exact id, or the only match).
+   * Only OpenCode's list is the whole truth; any other agent takes an id it
+   * doesn't list as typed, and says so on the next reply if it can't run it.
+   */
+  const switchModel = useCallback(
+    async (query?: string) => {
+      if (!switchable) {
+        pushHistory(sysTurn(`this session's model is fixed — ${provider} ${GLYPH.dot} ${model}`));
+        return;
+      }
+      const current = switchable.state();
+      const label = chatProviderLabel(current.kind);
+      const want = query?.trim();
+      if (want === "default") return applyModel(null);
+      const models = await switchable.models();
+      const listed = models.map((m) => ({ value: m.id, label: m.id, ...(m.free ? { hint: "  free" } : {}) }));
+      if (want) {
+        const matches = filterOptions(listed, want);
+        if (models.some((m) => m.id === want)) return applyModel(want);
+        if (matches.length === 1) return applyModel(matches[0].value);
+        if (!matches.length) {
+          if (current.kind !== "opencode") return applyModel(want);
+          pushHistory(sysTurn(`no ${label} model matches "${want}" — /model lists them all`));
+          return;
+        }
+      }
+      if (!models.length) {
+        pushHistory(
+          sysTurn(
+            `${label} ${GLYPH.dot} ${current.model} — it has no list to pick from; ` +
+              "/model <id> pins one, /model default returns to its own",
+          ),
+        );
+        return;
+      }
+      const all = [{ value: "default", label: "default", hint: "  the agent's own default (.env)" }, ...listed];
+      const options = want ? filterOptions(all, want) : all;
+      setPicker({
+        title: `${label} model — now ${current.model}`,
+        kind: "plain",
+        all,
+        query: want ?? "",
+        options,
+        index: want ? 0 : Math.max(0, options.findIndex((o) => o.value === (current.pinned ?? "default"))),
+        onPick: (v) => applyModel(v === "default" ? null : v),
+      });
+    },
+    [applyModel, model, provider, pushHistory, switchable],
+  );
 
   // ------------------------------------------------------------- sessions
   //
@@ -546,6 +778,7 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
     setSessionId(undefined);
     setLive(null);
     setHistory([]);
+    setLogoSpin({ at: Date.now(), turns: 1.5, ms: INTRO_MS });
   }, []);
 
   const resumeSession = useCallback(
@@ -716,6 +949,7 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
         if (scrollView) stdout?.write("\x1b[2J\x1b[3J\x1b[H");
         setLive(null);
         setHistory([]);
+        setLogoSpin({ at: Date.now(), turns: 1.5, ms: INTRO_MS });
       },
       freeze: () =>
         scrollView
@@ -742,11 +976,19 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
           sysTurn(next ? "pulse on — i'll murmur when the chain moves." : "pulse off — the wired goes quiet."),
         );
       },
-      openPicker: (which: "skin" | "effort" | "cursor" | "model") => {
+      openPicker: (which: "skin" | "effort" | "cursor" | "agent") => {
         if (which === "skin") openSkinPicker();
         else if (which === "effort") openEffortPicker();
         else if (which === "cursor") openCursorPicker();
-        else openModelPicker();
+        else openAgentPicker();
+      },
+      switchModel: (query?: string) => void switchModel(query),
+      openBoard: (kind: "trench" | "stocks" | null) => {
+        if (kind && scrollView) {
+          pushHistory(sysTurn(`the live ${kind} board needs the full-screen view — /view full (or /${kind} status for text)`));
+          return;
+        }
+        setBoard(kind);
       },
       choose: (title: string, options: { value: string; label: string; hint?: string }[], onPick: (value: string) => void, index = 0) =>
         setPicker({ title, kind: "plain", options, index, onPick }),
@@ -758,7 +1000,7 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
       taskRoutes,
       exit,
     }),
-    [copyOut, exit, history, lastReply, listSessions, model, newSession, openCursorPicker, openEffortPicker, openModelPicker, openSkinPicker, provider, pulseOn, pushHistory, recapSession, resumeSession, runtime, scrollView, setViewPref, stdout, switchProvider, switchable, taskRoutes, viewPref],
+    [copyOut, exit, history, lastReply, listSessions, model, newSession, openCursorPicker, openAgentPicker, openEffortPicker, openSkinPicker, provider, pulseOn, pushHistory, recapSession, resumeSession, runtime, scrollView, setViewPref, stdout, switchModel, switchProvider, switchable, taskRoutes, viewPref],
   );
 
   const command = useCallback((text: string) => dispatchCommand(text, commandCtx), [commandCtx]);
@@ -790,9 +1032,7 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
           model: acc.model,
           provider: acc.provider,
           upstream: acc.upstream,
-          parts: acc.parts.map((p) =>
-            p.kind === "tool" ? { kind: "tool", tool: { ...p.tool } } : { kind: "text", text: p.text },
-          ),
+          parts: acc.parts.map((p) => (p.kind === "tool" ? { kind: "tool", tool: { ...p.tool } } : { ...p })),
         });
 
       setStatus("thinking");
@@ -807,6 +1047,12 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
             // sees which model is about to be spent before a word arrives.
             acc.task = ev.kind;
             if (ev.escalated) acc.escalated = true;
+            flush();
+          } else if (ev.type === "reasoning") {
+            // Folded by default: the thought is there to open, not to read past.
+            const last = acc.parts.at(-1);
+            if (last && last.kind === "reasoning") last.text += ev.delta;
+            else acc.parts.push({ kind: "reasoning", id: `${acc.id}-thought-${acc.parts.length}`, text: ev.delta });
             flush();
           } else if (ev.type === "text") {
             setStatus("streaming");
@@ -876,7 +1122,7 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
   // ---------------------------------------------------------- layout math
 
   const sidebarOn = !scrollView && width >= 100;
-  const sidebarW = sidebarOn ? 28 : 0;
+  const sidebarW = sidebarOn ? (width >= 150 ? 36 : 30) : 0;
   const contentW = sidebarOn ? width - sidebarW : width;
   // the composer's text area: the gutter, the panel's two borders, its padding
   // and the prompt
@@ -891,40 +1137,68 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
 
   const spin = useSpin(busy);
   const feedW = Math.max(8, contentW - 1);
+
+  // The clock for the animations that run on time: the logo's spin and a poke.
+  // Neither runs while the frame is frozen or nobody is reading the terminal.
+  const now = Date.now();
+  const welcome = !scrollView && history.length === 0 && live === null;
+  const spinning = welcome && now - logoSpin.at < logoSpin.ms + 120;
+  const poked = poke !== null && now - poke.at < POKE_MS;
+  useTicker(!selectMode && flowing && (spinning || poked), 50);
+  // She blinks only while someone is around (the same window the caret blinks
+  // in), so an idle screen stays still and selectable.
+  const blinking = useBlink(!selectMode && flowing && (blinkAlive || busy), 4700, 170);
+  const logoT = spinning ? now - logoSpin.at : logoSpin.ms;
+  const logoRows = Math.min(13, Math.floor((frameRows - 8) * 0.5));
+
   const feed = useMemo(() => {
     // The scroll view prints turns into the terminal's scrollback instead.
     if (scrollView) return { lines: [] as Line[], regions: [] as (FeedRegion | undefined)[] };
+    // An empty session is the welcome screen: the logo turning in space.
+    if (!history.length && !live) return welcomeLines(theme, feedW, logoRows, spinPose(logoT, logoSpin.turns, logoSpin.ms));
     // The masthead shrinks to one line once there is a conversation to read.
-    const bn = bannerLines(theme, feedW, history.length > 0 || live !== null);
+    const bn = bannerLines(theme, feedW, true);
     const lines: Line[] = [...bn];
     const regions: (FeedRegion | undefined)[] = bn.map(() => undefined);
     const push = (ls: Line[], rs: (FeedRegion | undefined)[]) => {
       lines.push(...ls);
       regions.push(...rs);
     };
-    if (!history.length && !live) {
-      const bt = bootLines(theme, feedW);
-      push(bt, bt.map(() => undefined));
-    }
     for (const t of history) {
-      const tl = turnLines(t, expandedTools, theme, feedW, spinnerChar(spin));
+      const tl = turnLines(t, expanded, theme, feedW, spinnerChar(spin));
       push(tl.lines, tl.regions);
     }
     if (live) {
-      const tl = turnLines(live, expandedTools, theme, feedW, spinnerChar(spin));
+      const tl = turnLines(live, expanded, theme, feedW, spinnerChar(spin));
       push(tl.lines, tl.regions);
     }
     return { lines, regions };
-  }, [expandedTools, feedW, history, live, scrollView, spin, theme]);
+  }, [expanded, feedW, history, live, logoRows, logoSpin, logoT, scrollView, spin, theme]);
 
   const watches = runtime.getService<SentinelService>("sentinel")?.listWatches()?.length ?? 0;
-  const wishes = runtime.getService<ForgeService>("forge")?.listWishes()?.length ?? 0;
+  const forgeSvc = runtime.getService<ForgeService>("forge");
+  const wishes = forgeSvc?.listWishes()?.length ?? 0;
+  const coder = forgeSvc ? sidebarCoder(forgeSvc) : "none";
+  const forgeNow = forgeSvc ? sidebarForge(forgeSvc) : "—";
+  const lastForge = forgeSvc ? sidebarLastForge(forgeSvc) : "—";
   const topics = runtime.getService<ScoutService>("scout")?.listTopics()?.length ?? 0;
   const skills = runtime.actions.length;
   const sidebar = sidebarOn
     ? sidebarLines(theme, sidebarW, frameRows, {
+        status,
+        elapsed: startedAt ? Date.now() - startedAt : 0,
+        spin,
+        pulse: pulseOn,
+        mascot: { ...mascotPose(now, status, poke, blinking), poked: poke !== null },
+        portfolio,
+        flash: equityFlash,
+        folded: foldedSet,
+        pinned: pinnedPanel,
         provider,
         model,
+        coder,
+        forge: forgeNow,
+        lastForge,
         block,
         tokens,
         room,
@@ -936,11 +1210,13 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
         topics,
         skills,
       })
-    : { lines: Array.from({ length: frameRows }, () => blank(sidebarW)), regions: [] as (SidebarRegion | undefined)[] };
+    : { lines: Array.from({ length: frameRows }, () => blank(sidebarW)), regions: [] as (SidebarHit | undefined)[] };
 
   // ---- chrome (state line + menus/picker + framed composer + key hints)
-  const composerWrap = useMemo(() => wrapIndices(value, composerWidth), [value, composerWidth]);
-  const cursorPos = useMemo(() => cursorToWrap(value, cursor, composerWidth), [value, cursor, composerWidth]);
+  // A token typed after /metamask is drawn masked; same length, so the wrap and cursor match.
+  const composerText = useMemo(() => maskSecrets(value), [value]);
+  const composerWrap = useMemo(() => wrapIndices(composerText, composerWidth), [composerText, composerWidth]);
+  const cursorPos = useMemo(() => cursorToWrap(composerText, cursor, composerWidth), [composerText, cursor, composerWidth]);
   // A menu or picker taller than the screen would push the frame past the
   // terminal's last row, and the terminal scrolls on every repaint — the list
   // flickers. So each gets the rows the rest of the frame leaves (minus one for
@@ -959,9 +1235,9 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
     : picker
       ? ""
       : menuItems.length
-        ? scrollView
-          ? "↑↓ · tab next · enter run · esc keep typing"
-          : "↑↓ or click · tab next · enter run · esc keep typing"
+        ? completion.kind === "arg"
+          ? `↑↓${scrollView ? "" : " or click"} · tab complete · enter sends the line as typed`
+          : `↑↓${scrollView ? "" : " or click"} · tab complete · enter run · esc keep typing`
         : busy
           ? `type ahead — she answers first${scrollView ? "" : " · drag to select"} · ctrl+y copy her last reply`
           : value.includes("\n")
@@ -1001,15 +1277,27 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
 
   // ---- the transcript sits at the *bottom* of its viewport: a short
   // conversation belongs next to the composer, not stranded under the banner.
-  const topPad = Math.max(0, viewportRows - feed.lines.length);
+  // The welcome screen is the exception: it stands in the middle, like a title card.
+  const topPad = Math.max(0, welcome ? Math.floor((viewportRows - feed.lines.length) / 2) : viewportRows - feed.lines.length);
+  // The trench board replaces the transcript outright: one screen, no scroll.
+  const boardOn = board !== null && !scrollView && boardSnap !== null && boardSnap.kind === board;
   const view = useMemo(
-    () => ({
-      lines: topPad ? [...Array.from({ length: topPad }, () => blank(feedW)), ...feed.lines] : feed.lines,
-      regions: topPad
-        ? [...Array.from({ length: topPad }, () => undefined as FeedRegion | undefined), ...feed.regions]
-        : feed.regions,
-    }),
-    [feedW, feed, topPad],
+    () =>
+      boardOn
+        ? {
+            lines:
+              boardSnap!.kind === "trench"
+                ? boardLines(boardSnap!.snap, theme, feedW, viewportRows, Date.now(), boardFrame)
+                : stocksBoardLines(boardSnap!.snap, theme, feedW, viewportRows, Date.now(), boardFrame),
+            regions: Array.from({ length: viewportRows }, () => undefined as FeedRegion | undefined),
+          }
+        : {
+            lines: topPad ? [...Array.from({ length: topPad }, () => blank(feedW)), ...feed.lines] : feed.lines,
+            regions: topPad
+              ? [...Array.from({ length: topPad }, () => undefined as FeedRegion | undefined), ...feed.regions]
+              : feed.regions,
+          },
+    [boardOn, boardSnap, boardFrame, feedW, feed, theme, topPad, viewportRows],
   );
 
   // ---- scrolling (in-app; the terminal's own scrollback is not used)
@@ -1044,7 +1332,10 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
     chrome,
     sidebar,
     composerWrap: composerWrap as ComposerWrap,
-    menuItems: menuWin ? menuItems.slice(menuWin.start, menuWin.start + menuWin.count) : [],
+    // A click on a command runs it; on an argument, it goes into the line like Tab.
+    menuItems: (menuWin ? menuItems.slice(menuWin.start, menuWin.start + menuWin.count) : []).map((it) =>
+      completion.kind === "arg" ? { ...it, fill: acceptCompletion(value, completion, it) } : it,
+    ),
     pickerStart: pickerWin?.start ?? 0,
     pickerCount: pickerWin?.count ?? 0,
     // A frozen frame is selected by the terminal itself, which would copy the
@@ -1098,8 +1389,8 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
 
   // ------------------------------------------------------------- handlers
 
-  const toggleTool = useCallback((id: string) => {
-    setExpandedTools((prev) => {
+  const toggleFold = useCallback((id: string) => {
+    setExpanded((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
@@ -1117,10 +1408,10 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
         : selectionText(displayRef.current, range, range.right, range.left);
       if (!text.trim()) return;
       osc52(text, (s) => void stdout?.write(s));
-      void localClipboard(text);
+      void copyToClipboard(text);
       setCopiedNote(`${text.length} chars copied`);
     },
-    [stdout],
+    [copyToClipboard, stdout],
   );
 
   /** The same latest-ref shape as the keyboard's context, for the same reason. */
@@ -1140,17 +1431,27 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
     openPicker: (which) => {
       if (which === "skin") openSkinPicker();
       else if (which === "effort") openEffortPicker();
-      else openModelPicker();
+      else if (which === "agent") openAgentPicker();
+      else void switchModel();
     },
     freeze: () => setSelectMode(true),
     copyLastReply: () => copyOut(lastReply(), "lain's last reply"),
-    toggleTool,
+    toggleFold,
     copyText: copyOut,
     runCommand,
+    fillComposer: (line) => {
+      setBrowsing(false);
+      setValue(line);
+      setCursor(line.length);
+      setAcIndex(0);
+    },
     moveCursorTo: (index) => {
       setCursor(index);
       setBrowsing(false);
     },
+    togglePanel,
+    pokeMascot,
+    spinLogo,
   };
 
   const handleMouse = useCallback((m: MouseInfo) => handleMouse_(m, mouseCtxRef.current!), []);
@@ -1164,12 +1465,15 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
     cursor,
     acIndex,
     browsing,
+    completion,
     composerWidth,
     viewportRows,
     picker,
     selectMode,
     quitArmed,
     hist,
+    board: boardOn,
+    closeBoard: () => setBoard(null),
     edit: (v, c) => {
       setBrowsing(false);
       setValue(v);
@@ -1182,8 +1486,10 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
       setCursor(v.length);
     },
     commit: (text) => {
-      // Remembered for the next ↑ — and for the next run of the TUI.
-      if (hist.push(text)) saveInputHistory(hist.entries);
+      // Remembered for the next ↑ — and for the next run of the TUI. A secret never is.
+      if (!isSecretCommand(text) && hist.push(text)) saveInputHistory(hist.entries);
+      // Anything but the board's own command answers in the transcript, so the board steps aside for it.
+      if (!text.startsWith(`/${board ?? "-"}`)) setBoard(null);
       setBrowsing(false);
       setValue("");
       setCursor(0);
@@ -1255,17 +1561,17 @@ export function App({ runtime }: { runtime: IAgentRuntime }) {
   const printItems: PrintItem[] = scrollView
     ? [{ key: `banner-${printEpochRef.current}` }, ...history.map((t) => ({ key: t.id, turn: t }))]
     : [];
-  const noTools = useMemo(() => new Set<string>(), []);
+  const nothingOpen = useMemo(() => new Set<string>(), []);
   const printLines = (item: PrintItem): Line[] =>
     item.turn
-      ? turnLines(item.turn, noTools, theme, feedW, "").lines
+      ? turnLines(item.turn, nothingOpen, theme, feedW, "").lines
       : history.length
         ? bannerLines(theme, feedW, true)
         : [...bannerLines(theme, feedW, false), ...bootLines(theme, feedW)];
   // The live turn is redrawn until it is done, then printed for good. Capped so
   // the redrawn area stays shorter than the window: ink wipes the screen and
   // reprints everything it ever printed when it is not.
-  const liveLines = scrollView && live ? turnLines(live, expandedTools, theme, feedW, spinnerChar(spin)).lines : [];
+  const liveLines = scrollView && live ? turnLines(live, expanded, theme, feedW, spinnerChar(spin)).lines : [];
   const liveRoom = Math.max(0, frameRows - chrome.lines.length);
   const scrollDisplay = scrollView ? [...liveLines.slice(-liveRoom), ...chrome.lines] : [];
 

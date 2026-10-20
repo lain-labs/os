@@ -314,9 +314,10 @@ export function wrapSpans(spans: Span[], width: number): Line[] {
       }
       return;
     }
-    const need = sw + (pendingSpace || used > 0 ? 1 : 0);
-    if (used > 0 && used + need > w) flush();
-    if (used > 0) {
+    // A space only where the source had one: "**bold**," stays glued to its comma.
+    const gap = pendingSpace && used > 0 ? 1 : 0;
+    if (used > 0 && used + sw + gap > w) flush();
+    else if (gap) {
       line.push(span(" "));
       used += 1;
     }
@@ -351,7 +352,9 @@ function inlineToSpans(tokens: Token[] | undefined, theme: Theme): Span[] {
     const kids = (tok as { tokens?: Token[] }).tokens;
     switch (tok.type) {
       case "text":
-        out.push(span((tok as { text: string }).text, { c: c.fg }));
+        // A list item's text carries its own inline tokens (bold, code, links).
+        if (kids?.length) out.push(...inlineToSpans(kids, theme));
+        else out.push(span((tok as { text: string }).text, { c: c.fg }));
         break;
       case "space":
         out.push(span(tok.raw));

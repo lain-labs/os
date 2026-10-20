@@ -435,7 +435,7 @@ export class ScoutService implements Service {
       `You are Lain's research scout writing a digest for one subscribed topic. ` +
       `Honour the subscriber's instruction strictly: include only what genuinely matters under it; ` +
       `drop noise, duplicates, marketing, and engagement bait. ` +
-      `Write in the language of the instruction (default English). ` +
+      `Write the digest entirely in English regardless of the language of the instruction or sources. ` +
       `Start with a one- or two-sentence takeaway, then up to 8 bullet lines, each ending with its link. ` +
       `Plain text only, no markdown headers. ` +
       `If nothing clears the bar, reply with exactly the single word: NOTHING — ` +

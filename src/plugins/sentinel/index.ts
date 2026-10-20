@@ -1281,8 +1281,8 @@ const watchWalletsAction: Action = {
   },
   examples: [
     {
-      user: "следи за всеми 100 холдерами по всем токенам и пиши в тг",
-      agent: "ставлю одну слежку на всех сотню.",
+      user: "watch all 100 holders across all tokens and report to Telegram",
+      agent: "setting one watch for all 100 holders.",
     },
   ],
   async validate(runtime) {

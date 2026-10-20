@@ -12,12 +12,13 @@ import type { Position } from "../journal.js";
 import { getService } from "../service.js";
 import { sameAddress } from "../math.js";
 import { reconstructDexBuyBasis } from "../explorer.js";
+import { paperReport } from "./paper.js";
 
 export const portfolioPnlAction: Action = {
   name: "portfolio_pnl",
   similes: ["pnl", "positions", "profit_report", "treasury_report", "cost_basis"],
   description:
-    "Report the agent's treasury: native currency, every token position with its live sell-side value on the configured DEX, the journal's cost basis, and unrealised PnL. Use before selling 'profitable positions' or when asked how trading is going.",
+    "Report the agent's treasury: native currency, every token position with its live sell-side value on the configured DEX, the journal's cost basis, and unrealised PnL. Use before selling 'profitable positions' or when asked how trading is going. In paper mode it reports the paper account.",
   parameters: {
     type: "object",
     properties: {},
@@ -31,6 +32,7 @@ export const portfolioPnlAction: Action = {
   async handler(runtime) {
     const svc = getService(runtime);
     const sym = svc.nativeSymbol;
+    if (svc.paperMode) return { ok: true, ...(await paperReport(svc)) };
     if (!svc.agentAddress) return { ok: false, text: "I have no wallet yet (create_wallet makes one)." };
     const address = svc.agentAddress;
     const native = await svc.publicClient.getBalance({ address });

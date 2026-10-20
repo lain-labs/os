@@ -15,6 +15,8 @@ import { TASKS, TaskKind, isTaskKind } from "../models/tasks.js";
 import { formatForgeJobs, type ForgeService } from "../plugins/forge/index.js";
 import { describeNetworks, switchNetwork } from "../plugins/chain/networks.js";
 import { digestCommand } from "../plugins/digest/index.js";
+import { describeSkills } from "../plugins/skills/index.js";
+import { formatListings, registryIo, searchSkillsSh } from "../plugins/skills/registry.js";
 import { writeSettings } from "../plugins/system/settings.js";
 import { htmlToText, replyKeyboard } from "../plugins/telegram/index.js";
 import { defang, resolveTelegramSender, senderHeader, senderTag } from "../plugins/telegram/identity.js";
@@ -127,6 +129,7 @@ const HELP_TEXT = [
   "  · /model — who answers you now, and switch (/model free — the free pool)",
   "  · /network — which chain i'm on (/network robinhood switches)",
   "  · /digest — portfolio digest now (/digest at 09:00 — daily, /digest off)",
+  "  · /skills — the tools i wrote myself (/skills find <query> — search skills.sh)",
   "",
   "try: \"watch 0x… and warn me below 5\"",
 ].join("\n");
@@ -400,14 +403,32 @@ export class TelegramClient {
         await this.sendChunked(chatId, "the digest plugin is not loaded.");
         return;
       }
-      if (!args.length) await this.sendChunked(chatId, "собираю дайджест — пара минут…");
+      if (!args.length) await this.sendChunked(chatId, "collecting the digest — a couple of minutes…");
       const typing = this.keepTyping(chatId);
       try {
         await this.sendChunked(chatId, await digestCommand(this.runtime, args), { markdown: true });
       } catch (err) {
-        await this.sendChunked(chatId, `дайджест не собрался: ${(err as Error).message}`);
+        await this.sendChunked(chatId, `digest failed: ${(err as Error).message}`);
       } finally {
         typing();
+      }
+      return;
+    }
+    if (cmd === "/skills") {
+      const args = content.split(/\s+/).slice(1);
+      const sub = args[0]?.toLowerCase();
+      try {
+        if (sub === "find" || sub === "search") {
+          const query = args.slice(1).join(" ").trim();
+          const text = query
+            ? formatListings(query, await searchSkillsSh(query, { limit: 10 }, registryIo.fetch))
+            : "usage: /skills find <query>";
+          await this.sendChunked(chatId, query ? `${text}\n\nask me to install one by its id.` : text);
+        } else {
+          await this.sendChunked(chatId, await describeSkills(this.runtime));
+        }
+      } catch (err) {
+        await this.sendChunked(chatId, `skills: ${(err as Error).message}`);
       }
       return;
     }

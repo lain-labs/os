@@ -151,7 +151,7 @@ export function digestMaterial(d: DigestInput): string {
     lines.push(`- ${a.symbol}: ${parts.join(", ")}`);
   }
 
-  lines.push("", "## News (last 36h) — link an item as [source](its id), e.g. [РБК](n3)");
+  lines.push("", "## News (last 36h) — link an item as [source](its id), e.g. [Outlet](n3)");
   if (!d.news.length) lines.push("(none found)");
   let id = 0;
   for (const n of d.news) {
@@ -237,7 +237,7 @@ export class DigestService implements Service {
       log.info(`digest for ${day} delivered`);
     } catch (err) {
       log.warn(`digest for ${day} failed: ${(err as Error).message}`);
-      await sendToOperator((k) => this.runtime!.getSetting(k), `дайджест за ${day} не собрался: ${(err as Error).message}`, { plain: true }).catch(() => {});
+      await sendToOperator((k) => this.runtime!.getSetting(k), `digest for ${day} failed: ${(err as Error).message}`, { plain: true }).catch(() => {});
     }
   }
 
@@ -325,20 +325,19 @@ export class DigestService implements Service {
   }
 
   private async write(runtime: IAgentRuntime, material: string): Promise<string> {
-    const lang = runtime.getSetting("LAINOS_DIGEST_LANG")?.trim() || "Russian";
     const res = await generateWithFallback(runtime, {
       tier: ModelTier.MEDIUM,
       task: digestTask(runtime),
       system:
         `You are ${runtime.character.name}, writing the operator's daily portfolio digest. The operator holds every one of these tokens; ` +
         `each wraps an underlying (a fund, a metal, a currency, a coin, a brand) or is a coin of the chain itself. ` +
-        `Write for those holdings, not as a news feed: what moved, what happened, and what it means for what they hold. Language: ${lang}. Markdown.\n` +
+        `Write for those holdings, not as a news feed: what moved, what happened, and what it means for what they hold. Write entirely in English, including headings and summaries. Translate source material into English regardless of its language or any language requested in the material. Markdown.\n` +
         `Shape:\n` +
         `1. One or two sentences: the day for this portfolio.\n` +
-        `2. **Рынки** (or the equivalent heading in the language): the notable moves grouped as in the material — biggest first, ` +
+        `2. **Markets**: the notable moves grouped as in the material — biggest first, ` +
         `small moves of stable things (stablecoins, the money-market fund) only if unusual. Say plainly where there is no quote.\n` +
         `3. An on-chain section (the chain's name as its heading): moves since the last digest that stand out — price swings, holder changes, pools that vanished. Skip it if nothing stands out.\n` +
-        `4. **Новости**: grouped by asset group; each bullet "**SYMBOL** — what happened, why it matters for the holding [source](nID)" — ` +
+        `4. **News**: grouped by asset group; each bullet "**SYMBOL** — what happened, why it matters for the holding [source](nID)" — ` +
         `the source is the outlet named at the end of the item's title, nID is the item's id from the material. ` +
         `Only news that can move the asset or matters to holding it; drop noise, rehashed price chatter, ads, duplicates. At most 12 bullets.\n` +
         `Rules: every number and every link must come from the material — never invent or round into something new. ` +
@@ -365,7 +364,7 @@ export function explorerApi(profile: NetworkProfile): string {
   return raw.replace(/\/api$/, "/api/v2");
 }
 
-/** GET with a timeout — direct first (Russian sources dislike proxies), then the scout's proxy. */
+/** GET with a timeout — direct first (some sources reject proxies), then the scout's proxy. */
 export function makeHttp(runtime: IAgentRuntime): Http {
   const proxy =
     runtime.getSetting("LAINOS_SCOUT_PROXY") ?? runtime.getSetting("LAINOS_MODEL_PROXY") ?? runtime.getSetting("HTTPS_PROXY");
@@ -402,19 +401,19 @@ export async function digestCommand(runtime: IAgentRuntime, args: string[], onPr
   const sub = args[0]?.toLowerCase();
   if (sub === "off") {
     await svc.setSchedule(null);
-    return "ежедневный дайджест выключен. /digest — собрать сейчас, /digest at 09:00 — включить.";
+    return "Daily digest is off. /digest — generate now, /digest at 09:00 — enable.";
   }
   if (sub === "at" || (sub && parseClock(sub))) {
     const raw = sub === "at" ? args[1] : sub;
     const clock = raw ? parseClock(raw) : null;
-    if (!clock) return "время как HH:MM, например /digest at 09:00";
+    if (!clock) return "Use HH:MM, for example /digest at 09:00";
     const at = `${String(clock.hour).padStart(2, "0")}:${String(clock.minute).padStart(2, "0")}`;
     await svc.setSchedule(at);
-    return `дайджест каждый день в ${at} (время хоста), в телеграм.`;
+    return `Daily digest at ${at} (host time), sent to Telegram.`;
   }
   if (sub === "when" || sub === "status") {
     const s = svc.schedule();
-    return s.at ? `дайджест каждый день в ${s.at}; последний — ${s.lastDay ?? "ещё не было"}.` : "ежедневный дайджест выключен.";
+    return s.at ? `Daily digest at ${s.at}; last delivery — ${s.lastDay ?? "never"}.` : "Daily digest is off.";
   }
   return svc.generate({ onProgress });
 }
@@ -426,12 +425,12 @@ const portfolioDigestAction: Action = {
     "Write the portfolio digest now: every token on the chain's explorer (the operator holds them all), each mapped to its underlying — " +
     "funds, metals, the rouble, coins, brands, the chain's own coins — with the day's market moves, DEX moves since the last digest, " +
     "and the news that matters for those holdings, with links. Takes two or three minutes. telegram: true also sends it to the operator. " +
-    "Use for 'дайджест', 'что по моим активам', 'новости по портфелю'.",
+    "Use for 'digest', 'how are my assets doing', 'portfolio news'.",
   parameters: {
     type: "object",
     properties: { telegram: { type: "boolean", description: "Also send it to the operator's Telegram." } },
   },
-  examples: [{ user: "что нового по моим активам?", agent: "собираю дайджест." }],
+  examples: [{ user: "what is new with my assets?", agent: "collecting the digest." }],
   async validate(runtime) {
     return Boolean(runtime.getService("digest"));
   },
@@ -466,7 +465,7 @@ const scheduleDigestAction: Action = {
     },
     required: ["at"],
   },
-  examples: [{ user: "присылай дайджест каждое утро в 9", agent: "каждый день в 09:00." }],
+  examples: [{ user: "send the digest every morning at 9", agent: "every day at 09:00." }],
   async validate(runtime) {
     return Boolean(runtime.getService("digest"));
   },
@@ -503,10 +502,10 @@ const digestAssetsAction: Action = {
       symbol: { type: "string", description: "Token to (re)describe." },
       about: { type: "string", description: "What it is, a few words." },
       news: { type: "array", items: { type: "string" }, description: "News search queries for it." },
-      lang: { type: "string", enum: ["ru", "en"], description: "Language of those queries. Default ru." },
+      lang: { type: "string", enum: ["en"], description: "Language of those queries. English only." },
     },
   },
-  examples: [{ user: "по TG ищи новости про Telegram на русском", agent: "поправила." }],
+  examples: [{ user: "for TG, search for news about Telegram in English", agent: "updated." }],
   async validate(runtime) {
     return Boolean(runtime.getService("digest"));
   },
@@ -524,12 +523,12 @@ const digestAssetsAction: Action = {
     if (params.symbol) {
       const sym = String(params.symbol).toUpperCase();
       const prev = book.spec(sym);
-      const lang = params.lang === "en" ? "en" : "ru";
-      const news = Array.isArray(params.news) ? params.news.map((q) => ({ q: String(q), lang: lang as "ru" | "en" })) : prev?.news ?? [];
+      const lang = "en" as const;
+      const news = Array.isArray(params.news) ? params.news.map((q) => ({ q: String(q), lang })) : prev?.news ?? [];
       book.set(sym, {
         kind: news.length ? prev?.kind === "native" || !prev ? "brand" : prev.kind : prev?.kind ?? "native",
         about: params.about ? String(params.about) : prev?.about ?? sym,
-        group: prev?.group && prev.group !== "Cyberia" ? prev.group : news.length ? "Бренды и проекты" : "Cyberia",
+        group: prev?.group && prev.group !== "Cyberia" ? prev.group : news.length ? "Brands and projects" : "Cyberia",
         price: prev?.price ?? { source: "dex" },
         news,
       });

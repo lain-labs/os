@@ -8,8 +8,9 @@
  */
 import { formatEther, formatUnits, parseUnits, type Address } from "viem";
 import type { Action } from "../../../types.js";
-import { ROUTER_ABI } from "../abi.js";
-import { getService, type NativeBuyQuote } from "../service.js";
+import { paperCoinSymbol } from "../paper.js";
+import { tradeTarget, WALLET_PARAM } from "./paper.js";
+import { fillNote, getService, type ChainService, type NativeBuyQuote } from "../service.js";
 import { minOutForSlippage, parsePositiveNative } from "../math.js";
 import { DEFAULT_DEADLINE_SECONDS, parseDeadlineSeconds, parseSlippageBps } from "../config.js";
 
@@ -39,7 +40,7 @@ export const quoteTokenBuyAction: Action = {
   async handler(runtime, _state, params) {
     const svc = getService(runtime);
     const token = svc.resolveToken(String(params.token ?? ""));
-    if (!token) return { ok: false, text: `Unknown token. Known: ${Object.keys(svc.tokens).join(", ") || "(none configured)"}.` };
+    if (!token) return { ok: false, text: unknownToken(svc, params.token) };
     const amountNative = String(params.amountNative ?? "");
     const amountInWei = parsePositiveNative(amountNative);
     if (amountInWei === null) return { ok: false, text: "amountNative must be a positive amount." };
@@ -69,7 +70,7 @@ export const buyTokenAction: Action = {
   name: "buy_token",
   similes: ["swap_buy", "buy", "purchase_token", "swap_exact_native_for_tokens"],
   description:
-    "Buy an ERC20 on the configured DEX with native currency from the agent's wallet when the user gives an exact amountNative. If the user asks to buy without specifying an amount or wants the agent to decide, use speculate_token instead. Requires live wrapped-native pair reserves, slippage protection, and a configured signer.",
+    "Buy an ERC20 on the configured DEX with native currency from the agent's wallet when the user gives an exact amountNative. If the user asks to buy without specifying an amount or wants the agent to decide, use speculate_token instead. Requires live wrapped-native pair reserves, slippage protection, and a configured signer. In paper mode the buy is simulated from the paper balance at the live quote; nothing is sent.",
   parameters: {
     type: "object",
     properties: {
@@ -83,6 +84,7 @@ export const buyTokenAction: Action = {
         type: "number",
         description: "Transaction deadline from now. Default 300 seconds.",
       },
+      wallet: WALLET_PARAM,
     },
     required: ["token", "amountNative"],
   },
@@ -92,13 +94,15 @@ export const buyTokenAction: Action = {
   async validate() {
     return true;
   },
-  async handler(runtime, _state, params) {
+  async handler(runtime, state, params) {
     const svc = getService(runtime);
-    if (!svc.walletClient || !svc.agentAddress) {
+    const target = await tradeTarget(svc, state, params.wallet);
+    if (target.error) return { ok: false, text: target.error };
+    if (!target.book && !svc.canTrade) {
       return { ok: false, text: "No signer configured; I can only quote swaps." };
     }
     const token = svc.resolveToken(String(params.token ?? ""));
-    if (!token) return { ok: false, text: `Unknown token. Known: ${Object.keys(svc.tokens).join(", ") || "(none configured)"}.` };
+    if (!token) return { ok: false, text: unknownToken(svc, params.token) };
     const amountNative = String(params.amountNative ?? "");
     const amountInWei = parsePositiveNative(amountNative);
     if (amountInWei === null) return { ok: false, text: "amountNative must be a positive amount." };
@@ -110,39 +114,23 @@ export const buyTokenAction: Action = {
     try {
       const quote = await svc.quoteNativeBuy(token, amountInWei);
       const minOut = minOutForSlippage(quote.amountOut, slippageBps);
-      const deadline = BigInt(Math.floor(Date.now() / 1000) + deadlineSeconds);
-      const hash = await svc.walletClient.writeContract({
-        account: svc.walletClient.account!,
-        chain: svc.chain,
-        address: svc.dex.router,
-        abi: ROUTER_ABI,
-        functionName: "swapExactETHForTokens",
-        args: [minOut, quote.path, svc.agentAddress, deadline],
-        value: amountInWei,
-      });
-      const receipt = await svc.publicClient.waitForTransactionReceipt({ hash });
-      const explorer = svc.explorerTxUrl(hash);
-      if (receipt.status !== "success") {
-        return { ok: false, text: `Swap reverted: ${hash}`, data: { hash, explorer, status: receipt.status } };
+      const fill = await svc.executeBuy(quote, minOut, deadlineSeconds, "buy_token", target.book);
+      const { hash, explorer, status, paper } = fill;
+      if (status !== "success") {
+        return { ok: false, text: `Swap reverted: ${hash}`, data: { hash, explorer, status } };
       }
-      await svc.journal.recordBuy({
-        token,
-        symbol: quote.symbol,
-        qtyWei: quote.amountOut,
-        nativeWei: amountInWei,
-        txHash: hash,
-        reason: "buy_token",
-      });
       return {
         ok: true,
         text:
-          `Bought ${quote.symbol} for ${amountNative} ${svc.nativeSymbol}. Tx: ${hash}. ` +
+          `${paper ? `Paper-bought (wallet ${target.wallet})` : "Bought"} ${quote.symbol} for ${amountNative} ${svc.nativeSymbol}. ${fillNote(fill)}. ` +
           `Quoted output was ~${formatUnits(quote.amountOut, quote.decimals)} ${quote.symbol}; ` +
           `minOut was ${formatUnits(minOut, quote.decimals)}.`,
         data: {
           hash,
           explorer,
-          status: receipt.status,
+          status,
+          paper,
+          ...(paper ? { wallet: target.wallet } : {}),
           ...quoteData(quote, minOut, slippageBps, svc.dex.router),
         },
       };
@@ -156,7 +144,7 @@ export const sellTokenAction: Action = {
   name: "sell_token",
   similes: ["swap_sell", "sell", "exit_position", "take_profit", "close_position"],
   description:
-    "Sell an ERC20 back into the chain's native currency on the configured DEX from the agent's wallet. amountToken may be a number or 'all' (full wallet balance). Quotes live reserves first, refuses above the impact limit, executes with slippage protection, and records the trade (with realised PnL against the journal's cost basis).",
+    "Sell an ERC20 back into the chain's native currency on the configured DEX from the agent's wallet. amountToken may be a number or 'all' (full wallet balance). Quotes live reserves first, refuses above the impact limit, executes with slippage protection, and records the trade (with realised PnL against the journal's cost basis). In paper mode it sells the paper position at the live quote; nothing is sent.",
   parameters: {
     type: "object",
     properties: {
@@ -174,6 +162,7 @@ export const sellTokenAction: Action = {
         description: "Max estimated price impact in bps. Default 1000 = 10%; raise only deliberately.",
       },
       reason: { type: "string", description: "Optional short reason for the exit." },
+      wallet: WALLET_PARAM,
     },
     required: ["token", "amountToken"],
   },
@@ -181,15 +170,19 @@ export const sellTokenAction: Action = {
     { user: "sell all my LAIN", agent: "Working out the exit against live reserves, then selling…" },
   ],
   async validate(runtime) {
-    return Boolean(getService(runtime).walletClient);
-  },
-  async handler(runtime, _state, params) {
+    // With a chain there are paper wallets to sell from, signer or not.
     const svc = getService(runtime);
-    if (!svc.walletClient || !svc.agentAddress) {
+    return svc.canTrade || svc.configured;
+  },
+  async handler(runtime, state, params) {
+    const svc = getService(runtime);
+    const target = await tradeTarget(svc, state, params.wallet);
+    if (target.error) return { ok: false, text: target.error };
+    if (!target.book && !svc.canTrade) {
       return { ok: false, text: "No signer configured; I can only quote sells." };
     }
     const token = svc.resolveToken(String(params.token ?? ""));
-    if (!token) return { ok: false, text: `Unknown token. Known: ${Object.keys(svc.tokens).join(", ") || "(none configured)"}.` };
+    if (!token) return { ok: false, text: unknownToken(svc, params.token) };
     const slippageBps = parseSlippageBps(params.slippageBps);
     if (slippageBps === null) return { ok: false, text: "slippageBps must be between 0 and 5000." };
     const maxImpactRaw = params.maxImpactBps;
@@ -202,8 +195,8 @@ export const sellTokenAction: Action = {
     }
 
     try {
-      const { raw, decimals, symbol } = await svc.rawTokenBalance(token, svc.agentAddress);
-      if (raw <= 0n) return { ok: false, text: `I hold no ${symbol} to sell.` };
+      const { raw, decimals, symbol } = await svc.tradingHolding(token, target.book);
+      if (raw <= 0n) return { ok: false, text: `I hold no ${symbol} to sell${target.wallet ? ` in paper wallet ${target.wallet}` : ""}.` };
       const wanted = String(params.amountToken ?? "").trim().toLowerCase();
       let amountInWei: bigint;
       if (wanted === "all") {
@@ -233,30 +226,30 @@ export const sellTokenAction: Action = {
         };
       }
       const minOut = minOutForSlippage(quote.amountOut, slippageBps);
-      const { hash, status } = await svc.sellExactTokens(quote, minOut, DEFAULT_DEADLINE_SECONDS);
-      const explorer = svc.explorerTxUrl(hash);
+      const fill = await svc.executeSell(
+        quote,
+        minOut,
+        DEFAULT_DEADLINE_SECONDS,
+        params.reason ? String(params.reason) : "sell_token",
+        target.book,
+      );
+      const { hash, explorer, status, paper } = fill;
       if (status !== "success") {
         return { ok: false, text: `Sell reverted: ${hash}`, data: { hash, explorer, status } };
       }
-      const realizedWei = await svc.journal.recordSell({
-        token,
-        symbol,
-        qtyWei: amountInWei,
-        nativeWei: quote.amountOut,
-        txHash: hash,
-        reason: params.reason ? String(params.reason) : "sell_token",
-      });
-      const realized = formatEther(realizedWei);
+      const realized = formatEther(fill.realizedWei ?? 0n);
       const sym = svc.nativeSymbol;
       return {
         ok: true,
         text:
-          `Sold ${formatUnits(amountInWei, decimals)} ${symbol} for ~${formatEther(quote.amountOut)} ${sym} ` +
-          `(impact ~${quote.priceImpactBps / 100}%, realised ${Number(realized) >= 0 ? "+" : ""}${realized} ${sym} vs basis). Tx: ${hash}`,
+          `${paper ? `Paper-sold (wallet ${target.wallet})` : "Sold"} ${formatUnits(amountInWei, decimals)} ${symbol} for ~${formatEther(quote.amountOut)} ${sym} ` +
+          `(impact ~${quote.priceImpactBps / 100}%, realised ${Number(realized) >= 0 ? "+" : ""}${realized} ${sym} vs basis). ${fillNote(fill)}`,
         data: {
           hash,
           explorer,
           status,
+          paper,
+          ...(paper ? { wallet: target.wallet } : {}),
           symbol,
           amountToken: formatUnits(amountInWei, decimals),
           proceedsNative: formatEther(quote.amountOut),
@@ -292,4 +285,16 @@ export function quoteData(
     reserveNative: formatEther(quote.reserveNative),
     reserveToken: formatUnits(quote.reserveToken, quote.decimals),
   };
+}
+
+/**
+ * The reply to a token this chain does not know. A coin of the paper account
+ * (SOL, USDC, …) is not a DEX token here, so in paper mode the reply names the
+ * tool that trades it — otherwise "sell my SOL" wanders off to a real wallet.
+ */
+function unknownToken(svc: ChainService, raw: unknown): string {
+  const known = `Unknown token. Known: ${Object.keys(svc.tokens).join(", ") || "(none configured)"}.`;
+  const coin = paperCoinSymbol(String(raw ?? ""));
+  if (!coin || !svc.paperMode) return known;
+  return `${known} ${coin} is a coin of the paper account, not a token on this DEX: paper_trading mode swap trades it (e.g. asset ${coin}, to USDC or ${svc.nativeSymbol}).`;
 }

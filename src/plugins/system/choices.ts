@@ -85,7 +85,7 @@ export const offerChoicesAction: Action = {
     },
     required: ["question", "options"],
   },
-  examples: [{ user: "переключи сеть", agent: "(offer_choices: robinhood / robinhood-testnet / cyberia)" }],
+  examples: [{ user: "switch the network", agent: "(offer_choices: robinhood / robinhood-testnet / cyberia)" }],
   async validate() {
     return true;
   },

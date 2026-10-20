@@ -13,6 +13,7 @@ import type { BoundedRange } from "./selection.js";
 import type { MouseInfo } from "./keys.js";
 import type { FrameHit } from "./frame.js";
 import type { PickerState } from "./keymap.js";
+import { sidebarTarget, type PanelId } from "./sidebar.js";
 
 /** A press in flight: where it started and which pane it may cover. In the
  *  transcript (`feed`) the row counts transcript rows, not screen rows. */
@@ -35,13 +36,22 @@ export type MouseCtx = {
   copySelection: (range: BoundedRange) => void;
 
   // what a plain click can reach
-  openPicker: (which: "model" | "effort" | "skin") => void;
+  openPicker: (which: "agent" | "model" | "effort" | "skin") => void;
   freeze: () => void;
   copyLastReply: () => void;
-  toggleTool: (id: string) => void;
+  /** Unfold or fold a tool call or a thought in the transcript. */
+  toggleFold: (id: string) => void;
   copyText: (text: string, label: string) => void;
   runCommand: (name: string) => void;
+  /** Put a completed line into the composer (a click on an argument in the menu). */
+  fillComposer: (line: string) => void;
   moveCursorTo: (index: number) => void;
+  /** Fold a sidebar window to its title bar (`open`: it is drawn open now), or open it again. */
+  togglePanel: (panel: PanelId, open: boolean) => void;
+  /** A click on Lain herself. */
+  pokeMascot: () => void;
+  /** A click on the masthead's 3D logo spins it again. */
+  spinLogo: () => void;
 };
 
 const clamp = (n: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, n));
@@ -51,8 +61,11 @@ function clickAt(row: number, col: number, ctx: MouseCtx): void {
   const L = ctx.hit;
   if (row < 0 || row >= L.rows || col < 0) return;
   if (L.sidebarOn && col >= L.contentW) {
-    const sr = L.sidebarRegions[row];
+    const sr = sidebarTarget(L.sidebarRegions[row], col - L.contentW);
     if (sr?.kind === "pick") ctx.openPicker(sr.action);
+    else if (sr?.kind === "fold") ctx.togglePanel(sr.panel, sr.open);
+    else if (sr?.kind === "mascot") ctx.pokeMascot();
+    else if (sr?.kind === "cmd") ctx.runCommand(sr.command);
     else if (sr?.kind === "act") {
       if (sr.action === "select") ctx.freeze();
       else ctx.copyLastReply();
@@ -62,17 +75,19 @@ function clickAt(row: number, col: number, ctx: MouseCtx): void {
   if (col >= L.contentW) return;
   if (row < L.viewportRows) {
     const r = L.feedRegions[row];
-    if (r?.kind === "tool") ctx.toggleTool(r.toolId);
+    if (r?.kind === "fold") ctx.toggleFold(r.id);
     // A click on a name or on a code block copies it whole — the shortcut for
     // the times a drag would be fiddly.
     else if (r?.kind === "copy") ctx.copyText(r.text, r.label);
+    else if (r?.kind === "logo") ctx.spinLogo();
     return;
   }
-  // the slash menu: click a command to run it
+  // the slash menu: click a command to run it, an argument to put it in the line
   if (L.menuTop >= 0) {
     const item = L.menuItems[row - L.menuTop];
     if (item) {
-      ctx.runCommand(item.name);
+      if (item.fill) ctx.fillComposer(item.fill);
+      else ctx.runCommand(item.name);
       return;
     }
   }
@@ -100,6 +115,7 @@ function pickerMouse(m: MouseInfo, ctx: MouseCtx): boolean {
   const n = picker.options.length;
 
   if (m.wheel) {
+    if (!n) return true;
     const ni = m.wheel === "down" ? (picker.index + 1) % n : (picker.index - 1 + n) % n;
     picker.onHighlight?.(picker.options[ni].value);
     ctx.setPicker({ ...picker, index: ni });
@@ -157,7 +173,7 @@ export function handleMouse(m: MouseInfo, ctx: MouseCtx): void {
       feed,
       left: inSidebar ? L.contentW : 0,
       // The transcript's last column is the scrollbar's, not text: a copy
-      // that included it pasted a column of █ and ░ down the right edge.
+      // that included it pasted the scrollbar down the right edge.
       right: inSidebar ? L.width : Math.max(1, L.contentW - 1),
     };
     if (ctx.selection) ctx.setSelection(null);

@@ -25,8 +25,12 @@ import {
   type ChannelWatch,
   type ChannelWatchService,
 } from "../src/plugins/channel/index.js";
-import type { ChainService } from "../src/plugins/chain/index.js";
+import { ChainService } from "../src/plugins/chain/index.js";
 import { applyBuy, applySell, TradeJournal, type Position } from "../src/plugins/chain/journal.js";
+import { PaperDesk } from "../src/plugins/chain/paper.js";
+import { operatorState, paperCommand, paperControl, tradeTarget } from "../src/plugins/chain/actions/paper.js";
+import { sellTokenAction } from "../src/plugins/chain/actions/trade.js";
+import type { State } from "../src/types.js";
 import { forgePlugin, ForgeService, formatForgeJobs, type ForgeEvent } from "../src/plugins/forge/index.js";
 import { InitiativeService } from "../src/plugins/initiative/index.js";
 import type { SkillsService } from "../src/plugins/skills/index.js";
@@ -538,6 +542,146 @@ async function main() {
     mathOk && realized === 15n && reloaded?.qtyWei === "50" && reloaded?.costWei === "5" &&
     tj2.recentTrades(5).length === 2;
 
+  // --- paper trading: a virtual balance that buys and sells into its own journal ---
+  const paperDir = join(dataDir, "paper-test");
+  const desk = new PaperDesk(paperDir, 1000n, false);
+  await desk.load();
+  await desk.setEnabled(true);
+  const book = await desk.account(4663);
+  await book.buy({ token: "0xabc", symbol: "T", qtyWei: 100n, nativeWei: 400n, reason: "smoke" });
+  const overspend = await book.buy({ token: "0xabc", symbol: "T", qtyWei: 1n, nativeWei: 601n }).then(() => false, () => true);
+  const oversell = await book.sell({ token: "0xabc", symbol: "T", qtyWei: 101n, nativeWei: 1n }).then(() => false, () => true);
+  const paperSell = await book.sell({ token: "0xABC", symbol: "T", qtyWei: 50n, nativeWei: 300n });
+  // a restart finds the switch and the account where they were left
+  const desk2 = new PaperDesk(paperDir, 1000n, false);
+  await desk2.load();
+  const book2 = await desk2.account(4663);
+  const paperOk =
+    overspend && oversell &&
+    paperSell.realizedWei === 100n && paperSell.hash.startsWith("paper-") &&
+    desk2.enabled && book2.cashWei === 900n && book2.holding("0xabc") === 50n &&
+    (await desk2.account(1)).cashWei === 1000n; // another chain, another account
+  // other coins: SOL next to the paper ETH, shown by the same report /paper prints
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ solana: { usd: 150 }, ethereum: { usd: 3000 }, "usd-coin": { usd: 1 } }), { status: 200 })) as typeof fetch;
+  let lainBook = book2;
+  const fakeChain = {
+    configured: true,
+    paperMode: true,
+    get paperBook() {
+      return lainBook;
+    },
+    paper: desk2,
+    paperWallet: (name: string) => desk2.account(4663, name),
+    useLainWallet: async (name: string) => {
+      await desk2.select("lain", name);
+      lainBook = await desk2.account(4663, desk2.current("lain"));
+    },
+    nativeSymbol: "ETH",
+    chain: { name: "Robinhood Chain", id: 4663 },
+  } as unknown as ChainService;
+  const setSol = await paperControl(fakeChain, "set", undefined, { asset: "solana", amount: "1" });
+  const setAgain = await paperControl(fakeChain, "set", undefined, { asset: "SOL", amount: "1" });
+  const refusedUnknown = await paperControl(fakeChain, "set", undefined, { asset: "DOGE", amount: "2" });
+  const desk3 = new PaperDesk(paperDir, 1000n, false);
+  await desk3.load();
+  const coinsKept = (await desk3.account(4663)).coins();
+  // "sell 1 SOL for USDC" in paper mode: a spot-price swap on the paper account, never a real wallet
+  const paperRuntime = { getService: (name: string) => (name === "chain" ? fakeChain : undefined) } as unknown as AgentRuntime;
+  const oversold = await paperControl(fakeChain, "swap", undefined, { asset: "SOL", to: "USDC", amount: "2" });
+  const solToUsdc = await paperControl(fakeChain, "swap", undefined, { asset: "solana", to: "usdc", amount: "1" });
+  const usdcToEth = await paperCommand(paperRuntime, ["swap", "all", "USDC", "to", "ETH"]);
+  const sellSolHint = await sellTokenAction.handler(
+    { getService: () => ({ ...fakeChain, canTrade: true, tokens: {}, resolveToken: () => undefined }) } as unknown as AgentRuntime,
+    {} as State,
+    { token: "SOL", amountToken: "1" },
+  );
+  (fakeChain as unknown as { paperMode: boolean }).paperMode = false;
+  const swapWithPaperOff = await paperControl(fakeChain, "swap", undefined, { asset: "ETH", to: "USDC", amount: "0.1" });
+  (fakeChain as unknown as { paperMode: boolean }).paperMode = true;
+  globalThis.fetch = realFetch;
+  const paperSwapOk =
+    !oversold.ok && /holds 1 SOL/.test(oversold.text) &&
+    solToUsdc.ok && solToUsdc.text.startsWith("Paper-swapped (wallet main) 1 SOL → 150 USDC") &&
+    (solToUsdc.data?.balances as Record<string, string>)?.USDC === "150" && !(solToUsdc.data?.balances as Record<string, string>)?.SOL &&
+    usdcToEth.startsWith("Paper-swapped (wallet main) 150 USDC → 0.05 ETH") && book2.cashWei === 900n + 50_000_000_000_000_000n && book2.coins().length === 0 &&
+    /recent coin swaps/.test(usdcToEth) && book2.recentSwaps().length === 2 &&
+    !sellSolHint.ok && /paper_trading mode swap/.test(sellSolHint.text ?? "") &&
+    !swapWithPaperOff.ok && book2.cashWei === 900n + 50_000_000_000_000_000n;
+  const paperCoinsOk =
+    setSol.ok && /balances: .* ETH \+ 1 SOL/.test(setSol.text) && setSol.text.includes("SOL 1 ≈ $150") &&
+    (setSol.data?.balances as Record<string, string>)?.SOL === "1" &&
+    setAgain.ok && setAgain.text.startsWith("SOL is already 1") &&
+    !refusedUnknown.ok && /must be one of ETH, BTC/.test(refusedUnknown.text) &&
+    coinsKept.length === 1 && coinsKept[0].symbol === "SOL" && coinsKept[0].amount === "1";
+  // several wallets: the operator's own ones Lain reads but never trades; hers she trades
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify({ solana: { usd: 150 }, ethereum: { usd: 3000 }, "usd-coin": { usd: 1 } }), { status: 200 })) as typeof fetch;
+  const opened = await paperCommand(paperRuntime, ["new", "mine", "2", "buy", "the", "dip"]);
+  const opSet = await paperCommand(paperRuntime, ["set", "SOL", "3"]);
+  const opCash = await paperCommand(paperRuntime, ["set", "ETH", "3"]);
+  const mineBook = await desk2.account(4663, "mine");
+  const lainSetsMine = await paperControl(fakeChain, "set", undefined, { asset: "SOL", amount: "9" }, { actor: "lain", wallet: "mine" });
+  const lainResetsMine = await paperControl(fakeChain, "reset", undefined, undefined, { actor: "lain", wallet: "mine" });
+  const lainUsesMine = await paperControl(fakeChain, "use", undefined, undefined, { actor: "lain", wallet: "mine" });
+  const lainReadsMine = await paperControl(fakeChain, "status", undefined, undefined, { actor: "lain", wallet: "mine" });
+  const lainLends = await paperControl(fakeChain, "lain", undefined, undefined, { actor: "lain", wallet: "mine", lain: true });
+  const lainTargetsMine = await tradeTarget(fakeChain, {} as State, "mine");
+  const operatorTargetsMine = await tradeTarget(fakeChain, operatorState(), "mine");
+  const lainOpens = await paperControl(fakeChain, "new", "1", undefined, { actor: "lain", wallet: "momentum", note: "buys strength" });
+  const lainDefault = await tradeTarget(fakeChain, {} as State, undefined);
+  const afterOpen = { current: desk2.current("lain"), hers: desk2.wallet("momentum")?.lain === true };
+  const listed = await paperCommand(paperRuntime, ["wallets"]);
+  const mainIsHers = await paperCommand(paperRuntime, ["lain", "main", "off"]);
+  const lent = await paperCommand(paperRuntime, ["lain", "mine", "on"]);
+  const lainTargetsLent = await tradeTarget(fakeChain, {} as State, "mine");
+  await paperCommand(paperRuntime, ["lain", "mine", "off"]);
+  const managed = await ChainService.prototype.lainPaperBooks.call({
+    _chain: { id: 4663 },
+    paper: desk2,
+    paperWallet: (name: string) => desk2.account(4663, name),
+  } as unknown as ChainService);
+  const desk4 = new PaperDesk(paperDir, 1000n, false);
+  await desk4.load();
+  const mineAgain = await desk4.account(4663, "mine");
+  const dropped = await paperCommand(paperRuntime, ["drop", "momentum"]);
+  globalThis.fetch = realFetch;
+  const walletChecks: [string, boolean][] = [
+    ["operator opens their own", /Opened paper wallet mine with 2 ETH — yours alone/.test(opened) && desk2.current("operator") === "mine"],
+    ["operator books into it", /SOL: 0 → 3 in mine/.test(opSet) && mineBook.coins()[0]?.amount === "3" && book2.coins().length === 0],
+    // 3 SOL at $150 with ETH at $3000 is 0.15 ETH put in: equity counts it, the return does not
+    [
+      "booked coins are a deposit",
+      /equity 2\.15 ETH = 2 ETH cash .* \+ 0\.15 ETH in coins/.test(opSet) &&
+        /P&L \+0 ETH \(\+0\.00%\) since .* on 2\.15 ETH put in \(started with 2, \+0\.15 added by hand\)/.test(opSet),
+    ],
+    // the native cash is set like any coin, exactly, and is money put in too
+    [
+      "cash is set by hand",
+      /ETH cash: 2 → 3 in mine/.test(opCash) && mineBook.cashWei === 3_000_000_000_000_000_000n &&
+        mineBook.depositsWei === 1_150_000_000_000_000_000n && /P&L \+0 ETH \(\+0\.00%\)/.test(opCash),
+    ],
+    ["lain cannot change it", !lainSetsMine.ok && /operator's own/.test(lainSetsMine.text) && !lainResetsMine.ok && !lainUsesMine.ok && !lainLends.ok],
+    ["lain reads it", lainReadsMine.ok && /wallet mine — the operator's only/.test(lainReadsMine.text)],
+    ["lain cannot trade it", Boolean(lainTargetsMine.error) && !lainTargetsMine.book && operatorTargetsMine.book === mineBook],
+    ["lain opens hers", lainOpens.ok && afterOpen.current === "momentum" && afterOpen.hers && lainDefault.wallet === "momentum"],
+    ["wallets listed", /mine — operator only \[operator's current\]/.test(listed) && /momentum — Lain trades it \[Lain's current\]/.test(listed)],
+    ["lending", /main is Lain's own/.test(mainIsHers) && /Lain trades it now/.test(lent) && lainTargetsLent.book === mineBook],
+    ["loops skip the operator's", managed.map((m) => m.wallet).join(",") === "main,momentum"],
+    [
+      "a restart keeps them",
+      desk4.current("operator") === "mine" && desk4.wallet("mine")?.lain === false && mineAgain.startWei === 2_000_000_000_000_000_000n &&
+        mineAgain.coins()[0]?.amount === "3" && desk4.wallet("mine")?.note === "buy the dip",
+    ],
+    ["drop", /Dropped paper wallet momentum/.test(dropped) && desk2.current("lain") === "main" && !desk2.wallet("momentum")],
+  ];
+  const paperWalletsOk = walletChecks.every(([, ok]) => ok);
+  for (const [label, ok] of walletChecks) if (!ok) console.log(`  paper wallets: ${label} — FAIL`);
+  await book2.reset(5000n);
+  const paperResetOk =
+    book2.cashWei === 5000n && book2.holding("0xabc") === 0n && book2.journal.recentTrades(5).length === 0 && book2.coins().length === 0 && book2.recentSwaps().length === 0;
+
   // --- initiative: quiet hours wrap midnight and can be disabled ---
   const initiative = new InitiativeService();
   const quietOk =
@@ -915,6 +1059,10 @@ async function main() {
   console.log(`skills hot self-extend   : ${skillsOk ? "PASS" : "FAIL"}`);
   console.log(`launch needs confirmation: ${launchOk ? "PASS" : "FAIL"}`);
   console.log(`trade journal cost basis : ${journalOk ? "PASS" : "FAIL"}`);
+  console.log(`paper account + switch   : ${paperOk && paperResetOk ? "PASS" : "FAIL"}`);
+  console.log(`paper other coins shown  : ${paperCoinsOk ? "PASS" : "FAIL"}`);
+  console.log(`paper coin swap          : ${paperSwapOk ? "PASS" : "FAIL"}`);
+  console.log(`paper wallets, who trades: ${paperWalletsOk ? "PASS" : "FAIL"}`);
   console.log(`initiative quiet hours   : ${quietOk ? "PASS" : "FAIL"}`);
   console.log(`scout rss parser         : ${rssOk ? "PASS" : "FAIL"}`);
   console.log(`scout topic add/remove   : ${scoutOk ? "PASS" : "FAIL"}`);
@@ -932,7 +1080,7 @@ async function main() {
   await agent.stop();
   const ok =
     learnedName && learnedSecondName && ranBalance && nullIsZero && forcedPnl && toolResultContractOk && autoLearnOk && transcriptOk && sentinelFired && alertDelivered && splitOk &&
-    walletOk && tokenResolutionOk && wishLogged && wishEdited && wishForged && forgeProviderSwitchOk && chatProviderSwitchOk && skillsOk && launchOk && journalOk && quietOk &&
+    walletOk && tokenResolutionOk && wishLogged && wishEdited && wishForged && forgeProviderSwitchOk && chatProviderSwitchOk && skillsOk && launchOk && journalOk && paperOk && paperResetOk && paperCoinsOk && paperSwapOk && paperWalletsOk && quietOk &&
     forgeJobsListed && forgeJobsScrubbed &&
     rssOk && scoutOk && nothingOk && presenceQuietOk && reasoningOk &&
     studyFindingOk && studySilenceOk && studySafetyOk &&

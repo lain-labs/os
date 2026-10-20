@@ -13,6 +13,7 @@
  *                  older cost basis when CHAIN_EXPLORER_URL is configured
  *   `actions/`     one file per group of tools, grouped by what they risk
  */
+import { formatEther } from "viem";
 import type { Plugin, Provider } from "../../types.js";
 import { ChainService, getService } from "./service.js";
 import {
@@ -30,6 +31,7 @@ import { buyTokenAction, quoteTokenBuyAction, sellTokenAction } from "./actions/
 import { addLiquidityAction, quoteLiquidityAction } from "./actions/liquidity.js";
 import { speculateBasketAction, speculateTokenAction } from "./actions/speculate.js";
 import { portfolioPnlAction } from "./actions/portfolio.js";
+import { paperTradingAction } from "./actions/paper.js";
 import { listNetworksAction, switchNetworkAction } from "./actions/network.js";
 import { listNetworks } from "./networks.js";
 
@@ -50,7 +52,30 @@ const chainProvider: Provider = {
         `switch_network moves you onto a known network in one call (${names}).`
       );
     }
+    // Which paper wallets are hers to trade, and which are the operator's alone (tools enforce it too).
+    const wallets = svc.paper.wallets();
+    const walletList = wallets
+      .map((w) => `${w.name} (${w.lain ? "yours" : "the operator's own — read it, never trade it"}${w.note ? `: ${w.note}` : ""})`)
+      .join(", ");
     const parts = [
+      ...(svc.paperMode
+        ? [
+            `PAPER MODE IS ON: buy_token, sell_token, speculate_* and the take-profit loop simulate against live pools ` +
+              `in your current paper wallet ${svc.paper.current("lain")}, cash ${formatEther(svc.paperBook.cashWei)} ${svc.nativeSymbol} — nothing is sent, so trade freely ` +
+              `and say the results are paper. paper_trading reports the wallet` +
+              (svc.paperBook.coins().length
+                ? ` (it also holds ${svc.paperBook.coins().map((c) => `${c.amount} ${c.symbol}`).join(", ")}, booked on paper)`
+                : "") +
+              `; selling or swapping coins on it (SOL → USDC, SOL → ${svc.nativeSymbol}) is paper_trading mode swap. ` +
+              `No real wallet trades while paper mode is on — the MetaMask wallet included. The wallet below is the real one.`,
+          ]
+        : []),
+      ...(svc.paperMode || wallets.length > 1
+        ? [
+            `Paper wallets: ${walletList}. A trade tool given \`wallet\` simulates in that wallet` +
+              `${svc.paperMode ? "" : " even with paper mode off"}; paper_trading mode wallets compares them, new opens one of yours for a theory.`,
+          ]
+        : []),
       `${svc.chain.name} (id ${svc.chain.id}), native token ${svc.nativeSymbol}` +
         `${svc.explorerUrl ? `, explorer ${svc.explorerUrl}` : ""}. ` +
         `Other networks are a switch_network away; a wallet watch or snapshot can name its own network without switching.`,
@@ -101,6 +126,7 @@ export const chainPlugin: Plugin = {
     addLiquidityAction,
     sellTokenAction,
     portfolioPnlAction,
+    paperTradingAction,
     chainStatusAction,
     listNetworksAction,
     switchNetworkAction,

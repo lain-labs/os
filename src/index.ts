@@ -25,6 +25,8 @@ import { crmPlugin } from "./plugins/crm/index.js";
 import { forgePlugin } from "./plugins/forge/index.js";
 import { githubPlugin } from "./plugins/github/index.js";
 import { initiativePlugin } from "./plugins/initiative/index.js";
+import { journalPlugin } from "./plugins/journal/index.js";
+import { metamaskPlugin } from "./plugins/metamask/index.js";
 import { presencePlugin } from "./plugins/presence/index.js";
 import { pressPlugin } from "./plugins/press/index.js";
 import { scoutPlugin } from "./plugins/scout/index.js";
@@ -34,6 +36,9 @@ import { studyPlugin } from "./plugins/study/index.js";
 import { systemPlugin } from "./plugins/system/index.js";
 import { telegramPlugin } from "./plugins/telegram/index.js";
 import { traderPlugin } from "./plugins/trader/index.js";
+import { trenchPlugin } from "./plugins/trench/index.js";
+import { stocksPlugin } from "./plugins/stocks/index.js";
+import { backtestPlugin } from "./plugins/backtest/index.js";
 import { walletsPlugin } from "./plugins/wallets/index.js";
 import { digestPlugin } from "./plugins/digest/index.js";
 import { AgentRuntime } from "./runtime.js";
@@ -123,6 +128,8 @@ export { telegramPlugin, resolveOperatorChatId, sendToOperator } from "./plugins
 export { skillsPlugin, SkillsService } from "./plugins/skills/index.js";
 export type { SkillModule } from "./plugins/skills/index.js";
 export { initiativePlugin, InitiativeService } from "./plugins/initiative/index.js";
+export { journalPlugin, VersionJournalService, scrubSecrets } from "./plugins/journal/index.js";
+export type { VersionNote } from "./plugins/journal/index.js";
 export {
   studyPlugin,
   StudyService,
@@ -155,9 +162,13 @@ export {
 } from "./plugins/press/index.js";
 export type { Commit, ContentPlan, PostRecord, PostSlot, PressEvent } from "./plugins/press/index.js";
 export { traderPlugin, TraderService } from "./plugins/trader/index.js";
+export { trenchPlugin, TrenchService } from "./plugins/trench/index.js";
+export { stocksPlugin, StockDeskService } from "./plugins/stocks/index.js";
+export { backtestPlugin } from "./plugins/backtest/index.js";
 export type { TraderEvent } from "./plugins/trader/index.js";
 export { crmPlugin, CrmService } from "./plugins/crm/index.js";
 export { walletsPlugin } from "./plugins/wallets/index.js";
+export { metamaskPlugin, MetaMaskService } from "./plugins/metamask/index.js";
 export { digestPlugin, DigestService } from "./plugins/digest/index.js";
 export type { CrmRecord, CrmStatus } from "./plugins/crm/index.js";
 export { TradeJournal, applyBuy, applySell } from "./plugins/chain/journal.js";
@@ -179,13 +190,18 @@ const BUILTIN_PLUGINS: Record<string, Plugin> = {
   telegram: telegramPlugin,
   skills: skillsPlugin,
   trader: traderPlugin,
+  trench: trenchPlugin,
+  stocks: stocksPlugin,
+  backtest: backtestPlugin,
   initiative: initiativePlugin,
+  journal: journalPlugin,
   presence: presencePlugin,
   press: pressPlugin,
   study: studyPlugin,
   crm: crmPlugin,
   wallets: walletsPlugin,
   digest: digestPlugin,
+  metamask: metamaskPlugin,
 };
 
 export interface CreateAgentOptions {

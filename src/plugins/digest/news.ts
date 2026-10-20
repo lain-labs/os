@@ -1,6 +1,5 @@
 /**
- * News for the underlyings: Google News RSS per search query, in the query's
- * language (Russian funds are covered in Russian, coins in English), only the
+ * News for the underlyings: Google News RSS per search query in English, only the
  * last day and a half, nothing the operator was already shown. Identical
  * queries from several assets (two gold tokens) are fetched once.
  */
@@ -15,7 +14,6 @@ export interface AssetNews {
 }
 
 const LOCALE: Record<NewsQuery["lang"], string> = {
-  ru: "hl=ru&gl=RU&ceid=RU:ru",
   en: "hl=en-US&gl=US&ceid=US:en",
 };
 
@@ -44,7 +42,7 @@ export async function gatherNews(
     while (next < entries.length) {
       const e = entries[next++];
       try {
-        const xml = await http(`https://news.google.com/rss/search?q=${encodeURIComponent(`${e.query.q} when:2d`)}&${LOCALE[e.query.lang]}`);
+        const xml = await http(`https://news.google.com/rss/search?q=${encodeURIComponent(`${e.query.q} when:2d`)}&${LOCALE.en}`);
         e.items = parseRss(xml, "News", 30)
           .filter((i) => (i.at ?? 0) >= opts.sinceMs && !opts.seen.has(i.url))
           .filter((i) => {

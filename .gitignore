@@ -8,3 +8,6 @@ dist/
 data/
 workspace/
 content-plan.json
+content-distribution.json
+content-trends.json
+/brag-output*/

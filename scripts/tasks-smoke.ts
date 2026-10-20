@@ -11,7 +11,7 @@
  *
  * Run: npm run tasks:smoke
  */
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentRuntime } from "../src/runtime.js";
@@ -22,6 +22,7 @@ import { servedBy } from "../src/models/openrouter.js";
 import { resolveEnvTaskRoutes } from "../src/models/index.js";
 import { TaskKind, classifyTask, formatTaskRoute, parseTaskRoute } from "../src/models/tasks.js";
 import { parseFreeModels } from "../src/models/openrouter.js";
+import { OpencodeModelProvider, opencodeFreeModels } from "../src/models/opencode.js";
 import {
   ModelTier,
   type Action,
@@ -331,6 +332,86 @@ check("a music model is not a writer", !pool.some((m) => m.id.includes("lyria"))
 check("the (free) suffix is dropped ", pool[0].name === "A: First");
 check("context survives when given  ", pool[1].context === 8192 && pool[0].context === undefined);
 check("an empty catalogue is empty  ", parseFreeModels({}).length === 0 && parseFreeModels(null).length === 0);
+
+// OpenCode's free models, by the models.dev catalogue it caches — and by name without one.
+const cacheDir = await mkdtemp(join(tmpdir(), "lainos-oc-cache-"));
+await mkdir(join(cacheDir, "opencode"));
+await writeFile(
+  join(cacheDir, "opencode", "models.json"),
+  JSON.stringify({
+    opencode: {
+      models: {
+        "big-pickle": { cost: { input: 0, output: 0 }, modalities: { output: ["text"] } },
+        "glm-flash-free": { cost: { input: 0, output: 0 } },
+        "gpt-paid": { cost: { input: 1.25, output: 10 } },
+      },
+    },
+    google: { models: { "lyria-clip": { cost: { input: 0, output: 0 }, modalities: { output: ["text", "audio"] } }, "gemma-it": {} } },
+  }),
+);
+const ocIds = ["anthropic/opus", "google/gemma-it", "google/lyria-clip", "opencode/big-pickle", "opencode/glm-flash-free", "opencode/gpt-paid", "opencode/new-free"];
+const xdg = process.env.XDG_CACHE_HOME;
+process.env.XDG_CACHE_HOME = cacheDir;
+const ocFree = await opencodeFreeModels(ocIds);
+process.env.XDG_CACHE_HOME = join(cacheDir, "missing");
+const ocByName = await opencodeFreeModels(ocIds);
+if (xdg === undefined) delete process.env.XDG_CACHE_HOME;
+else process.env.XDG_CACHE_HOME = xdg;
+await rm(cacheDir, { recursive: true, force: true });
+check("opencode: a $0 model is free  ", ocFree.has("opencode/big-pickle") && ocFree.has("opencode/glm-flash-free"));
+check("opencode: priced, unpriced no ", !ocFree.has("opencode/gpt-paid") && !ocFree.has("google/gemma-it") && !ocFree.has("anthropic/opus"));
+check("opencode: music is no writer  ", !ocFree.has("google/lyria-clip"));
+check("opencode: uncatalogued by name", ocFree.has("opencode/new-free") && ocFree.size === 3);
+check("opencode: no cache, names only", [...ocByName].join() === "opencode/glm-flash-free,opencode/new-free");
+
+// OpenCode: a LainOS tool the model calls through OpenCode's own tool calling is caught, not lost.
+const ocDir = await mkdtemp(join(tmpdir(), "lainos-oc-run-"));
+const fakeOc = join(ocDir, "opencode");
+await writeFile(
+  fakeOc,
+  `#!${process.execPath}
+const args = process.argv.slice(2);
+if (args.includes("--help")) { console.log("--standalone --thinking"); process.exit(0); }
+const say = (e) => console.log(JSON.stringify(e));
+const mode = process.env.FAKE_OC_MODE;
+say({ type: "step_start", part: { type: "step-start" } });
+if (mode === "native") {
+  const fail = (id, tool, input) => say({ type: "tool_use", part: { id, callID: id, type: "tool", tool, state: { status: "error", input, error: \`No tool named "\${tool}" is currently available.\` } } });
+  fail("c1", "list_watches", {});
+  fail("c2", "unwatch", { id: "w5" });
+  fail("c1", "list_watches", {});
+  fail("c3", "read", { filePath: "/etc/passwd" });
+  say({ type: "step_finish", part: { type: "step-finish" } });
+  setTimeout(() => { say({ type: "text", part: { type: "text", text: "no tools work this turn" } }); }, 20000);
+} else {
+  say({ type: "text", part: { type: "text", text: mode === "json" ? '{"tool":"list_watches","input":{}}' : "hello" } });
+  say({ type: "step_finish", part: { type: "step-finish" } });
+}
+`,
+);
+await chmod(fakeOc, 0o755);
+const oc = new OpencodeModelProvider({ bin: fakeOc, cwd: join(ocDir, "work"), retries: 0 } as never);
+const ocRequest = {
+  tier: ModelTier.MEDIUM,
+  system: "test",
+  messages: [{ role: "user", content: "stop the wallet watches" }],
+  tools: [
+    { name: "list_watches", description: "list", input_schema: { type: "object", properties: {} } },
+    { name: "unwatch", description: "remove", input_schema: { type: "object", properties: { id: { type: "string" } } } },
+  ],
+} as unknown as ModelRequest;
+process.env.FAKE_OC_MODE = "native";
+const ocStart = Date.now();
+const ocNative = await oc.generate(ocRequest);
+check("opencode: native calls to LainOS tools caught", JSON.stringify(ocNative.toolCalls) === JSON.stringify([{ name: "list_watches", input: {} }, { name: "unwatch", input: { id: "w5" } }]) && ocNative.text === "");
+check("opencode: the run stops after that step", Date.now() - ocStart < 10_000);
+process.env.FAKE_OC_MODE = "json";
+check("opencode: the JSON protocol still works", (await oc.generate(ocRequest)).toolCalls[0]?.name === "list_watches");
+process.env.FAKE_OC_MODE = "text";
+const ocText = await oc.generate(ocRequest);
+check("opencode: a plain reply stays a reply", ocText.text === "hello" && ocText.toolCalls.length === 0);
+delete process.env.FAKE_OC_MODE;
+await rm(ocDir, { recursive: true, force: true });
 
 // ------------------------------------------------------------------ report
 

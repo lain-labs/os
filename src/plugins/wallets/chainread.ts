@@ -92,16 +92,23 @@ const LOG_GAP_MS = 120;
 /** Calls per multicall. */
 const MULTICALL_CHUNK = 400;
 
+/**
+ * A Cloudflare challenge page in place of a JSON-RPC answer: the endpoint's
+ * bot wall, raised when one client sends too much. It passes like a 429 —
+ * splitting the range would only send more.
+ */
+const CLOUDFLARE_RE = /just a moment|cf-chl|challenge-platform|attention required/i;
+
 /** Errors a node gives for "ask for less" — the cue to split the range. */
 export function isRateLimit(err: unknown): boolean {
   const msg = err instanceof Error ? `${err.message} ${(err as { details?: string }).details ?? ""}` : String(err);
-  return /\b429\b|rate.?limit|too many requests/i.test(msg);
+  return /\b429\b|rate.?limit|too many requests/i.test(msg) || CLOUDFLARE_RE.test(msg);
 }
 
 export function isRangeError(err: unknown): boolean {
   const msg = err instanceof Error ? `${err.message} ${(err as { details?: string }).details ?? ""}` : String(err);
   // A rate limit is not a range problem: splitting would only send more requests.
-  if (/\b429\b|rate.?limit|too many requests/i.test(msg)) return false;
+  if (/\b429\b|rate.?limit|too many requests/i.test(msg) || CLOUDFLARE_RE.test(msg)) return false;
   return /exceed|too many|too large|limit|spans|range|10000|response size|query timeout|timed out|-32005/i.test(msg);
 }
 
@@ -109,6 +116,10 @@ export function isRangeError(err: unknown): boolean {
 export function rpcErrorText(err: unknown): string {
   if (!(err instanceof Error)) return String(err);
   const e = err as Error & { shortMessage?: string; details?: string };
+  // An HTML page quoted whole says nothing a person (or a model) can use.
+  if (CLOUDFLARE_RE.test(`${e.message} ${e.details ?? ""}`)) {
+    return "the RPC answered with a Cloudflare challenge page — it is throttling this client; wait a minute or ask for less";
+  }
   const head = e.shortMessage ?? e.message.split("\n")[0];
   return e.details && !head.includes(e.details) ? `${head} — ${e.details}` : head;
 }

@@ -13,7 +13,8 @@
 import { blank, concat, fitLine, padLine, sp, truncateLine, type Line } from "./markdown.js";
 import { scrollbarChar } from "./chrome.js";
 import type { Theme } from "./theme.js";
-import type { FeedRegion, SidebarRegion } from "./layout.js";
+import type { FeedRegion } from "./layout.js";
+import type { SidebarHit } from "./sidebar.js";
 
 export type ComposerWrap = { text: string; start: number; end: number }[];
 
@@ -28,13 +29,13 @@ export type FrameHit = {
   sidebarOn: boolean;
   rows: number;
   menuTop: number;
-  menuItems: readonly { name: string; desc: string }[];
+  menuItems: readonly { name: string; desc: string; fill?: string }[];
   pickerTop: number;
   /** The picker options on screen: rows pickerTop.. show options pickerStart.. */
   pickerStart: number;
   pickerCount: number;
   feedRegions: (FeedRegion | undefined)[];
-  sidebarRegions: (SidebarRegion | undefined)[];
+  sidebarRegions: (SidebarHit | undefined)[];
 };
 
 export type ChromeFrame = {
@@ -56,10 +57,10 @@ export function composeFrame(args: {
   maxScroll: number;
   view: { lines: Line[]; regions: (FeedRegion | undefined)[] };
   chrome: ChromeFrame;
-  sidebar: { lines: Line[]; regions: (SidebarRegion | undefined)[] };
+  sidebar: { lines: Line[]; regions: (SidebarHit | undefined)[] };
   composerWrap: ComposerWrap;
   /** The menu items on screen, in screen order (the menu may be a window). */
-  menuItems: readonly { name: string; desc: string }[];
+  menuItems: readonly { name: string; desc: string; fill?: string }[];
   pickerStart?: number;
   pickerCount?: number;
   /** false draws the scrollbar's column blank (a frozen frame for native selection). */
@@ -79,7 +80,7 @@ export function composeFrame(args: {
     let l = slice[i] ?? blank(contentW);
     l = padLine(truncateLine(l, trackW), trackW);
     const bar = args.scrollbar === false ? " " : scrollbarChar(i, viewportRows, maxScroll, scrollTop);
-    l = concat(l, [sp(bar, theme.mutedDim)]);
+    l = concat(l, [sp(bar, theme.muted)]);
     screenLines.push(l);
     feedRegions.push(sliceRegions[i]);
   }

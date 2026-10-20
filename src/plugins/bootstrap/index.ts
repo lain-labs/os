@@ -7,6 +7,7 @@ import {
 } from "../../models/routing.js";
 import { TASKS, TASK_ORDER, TaskKind, isTaskKind } from "../../models/tasks.js";
 import type { Action, Evaluator, IAgentRuntime, Plugin, Provider } from "../../types.js";
+import type { VersionJournalService } from "../journal/index.js";
 
 /** Injects the current wall-clock time so the agent is temporally grounded. */
 const timeProvider: Provider = {
@@ -80,12 +81,13 @@ const rememberAction: Action = {
   },
 };
 
-/** Read back from long-term memory: durable facts plus this room's history. */
+/** Read back from long-term memory: durable facts, this room's history, the version journal. */
 const recallAction: Action = {
   name: "recall",
   similes: ["search_memory", "what_do_you_know", "remember_what"],
   description:
-    "Search long-term memory — durable facts and earlier conversation in this room — for relevant context.",
+    "Search long-term memory — durable facts, earlier conversation in this room, and the version " +
+    'journal your earlier versions left you (query "version journal" for the latest notes) — for relevant context.',
   parameters: {
     type: "object",
     properties: {
@@ -106,17 +108,20 @@ const recallAction: Action = {
       ? facts.filter((f) => f.toLowerCase().includes(query.toLowerCase()))
       : facts.slice(-15);
     const episodic = query ? await runtime.memory.search(state.roomId, query, 5) : [];
+    const journal = runtime.getService<VersionJournalService>("version-journal");
+    const notes = journal ? await journal.search(query, query ? 2 : 1) : [];
     const lines: string[] = [];
     if (matchedFacts.length) lines.push("facts:", ...matchedFacts.map((f) => `- ${f}`));
     if (episodic.length)
       lines.push("from earlier here:", ...episodic.map((m) => `- (${m.role}) ${m.content}`));
+    if (notes.length) lines.push("version journal (notes from your earlier versions, newest first):", ...notes);
     if (!lines.length) {
       return {
         ok: true,
         text: query ? `Nothing in memory about "${query}".` : "Memory is empty.",
       };
     }
-    return { ok: true, text: lines.join("\n"), data: { facts: matchedFacts } };
+    return { ok: true, text: lines.join("\n"), data: { facts: matchedFacts, journalEntries: notes.length } };
   },
 };
 

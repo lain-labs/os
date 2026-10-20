@@ -1,16 +1,17 @@
 /**
- * Screen layout: the transcript feed (banner, boot line, turns, tools) and the
- * right-hand sidebar, both flattened into the same styled-line model the whole
- * TUI renders from (see markdown.ts). Pure — no ink, no React — so the app can
- * measure heights exactly, slice the scrollable feed, and map mouse clicks to
- * the exact tool / sidebar row they land on.
+ * Screen layout: the transcript feed (the welcome screen, banner, turns,
+ * tools), flattened into the same styled-line model the whole TUI renders from
+ * (see markdown.ts). Pure — no ink, no React — so the app can measure heights
+ * exactly, slice the scrollable feed, and map mouse clicks to the exact tool
+ * row they land on. The sidebar is its own module (sidebar.ts).
  */
-import { THEMES, BANNER, CHAIN_ID, CHAIN_NAME, GLYPH, VERSION, lerpColor, type Theme } from "./theme.js";
+import { BANNER, GLYPH, lerpColor, type Theme } from "./theme.js";
+import { logo3dLines } from "./logo3d.js";
 import { TASKS, type TaskKind } from "../../models/tasks.js";
 import {
   blank,
   concat,
-  fitLine,
+  fitLineBg,
   lineWidth,
   mdToLines,
   sp,
@@ -30,7 +31,11 @@ export interface ToolBlock {
   status: "running" | "ok" | "fail";
   summary?: string;
 }
-export type Part = { kind: "text"; text: string } | { kind: "tool"; tool: ToolBlock };
+export type Part =
+  | { kind: "text"; text: string }
+  | { kind: "tool"; tool: ToolBlock }
+  /** The model's chain of thought: one folded row until it is clicked open. */
+  | { kind: "reasoning"; id: string; text: string };
 export type Role = "you" | "lain" | "sys" | "pulse";
 export type Turn = {
   id: string;
@@ -48,10 +53,11 @@ export type Turn = {
   at?: number;
 };
 
-/** What a click on a feed line does: expand a tool, or copy a block of text. */
+/** What a click on a feed line does: unfold a tool or a thought, copy a block of text, or spin the logo. */
 export type FeedRegion =
-  | { kind: "tool"; toolId: string }
-  | { kind: "copy"; text: string; label: string };
+  | { kind: "fold"; id: string }
+  | { kind: "copy"; text: string; label: string }
+  | { kind: "logo" };
 
 const SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 export const spinnerChar = (frame: number): string => SPIN[frame % SPIN.length];
@@ -115,6 +121,39 @@ export function bootLines(theme: Theme, width: number): Line[] {
   return [...line1, ...line2, ...line3, blank(width)];
 }
 
+/**
+ * The welcome screen, centred: the 3D logo turned to `pose`, a tagline, the
+ * boot lines. The logo rows are a click target (it spins again). Under seven
+ * rows there is no room to turn anything, and the flat masthead stands in.
+ */
+export function welcomeLines(
+  theme: Theme,
+  width: number,
+  logoRows: number,
+  pose: { yaw: number; pitch: number; glow: number },
+): { lines: Line[]; regions: (FeedRegion | undefined)[] } {
+  const c = theme;
+  if (logoRows < 7) {
+    const flat = [...bannerLines(theme, width), ...bootLines(theme, width)];
+    return { lines: flat, regions: flat.map(() => undefined) };
+  }
+  const center = (l: Line): Line => concat(blank(Math.max(0, Math.floor((width - lineWidth(l)) / 2))), l);
+  const logo = logo3dLines(theme, width, logoRows, pose.yaw, pose.pitch, pose.glow);
+  const tagline = center([
+    sp(`${GLYPH.spark} `, c.primary),
+    sp("the wired remembers", c.fg),
+    sp(`  ${GLYPH.dot}  `, c.mutedDim),
+    sp("an autonomous agent", c.muted),
+  ]);
+  const tip = wrapSpans(
+    [{ t: `${GLYPH.spark} the logo and Lain in the sidebar both answer a click · sidebar titles fold`, c: c.mutedDim }],
+    Math.min(width, 80),
+  );
+  const boot = [...bootLines(theme, Math.min(width, 80)).slice(0, -1), ...tip].map(center);
+  const lines = [...logo, blank(width), tagline, blank(width), ...boot];
+  return { lines, regions: lines.map((_, i) => (i < logo.length ? { kind: "logo" as const } : undefined)) };
+}
+
 // ------------------------------------------------------------------ turns
 
 /** Wall-clock hh:mm for a turn's header. */
@@ -124,13 +163,13 @@ function clock(at: number): string {
   return `${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-/** Every visible character of a turn, as plain text — what a copy yields. */
+/** Every character of a turn's reply, as plain text — what a copy yields (thoughts stay out). */
 export function turnText(turn: Turn): string {
   const out: string[] = [];
   for (const part of turn.parts) {
     if (part.kind === "text") {
       if (part.text.trim()) out.push(part.text.trimEnd());
-    } else {
+    } else if (part.kind === "tool") {
       const args = fmtArgs(part.tool.input);
       out.push(`${GLYPH.tool} ${part.tool.name}${args ? `  ${args}` : ""}`);
       if (part.tool.summary) out.push(part.tool.summary);
@@ -141,15 +180,18 @@ export function turnText(turn: Turn): string {
 
 function turnHeader(turn: Turn, theme: Theme, width: number): Line {
   const c = theme;
+  // The speaker is a badge: a block of colour the eye finds while scrolling,
+  // where a coloured word among words had to be read to be found.
+  const dark = "#0b0b12";
   const meta =
     turn.role === "you"
-      ? { label: `${GLYPH.you} you`, color: c.secondary }
+      ? { label: `${GLYPH.you} you`, color: dark, bg: c.secondary }
       : turn.role === "lain"
-        ? { label: `${GLYPH.lain} lain`, color: c.primary }
+        ? { label: `${GLYPH.lain} lain`, color: dark, bg: c.primary }
         : turn.role === "pulse"
-          ? { label: `${GLYPH.spark} wired`, color: c.muted }
-          : { label: `${GLYPH.dot} sys`, color: c.mutedDim };
-  const head: Line = [{ t: meta.label, c: meta.color, b: true }];
+          ? { label: `${GLYPH.spark} wired`, color: c.warn, bg: c.surface }
+          : { label: `${GLYPH.dot} sys`, color: c.muted, bg: c.surface };
+  const head: Line = [{ t: ` ${meta.label} `, c: meta.color, bg: meta.bg, b: true }];
   if (turn.role === "lain" && turn.task) {
     const spec = TASKS[turn.task];
     head.push(sp(` · ${spec.emoji} ${spec.label}${turn.escalated ? "↑" : ""}`, c.mutedDim));
@@ -192,8 +234,27 @@ function toolLines(tool: ToolBlock, theme: Theme, width: number, spin: string): 
     args ? [sp(`  ${args}`, c.mutedDim)] : [],
   );
   const lines: Line[] = [truncateLine(header, width)];
-  const region: FeedRegion = { kind: "tool", toolId: tool.id };
+  const region: FeedRegion = { kind: "fold", id: tool.id };
   return { lines, region };
+}
+
+/**
+ * The model's thought: folded to one row by default — it is how she got there,
+ * not what she said — and unfolded in place, dimmed, when clicked.
+ */
+function reasoningLines(text: string, open: boolean, theme: Theme, width: number): { header: Line; details: Line[] } {
+  const c = theme;
+  const indent = 2;
+  const body = text
+    .trim()
+    .split("\n")
+    .flatMap((raw): Line[] => (raw.trim() ? wrapSpans([{ t: raw.trim(), c: c.muted, i: true }], width - indent) : [[{ t: " " }]]));
+  const header: Line = concat(
+    [sp(`${open ? GLYPH.collapse : GLYPH.expand} `, c.mutedDim)],
+    [{ t: "thinking", c: c.muted, i: true }],
+    open ? [] : [sp(`  ${GLYPH.dot} ${body.length} line${body.length === 1 ? "" : "s"}`, c.mutedDim)],
+  );
+  return { header, details: open ? body.map((l) => concat(blank(indent), l)) : [] };
 }
 
 /** Expand a tool into its full input/result view. */
@@ -227,14 +288,41 @@ function expandedToolLines(tool: ToolBlock, theme: Theme, width: number): { head
   return { header, details };
 }
 
-/** Flat text body for you/sys/pulse turns (plain, wrapped). */
-function plainBody(text: string, theme: Theme, width: number, color: string): Line[] {
-  return wrapSpans([{ t: text, c: color }], width);
+/** Signed amounts and on/off switches in a notice, picked out in colour. */
+const ACCENTS = /((?<![\w.])[+−]\d[\d,]*(?:\.\d+)?%?|(?<=^|[\s(])-\d[\d,]*(?:\.\d+)?%?|\b(?:ON|OFF)\b)/;
+
+function accentSpans(text: string, theme: Theme, color: string): Span[] {
+  // One capturing group, so split() puts the accents at the odd indices.
+  return text
+    .split(ACCENTS)
+    .map((t, i): Span => {
+      if (i % 2 === 0) return { t, c: color };
+      if (t === "ON") return { t, c: theme.ok, b: true };
+      if (t === "OFF") return { t, c: theme.warn, b: true };
+      return { t, c: /^[-−]/.test(t) ? theme.err : theme.ok, b: true };
+    })
+    .filter((span) => span.t);
 }
 
+/** Flat text body for you/sys/pulse turns (plain, wrapped). Notices get their numbers coloured. */
+function plainBody(text: string, theme: Theme, width: number, color: string, accents = false): Line[] {
+  // Each source line wraps on its own, under its own indent: a list from
+  // /help or /skills must not run together into one paragraph.
+  return text.split("\n").flatMap((raw) => {
+    if (!raw.trim()) return [[{ t: " " }]];
+    const indent = raw.match(/^\s*/)![0].replace(/\t/g, "  ");
+    const pad = indent.length < width / 2 ? indent : "";
+    const spans = accents ? accentSpans(raw.trim(), theme, color) : [{ t: raw.trim(), c: color }];
+    return wrapSpans(spans, width - pad.length).map((l) => (pad ? [{ t: pad }, ...l] : l));
+  });
+}
+
+/** Columns every turn's body sits in from the left edge, under its badge. */
+const BODY_INDENT = 2;
+
 /**
- * Render one turn into lines, tagging every line that belongs to a tool so a
- * click can expand/collapse it. `expanded` holds the tool ids shown in full.
+ * Render one turn into lines, tagging every line that belongs to a tool or a
+ * thought so a click can expand/collapse it. `expanded` holds the ids shown in full.
  */
 export function turnLines(
   turn: Turn,
@@ -251,32 +339,47 @@ export function turnLines(
   const regions: (FeedRegion | undefined)[] = [
     whole ? { kind: "copy", text: whole, label: turn.role === "lain" ? "lain's reply" : `the ${turn.role} line` } : undefined,
   ];
+  // The body is laid out narrower and shifted right, so the badges make a
+  // column of their own down the left edge.
+  const w = Math.max(8, width - BODY_INDENT);
+  const indent = (ls: Line[]): Line[] => ls.map((l) => concat(blank(BODY_INDENT), l));
   for (const part of turn.parts) {
-    if (part.kind === "tool") {
+    if (part.kind === "reasoning") {
+      if (!part.text.trim()) continue;
+      const thought = reasoningLines(part.text, expanded.has(part.id), theme, w);
+      lines.push(...indent([truncateLine(thought.header, w)]));
+      regions.push({ kind: "fold", id: part.id });
+      lines.push(...indent(thought.details));
+      regions.push(...thought.details.map(() => undefined));
+    } else if (part.kind === "tool") {
       const block = part.tool;
       if (expanded.has(block.id)) {
-        const tool = expandedToolLines(block, theme, width);
+        const tool = expandedToolLines(block, theme, w);
         // The expanded header keeps the tool region; the detail rows don't.
-        lines.push(truncateLine(tool.header, width));
-        regions.push({ kind: "tool", toolId: block.id });
-        lines.push(...tool.details);
+        lines.push(...indent([truncateLine(tool.header, w)]));
+        regions.push({ kind: "fold", id: block.id });
+        lines.push(...indent(tool.details));
         regions.push(...tool.details.map(() => undefined));
       } else {
-        const tool = toolLines(block, theme, width, spin);
-        lines.push(...tool.lines);
+        const tool = toolLines(block, theme, w, spin);
+        lines.push(...indent(tool.lines));
         regions.push(tool.region);
       }
     } else if (part.text.trim()) {
       // Code blocks report themselves line by line, so a click anywhere inside
       // one copies exactly the code — not the prose around it.
       const marks: (string | undefined)[] = [];
+      const notice = lerpColor(c.fg, c.muted, 0.35);
       const body =
         turn.role === "lain"
           ? stableMarkdown(part.text)
-            ? mdToLines(part.text.trimEnd(), theme, width, marks)
-            : wrapSpans([{ t: part.text, c: c.fg }], width)
-          : plainBody(part.text.trimEnd(), theme, width, turn.role === "pulse" ? c.muted : turn.role === "sys" ? c.mutedDim : c.fg);
-      lines.push(...body);
+            ? mdToLines(part.text.trimEnd(), theme, w, marks)
+            : wrapSpans([{ t: part.text, c: c.fg }], w)
+          : turn.role === "you"
+            ? // Your own words on a raised strip: where you spoke is visible at a glance.
+              plainBody(part.text.trimEnd(), theme, w, c.fg).map((l) => fitLineBg(l, w, c.surface).map((s) => ({ ...s, bg: s.bg ?? c.surface })))
+            : plainBody(part.text.trimEnd(), theme, w, turn.role === "pulse" ? c.muted : notice, true);
+      lines.push(...indent(body));
       regions.push(
         ...body.map((_, i) => {
           const code = marks[i];
@@ -289,109 +392,5 @@ export function turnLines(
   // rather than one long paragraph with names sprinkled through it.
   lines.push(blank(width));
   regions.push(undefined);
-  return { lines, regions };
-}
-
-// --------------------------------------------------------------- sidebar
-
-/** A clickable sidebar row: open a picker, or run one of the copy actions.
- *  The actions have keys too, but an editor that hosts the terminal may eat
- *  those (VS Code keeps ctrl+s for itself), and a click it cannot take. */
-export type SidebarRegion =
-  | { kind: "pick"; action: "model" | "effort" | "skin" }
-  | { kind: "act"; action: "select" | "copy" };
-
-export interface SidebarData {
-  provider: string;
-  model: string;
-  block: number | null;
-  tokens: number;
-  room: string;
-  /** Session id for the current room, once it has one (first turn creates it). */
-  session?: string;
-  effort: string;
-  skinLabel: string;
-  watches: number;
-  wishes: number;
-  topics: number;
-  skills: number;
-}
-
-/** The right sidebar as exactly `rows` lines (clickable rows carry regions). */
-export function sidebarLines(
-  theme: Theme,
-  sidebarW: number,
-  rows: number,
-  data: SidebarData,
-): { lines: Line[]; regions: (SidebarRegion | undefined)[] } {
-  const c = theme;
-  const inner = Math.max(4, sidebarW - 2);
-  const box = (l: Line): Line => concat([sp("│", c.border)], fitLine(l, inner), [sp("│", c.border)]);
-  const pickRow = (
-    label: string,
-    value: string,
-    valColor: string,
-    action: "model" | "effort" | "skin",
-  ): { line: Line; region?: SidebarRegion } => ({
-    line: box(concat([sp(`${label} `, c.mutedDim)], [sp(value, valColor)])),
-    region: { kind: "pick", action },
-  });
-  const infoRow = (label: string, value: string): { line: Line; region?: SidebarRegion } => ({
-    line: box(concat([sp(`${label} `, c.mutedDim)], [sp(value, c.fg)])),
-  });
-  const gap: { line: Line; region?: SidebarRegion } = { line: box(blank(inner)) };
-  const hintRow = (label: string, value: string): { line: Line; region?: SidebarRegion } => ({
-    line: box(concat([sp(`${label} `, c.mutedDim)], [sp(value, c.muted)])),
-  });
-  const actRow = (
-    label: string,
-    value: string,
-    action: "select" | "copy",
-  ): { line: Line; region?: SidebarRegion } => ({
-    line: box(concat([sp(`${label} `, c.secondary)], [sp(value, c.muted)])),
-    region: { kind: "act", action },
-  });
-
-  const rowsList: { line: Line; region?: SidebarRegion }[] = [
-    { line: [{ t: `╭─ session ${"─".repeat(Math.max(0, inner - 10))}╮`, c: c.border }] },
-    pickRow("model", data.provider, c.primary, "model"),
-    pickRow("effort", data.effort, c.secondary, "effort"),
-    pickRow("skin", data.skinLabel, c.primary, "skin"),
-    gap,
-    infoRow("chain", CHAIN_ID ? `${CHAIN_NAME} ${CHAIN_ID}` : CHAIN_NAME),
-    infoRow("height", data.block === null ? "—" : data.block.toLocaleString("en-US")),
-    infoRow("session", data.session ?? "new"),
-    infoRow("room", data.room),
-    infoRow("tokens", data.tokens >= 1000 ? `${(data.tokens / 1000).toFixed(1)}k` : String(data.tokens)),
-    gap,
-    infoRow("watches", String(data.watches)),
-    infoRow("wishes", String(data.wishes)),
-    infoRow("topics", String(data.topics)),
-    infoRow("skills", String(data.skills)),
-    gap,
-    hintRow("alt+↵", "new line"),
-    hintRow("drag", "select · copies"),
-    actRow("freeze", "frame · ctrl+s", "select"),
-    actRow("copy", "last · ctrl+y", "copy"),
-    hintRow("click", "name → copy it"),
-    hintRow("click", "tool → expand"),
-    hintRow("wheel", "scroll · pgup page"),
-    hintRow("ctrl+c", "twice to leave"),
-  ];
-
-  // Fill to `rows`, pushing the bottom border to the last screen row.
-  const padGaps = Math.max(0, rows - rowsList.length - 1);
-  const head = rowsList[0];
-  const tail = rowsList.slice(1);
-  const spaced: typeof rowsList = [];
-  for (let i = 0; i < padGaps; i++) spaced.push(gap);
-  const all = [head, ...tail, ...spaced, { line: [{ t: `╰${"─".repeat(Math.max(1, inner))}╯`, c: c.border }] }].slice(0, rows);
-
-  const lines: Line[] = all.map((r) => r.line);
-  const regions: (SidebarRegion | undefined)[] = all.map((r) => r.region);
-  while (lines.length < rows) {
-    lines.push(blank(sidebarW));
-    regions.push(undefined);
-  }
   return { lines, regions };
 }

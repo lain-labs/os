@@ -46,14 +46,14 @@ const tmp = await mkdtemp(join(tmpdir(), "lainos-digest-"));
 
 const TOKENS = [
   { address_hash: "0x01", symbol: "BTC", name: "Bitcoin", holders_count: "3", decimals: "8" },
-  { address_hash: "0x02", symbol: "TMOS", name: "T-Capital Russian Stocks", holders_count: "4", decimals: "18" },
+  { address_hash: "0x02", symbol: "TMOS", name: "T-Capital Equity Fund", holders_count: "4", decimals: "18" },
   { address_hash: "0x03", symbol: "UNI-V2", name: "Uniswap V2", holders_count: "9", decimals: "18" },
   { address_hash: "0x04", symbol: "clASH", name: "Cyberia Lend ASH", holders_count: "3", decimals: "18" },
   { address_hash: "0x05", symbol: "TG", name: "Telegram", holders_count: "31", decimals: "18" },
   { address_hash: "0x06", symbol: "TG", name: "Telegram", holders_count: "7", decimals: "18" },
   { address_hash: "0x07", symbol: "ASH", name: "Ash", holders_count: "15", decimals: "18" },
   { address_hash: "0x08", symbol: "GOLD", name: "Gold", holders_count: "3", decimals: "18" },
-  { address_hash: "0x09", symbol: "RUB", name: "Russian Ruble", holders_count: "9", decimals: "2" },
+  { address_hash: "0x09", symbol: "RUB", name: "Rouble", holders_count: "9", decimals: "2" },
   { address_hash: "0x0a", symbol: "TRUR", name: "T-Capital Rouble Liquidity", holders_count: "4", decimals: "18" },
 ];
 
@@ -88,11 +88,11 @@ const model = {
     if (req.system?.includes("You map tokens")) {
       // Cut off mid-array, as a long answer can be: the complete objects still count.
       return {
-        text: `[{"symbol":"TG","kind":"brand","about":"Telegram messenger","news":[{"q":"Telegram","lang":"ru"}]},{"symbol":"ASH","kind":"native","about":"Ash","news":[]},{"symbol":"x"`,
+        text: `[{"symbol":"TG","kind":"brand","about":"Telegram messenger","news":[{"q":"Telegram","lang":"en"}]},{"symbol":"ASH","kind":"native","about":"Ash","news":[]},{"symbol":"x"`,
         model: "fake",
       };
     }
-    return { text: "день спокойный. **BTC** −0.50%\n- **TG** — новость [Outlet](n1)\n- выдумка [Fake](n99)", model: "fake" };
+    return { text: "A quiet day. **BTC** −0.50%\n- **TG** — news [Outlet](n1)\n- fiction [Fake](n99)", model: "fake" };
   },
 };
 
@@ -140,7 +140,7 @@ check("an unreachable MOEX is said plainly for every fund", q.missing.get("TMOS"
 
 // ---------------------------------------------------------------- 3. material, links
 
-const news = [{ symbols: ["TG"], query: { q: "Telegram", lang: "ru" as const }, items: [{ title: "story - Outlet", url: "https://news.example/1", source: "News", at: Date.now() }] }];
+const news = [{ symbols: ["TG"], query: { q: "Telegram", lang: "en" as const }, items: [{ title: "story - Outlet", url: "https://news.example/1", source: "News", at: Date.now() }] }];
 const material = digestMaterial({
   network: "Cyberia",
   nativeSymbol: "CYBER",
@@ -172,9 +172,11 @@ analysisBroken = false;
 svc.http = http;
 svc.dexReader = async () => ({ prices: new Map(), nativeUsd: undefined });
 await svc.start(runtime);
+settings.LAINOS_DIGEST_LANG = "French";
 const text = await svc.generate({ remember: true });
+check("digest language stays English despite a legacy language setting", prompts.at(-1)?.system?.includes("Write entirely in English") === true && !prompts.at(-1)?.system?.includes("French"));
 check("the digest is written, with real links", /\[Outlet\]\(https:\/\/news\.example\/[^)]+\)/.test(text));
-check("an invented source is not linked", text.includes("выдумка Fake") && !text.includes("(n99)"));
+check("an invented source is not linked", text.includes("fiction Fake") && !text.includes("(n99)"));
 check("the digest is written by the chat provider by default", prompts.at(-1)?.task === TaskKind.CHAT);
 check("old news is not in it", !prompts.at(-1)?.messages[0].content.includes("old Telegram"));
 asked.length = 0;
@@ -195,7 +197,7 @@ await tick(day).catch((e) => sent.push(String(e)));
 const afterFirst = prompts.length;
 await tick(day);
 check("once a day", afterFirst > before && prompts.length === afterFirst);
-check("/digest off stops it", (await digestCommand(runtime, ["off"])).includes("выключен") && svc.schedule().at === null);
+check("/digest off stops it", (await digestCommand(runtime, ["off"])).includes("is off") && svc.schedule().at === null);
 await svc.stop();
 
 await rm(tmp, { recursive: true, force: true });

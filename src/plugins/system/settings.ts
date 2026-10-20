@@ -123,7 +123,7 @@ export const setSettingAction: Action = {
       },
     },
   },
-  examples: [{ user: "вот токен бота, впиши сам", agent: "Записать TELEGRAM_BOT_TOKEN в daemon.env?" }],
+  examples: [{ user: "here is the bot token, add it to the configuration", agent: "Write TELEGRAM_BOT_TOKEN to daemon.env?" }],
   async validate() {
     return true;
   },

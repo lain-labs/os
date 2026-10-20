@@ -190,7 +190,7 @@ export const walletsSnapshotAction: Action = {
     },
   },
   examples: [
-    { user: "пришли в тг, какие токены и сколько эфира у топ-100 холдеров", agent: "собираю снимок по всем сотне." },
+    { user: "send the token and ether balances of the top 100 holders to Telegram", agent: "collecting a snapshot for all 100 holders." },
   ],
   async validate() {
     return true;

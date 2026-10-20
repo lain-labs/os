@@ -5,13 +5,16 @@ import { ModelTier, type ModelProvider } from "../types.js";
 import { AnthropicModelProvider } from "./anthropic.js";
 import { ClaudeCliModelProvider, resolveClaudeBin } from "./claude-cli.js";
 import { CodexModelProvider, resolveCodexBin } from "./codex.js";
+import { usageLimits } from "./limits.js";
 import { MockModelProvider } from "./mock.js";
-import { OpenRouterModelProvider } from "./openrouter.js";
-import { OpencodeModelProvider, resolveOpenCodeBin } from "./opencode.js";
+import { fetchFreeModels, OpenRouterModelProvider } from "./openrouter.js";
+import { listOpencodeModels, OpencodeModelProvider, opencodeFreeModels, resolveOpenCodeBin } from "./opencode.js";
 import {
+  CHAT_PROVIDER_CHOICES,
   FallbackModelProvider,
   SwitchableModelProvider,
   TieredModelProvider,
+  type ModelChoice,
   type TaskRouteEntry,
 } from "./routing.js";
 import {
@@ -38,7 +41,7 @@ export {
   SwitchableModelProvider,
   TieredModelProvider,
 } from "./routing.js";
-export type { ChatProviderState, TaskRouteEntry, TaskRouteState } from "./routing.js";
+export type { ChatProviderState, ModelChoice, TaskRouteEntry, TaskRouteState } from "./routing.js";
 export {
   TASKS,
   TASK_ORDER,
@@ -94,6 +97,12 @@ function splitArgs(raw?: string): string[] {
  * Cross-provider fallback is opt-in: LAINOS_MODEL_FALLBACK=<provider> retries
  * failed calls on that provider. Off by default so the agent never silently
  * lands on a model the operator didn't choose.
+ *
+ * Running out of quota is the one exception: a spent subscription fails every
+ * call until its reset, so the reply goes to the next agent that is not spent
+ * (LAINOS_MODEL_STANDBY, comma-separated kinds in order; default every chat
+ * agent this machine has; `none` turns it off). Who is spent lives in
+ * data/limits.json, shared with the forge.
  *
  * On top of the base, LAINOS_MODEL_TIER_SMALL / _MEDIUM / _LARGE may route a
  * single tier to a different provider.
@@ -204,7 +213,7 @@ export function createModelProvider(
           retries: Number.isFinite(retriesRaw) && retriesRaw >= 0 ? retriesRaw : undefined,
           extraArgs: splitArgs(getSetting("LAINOS_CLAUDE_ARGS")),
           cwd:
-            getSetting("LAINOS_CLAUDE_CWD") ??
+            getSetting("LAINOS_CLAUDE_CWD")?.trim() ||
             join(getSetting("LAINOS_DATA_DIR") ?? "./data", "claude"),
           proxy,
         });
@@ -224,7 +233,7 @@ export function createModelProvider(
           retries: Number.isFinite(retriesRaw) && retriesRaw >= 0 ? retriesRaw : undefined,
           extraArgs: splitArgs(getSetting("LAINOS_CODEX_ARGS")),
           cwd:
-            getSetting("LAINOS_CODEX_CWD") ??
+            getSetting("LAINOS_CODEX_CWD")?.trim() ||
             join(getSetting("LAINOS_DATA_DIR") ?? "./data", "codex"),
           proxy,
         });
@@ -246,7 +255,7 @@ export function createModelProvider(
           retries: Number.isFinite(retriesRaw) && retriesRaw >= 0 ? retriesRaw : undefined,
           extraArgs: splitArgs(getSetting("LAINOS_OPENCODE_ARGS")),
           cwd:
-            getSetting("LAINOS_OPENCODE_CWD") ??
+            getSetting("LAINOS_OPENCODE_CWD")?.trim() ||
             join(getSetting("LAINOS_DATA_DIR") ?? "./data", "opencode"),
           proxy,
         });
@@ -260,8 +269,8 @@ export function createModelProvider(
   // Build the full ensemble for a base kind: base + opt-in fallback + tier
   // routing. Returns undefined when the base itself cannot be built so callers
   // (boot, set_chat_provider) decide how loudly to fail.
-  const assemble = (baseKind: string): ModelProvider | undefined => {
-    let provider = make(baseKind);
+  const assemble = (baseKind: string, model?: string): ModelProvider | undefined => {
+    let provider = make(baseKind, model);
     if (!provider) return undefined;
 
     // Cross-provider fallback is opt-in only: a failed call must fail loudly
@@ -295,6 +304,41 @@ export function createModelProvider(
     return provider;
   };
 
+  /**
+   * What `/model` offers per agent, free models first. Only a catalogue the
+   * agent itself can read is listed; anything else is typed as an id. Kept a
+   * few minutes — the OpenCode listing takes seconds and a picker should open at once.
+   */
+  const catalogCache = new Map<string, { at: number; models: ModelChoice[] }>();
+  const catalog = async (kind: string): Promise<ModelChoice[]> => {
+    const hit = catalogCache.get(kind);
+    if (hit && Date.now() - hit.at < 600_000) return hit.models;
+    let models: ModelChoice[] = [];
+    if (kind === "opencode") {
+      const bin = resolveOpenCodeBin(getSetting("LAINOS_OPENCODE_BIN"));
+      if (bin) {
+        const ids = await listOpencodeModels(bin);
+        const free = await opencodeFreeModels(ids);
+        models = ids.map((id) => ({ id, free: free.has(id) }));
+      }
+    } else if (kind === "claude") {
+      // The claude CLI resolves these aliases to the latest model of each line.
+      models = ["opus", "sonnet", "haiku"].map((id) => ({ id, free: false }));
+    } else if (kind === "openrouter" && openrouterKey) {
+      const free = await fetchFreeModels({
+        apiKey: openrouterKey,
+        baseUrl: getSetting("OPENROUTER_BASE_URL"),
+        proxy,
+      });
+      // This catalogue is OpenRouter's free pool and nothing else.
+      models = ["openrouter/free", ...free.map((m) => m.id)].map((id) => ({ id, free: true }));
+    }
+    // Free first; each half keeps the agent's own order.
+    models = [...models.filter((m) => m.free), ...models.filter((m) => !m.free)];
+    catalogCache.set(kind, { at: Date.now(), models });
+    return models;
+  };
+
   const envKind =
     explicit ||
     (openrouterKey
@@ -305,17 +349,17 @@ export function createModelProvider(
           ? "claude"
           : "mock");
   const overrideFile = chatProviderFile(getSetting);
-  const stored = loadStoredChatProvider(overrideFile);
+  const { kind: stored, models: pins } = loadStoredChatProvider(overrideFile);
   if (stored && stored !== envKind) {
     log.info(`live chat provider override: ${stored} (env default ${envKind})`);
   }
 
   let baseKind = stored ?? envKind;
-  let assembled = assemble(baseKind);
+  let assembled = assemble(baseKind, pins[baseKind]);
   if (!assembled && stored) {
     log.warn(`stored chat provider "${stored}" unavailable — using env default "${envKind}".`);
     baseKind = envKind;
-    assembled = assemble(envKind);
+    assembled = assemble(envKind, pins[envKind]);
   }
   if (!assembled) {
     log.warn(`provider "${baseKind}" unavailable — using offline mock model.`);
@@ -349,11 +393,15 @@ export function createModelProvider(
     kind: baseKind,
     envKind,
     assemble,
-    persist: (kind) => storeChatProvider(overrideFile, kind),
+    persist: (kind, models) => storeChatProvider(overrideFile, kind, models),
+    pins,
+    listModels: (kind) => catalog(kind),
     routes: envRoutes,
     operatorRoutes,
     buildRoute: (route) => make(route.provider, route.model),
     persistRoutes: (routes) => storeTaskRoutes(routesFile, routes),
+    limits: usageLimits(getSetting("LAINOS_DATA_DIR") ?? "./data"),
+    standbys: standbyKinds(getSetting("LAINOS_MODEL_STANDBY")),
   });
   log.info(`using model provider: ${provider.name}`);
 
@@ -366,6 +414,17 @@ export function createModelProvider(
   if (routed.length) log.info(`task routing: ${routed.join(", ")}`);
 
   return provider;
+}
+
+/**
+ * Who answers when the chosen agent is out of quota, in order. One that this
+ * machine cannot build (no key, no CLI) is skipped when it is reached.
+ */
+function standbyKinds(raw?: string): string[] {
+  const value = raw?.trim().toLowerCase();
+  if (value === "none" || value === "0") return [];
+  if (value) return value.split(/[\s,]+/).filter((kind) => kind && kind !== "mock");
+  return [...new Set([...CHAT_PROVIDER_CHOICES.map((choice) => choice.kind), "openrouter"])];
 }
 
 /**
@@ -466,27 +525,33 @@ function chatProviderFile(getSetting: (key: string) => string | undefined): stri
   return join(getSetting("LAINOS_DATA_DIR") ?? "./data", "chat-provider.json");
 }
 
-function loadStoredChatProvider(file: string): string | undefined {
+/** The stored agent override and the model picked per agent (`models.opencode`, …). */
+function loadStoredChatProvider(file: string): { kind?: string; models: Record<string, string> } {
   try {
-    const parsed = JSON.parse(readFileSync(file, "utf8")) as { provider?: unknown };
-    if (typeof parsed.provider === "string" && parsed.provider.trim()) {
-      return parsed.provider.trim().toLowerCase();
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as { provider?: unknown; models?: unknown };
+    const models: Record<string, string> = {};
+    if (parsed.models && typeof parsed.models === "object") {
+      for (const [kind, model] of Object.entries(parsed.models)) {
+        if (typeof model === "string" && model.trim()) models[kind] = model.trim();
+      }
     }
+    const kind =
+      typeof parsed.provider === "string" && parsed.provider.trim()
+        ? parsed.provider.trim().toLowerCase()
+        : undefined;
+    return { kind, models };
   } catch {
     // No override stored.
   }
-  return undefined;
+  return { models: {} };
 }
 
-function storeChatProvider(file: string, kind: string | null): void {
+function storeChatProvider(file: string, kind: string | null, models: Record<string, string> = {}): void {
   if (!kind) {
     rmSync(file, { force: true });
     return;
   }
   mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(
-    file,
-    `${JSON.stringify({ provider: kind, updatedAt: new Date().toISOString() }, null, 2)}\n`,
-    "utf8",
-  );
+  const body = { provider: kind, ...(Object.keys(models).length ? { models } : {}), updatedAt: new Date().toISOString() };
+  writeFileSync(file, `${JSON.stringify(body, null, 2)}\n`, "utf8");
 }

@@ -12,10 +12,10 @@
  * looks like.
  */
 import { editLine } from "./editor.js";
-import { suggestionsFor } from "./commands.js";
+import { acceptCompletion, type Choice, type Completion } from "./commands.js";
 import type { InputHistory } from "./history.js";
 import type { TuiKey } from "./keys.js";
-import type { PickerView } from "./chrome.js";
+import { filterOptions, type PickerView } from "./chrome.js";
 
 /** A picker is a modal keyboard state, which is why it is declared here: the
  *  renderer sees only the `PickerView` half, the keymap drives the callbacks. */
@@ -34,6 +34,8 @@ export type KeyCtx = {
   cursor: number;
   acIndex: number;
   browsing: boolean;
+  /** What the menu offers for the line as typed (see completionsFor). */
+  completion: Completion;
   composerWidth: number;
   viewportRows: number;
   picker: PickerState | null;
@@ -56,6 +58,9 @@ export type KeyCtx = {
   exit: () => void;
   copyLastReply: () => void;
   scrollBy: (delta: number) => void;
+  /** The trench board is open in place of the transcript. */
+  board?: boolean;
+  closeBoard?: () => void;
 };
 
 /** True when the layer claimed the key and nothing below it should run. */
@@ -93,21 +98,34 @@ const selectLayer: Layer = ({ input, key }, ctx) => {
 };
 
 /** An open picker captures everything. */
-const pickerLayer: Layer = ({ key }, ctx) => {
+const pickerLayer: Layer = ({ input, key }, ctx) => {
   const picker = ctx.picker;
   if (!picker) return false;
+  const n = picker.options.length;
   if (key.upArrow || key.downArrow) {
-    const n = picker.options.length;
+    if (!n) return true;
     const ni = key.upArrow ? (picker.index - 1 + n) % n : (picker.index + 1) % n;
     picker.onHighlight?.(picker.options[ni].value);
     ctx.setPicker({ ...picker, index: ni });
   } else if (key.return) {
+    if (!n) return true;
     picker.onPick(picker.options[picker.index].value);
     ctx.setPicker(null);
+  } else if (picker.all && (key.backspace || key.delete || (input && !key.ctrl && !key.meta && input >= " "))) {
+    // A searchable list: typing narrows it, ⌫ widens it again.
+    const query = key.backspace || key.delete ? (picker.query ?? "").slice(0, -1) : `${picker.query ?? ""}${input}`;
+    ctx.setPicker({ ...picker, query, options: filterOptions(picker.all, query), index: 0 });
   } else if (key.escape) {
     picker.onCancel?.();
     ctx.setPicker(null);
   }
+  return true;
+};
+
+/** Esc on an empty composer closes the trench board and brings the transcript back. */
+const boardLayer: Layer = ({ key }, ctx) => {
+  if (!ctx.board || !key.escape || ctx.value) return false;
+  ctx.closeBoard?.();
   return true;
 };
 
@@ -135,25 +153,33 @@ const clipboardLayer: Layer = ({ input, key }, ctx) => {
 
 /** The slash menu is "open" only while actively typing a command — not when a
  *  command was just recalled from history (browsing). */
-function menuItems(ctx: KeyCtx): readonly { name: string; desc: string }[] {
-  return ctx.browsing ? [] : suggestionsFor(ctx.value);
+function menuItems(ctx: KeyCtx): readonly Choice[] {
+  return ctx.browsing ? [] : ctx.completion.items;
 }
 
-/** Menu open → arrows (and Tab) pick a command, Enter runs it. Everything else
+/** Menu open → arrows pick, Tab puts the pick into the line (the word and a
+ *  space, ready for the next one), shift+Tab steps back. Enter runs a picked
+ *  command; under an argument menu it sends the line as typed — a guessed
+ *  argument is how "/paper re" would become a reset. Everything else
  *  (shift+enter included) falls through to the composer. */
 const menuLayer: Layer = ({ key }, ctx) => {
   const items = menuItems(ctx);
   if (!items.length) return false;
   const idx = Math.min(ctx.acIndex, items.length - 1);
-  if (key.upArrow) {
+  if (key.upArrow || (key.tab && key.shift)) {
     ctx.setMenuIndex((idx - 1 + items.length) % items.length);
     return true;
   }
-  if (key.downArrow || key.tab) {
-    ctx.setMenuIndex((idx + (key.shift ? items.length - 1 : 1)) % items.length);
+  if (key.downArrow) {
+    ctx.setMenuIndex((idx + 1) % items.length);
     return true;
   }
-  if (key.return && !key.shift) {
+  if (key.tab) {
+    const line = acceptCompletion(ctx.value, ctx.completion, items[idx]);
+    ctx.edit(line, line.length);
+    return true;
+  }
+  if (key.return && !key.shift && ctx.completion.kind === "command") {
     ctx.commit(items[idx].name);
     return true;
   }
@@ -163,7 +189,8 @@ const menuLayer: Layer = ({ key }, ctx) => {
 /** The composer: history, Enter, and line editing. The last layer, so it
  *  always claims the key. */
 const composerLayer: Layer = ({ input, key }, ctx) => {
-  const open = menuItems(ctx).length > 0;
+  // Only a command menu owns Enter; under an argument menu Enter sends the line.
+  const open = ctx.completion.kind === "command" && menuItems(ctx).length > 0;
 
   if (!open) {
     // ↑/↓ move a visual line first, then walk history.
@@ -204,6 +231,7 @@ export const KEY_LAYERS: readonly Layer[] = [
   quitLayer,
   selectLayer,
   pickerLayer,
+  boardLayer,
   scrollLayer,
   clipboardLayer,
   menuLayer,

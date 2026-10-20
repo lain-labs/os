@@ -18,6 +18,7 @@
  * active one: a wallet watch on Robinhood keeps running in a daemon that
  * trades on another network.
  */
+import { readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createPublicClient, defineChain, http, type Chain, type PublicClient } from "viem";
@@ -78,6 +79,17 @@ export const BUILTIN_NETWORKS: readonly NetworkProfile[] = [
     note: "testnet — balances here are not real money",
   },
   {
+    name: "base",
+    title: "Base",
+    chainId: 8453,
+    rpcUrl: "https://mainnet.base.org",
+    nativeSymbol: "ETH",
+    explorerUrl: "https://basescan.org",
+    explorerName: "Basescan",
+    multicall3: MULTICALL3,
+    note: "Coinbase's L2; the public RPC is rate-limited",
+  },
+  {
     name: "cyberia",
     title: "Cyberia",
     chainId: 49406,
@@ -134,7 +146,22 @@ async function writeSaved(runtime: IAgentRuntime, networks: NetworkProfile[]): P
 
 /** Every known profile: the operator's saved ones win over a built-in of the same name. */
 export async function listNetworks(runtime: IAgentRuntime): Promise<NetworkProfile[]> {
-  const saved = await readSaved(runtime);
+  return mergeProfiles(await readSaved(runtime));
+}
+
+/** {@link listNetworks} without awaiting — for callers that must hand back a reader at once. */
+export function listNetworksSync(runtime: IAgentRuntime): NetworkProfile[] {
+  let saved: NetworkProfile[] = [];
+  try {
+    const parsed = JSON.parse(readFileSync(storeFile(runtime), "utf8")) as { networks?: NetworkProfile[] };
+    saved = (parsed.networks ?? []).filter((n) => n && n.name && n.rpcUrl && Number.isInteger(n.chainId));
+  } catch {
+    // No saved profiles yet.
+  }
+  return mergeProfiles(saved);
+}
+
+function mergeProfiles(saved: NetworkProfile[]): NetworkProfile[] {
   const out = new Map<string, NetworkProfile>();
   for (const n of BUILTIN_NETWORKS) out.set(n.name, n);
   for (const n of saved) out.set(n.name, { ...out.get(n.name), ...n });
@@ -173,7 +200,11 @@ export function currentProfile(runtime: IAgentRuntime): NetworkProfile | null {
  * "Robinhood Chain"). Null when nothing matches.
  */
 export async function findNetwork(runtime: IAgentRuntime, query: string): Promise<NetworkProfile | null> {
-  const all = await listNetworks(runtime);
+  return matchNetwork(await listNetworks(runtime), query);
+}
+
+/** The profile among `all` that `query` names, by the same rules as {@link findNetwork}. */
+export function matchNetwork(all: NetworkProfile[], query: string): NetworkProfile | null {
   const q = slug(query);
   if (!q) return null;
   const byId = Number(query);

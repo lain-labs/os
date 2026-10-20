@@ -7,7 +7,7 @@
  * app measure a frame's height before it paints it and map a mouse click back
  * to a row (see the offsets `chromeLines` returns).
  */
-import { GLYPH, THEMES, type Theme } from "./theme.js";
+import { GLYPH, THEMES, lerpColor, type Theme } from "./theme.js";
 import { blank, concat, fitLine, lineWidth, sp, truncateLine, type Line, type Span } from "./markdown.js";
 import { spinnerChar } from "./layout.js";
 
@@ -20,19 +20,44 @@ export type PickerView = {
   kind: "skin" | "plain";
   options: PickerOption[];
   index: number;
+  /** A list long enough to search: typing narrows `options` to the matches in here. */
+  all?: PickerOption[];
+  /** What has been typed so far (only with `all`). */
+  query?: string;
 };
+
+/** The options whose value or label holds every word of `query`, in their own order. */
+export function filterOptions(all: PickerOption[], query: string): PickerOption[] {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return all;
+  return all.filter((o) => {
+    const hay = `${o.value} ${o.label}`.toLowerCase();
+    return words.every((w) => hay.includes(w));
+  });
+}
 
 export function fmtTokens(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
 }
 
-/** One vertical strip of the feed's scrollbar thumb (empty when not needed). */
+/** One vertical strip of the feed's scrollbar: a slim thumb on an empty track (nothing when not needed). */
 export function scrollbarChar(i: number, viewport: number, maxScroll: number, scrollTop: number): string {
   if (maxScroll <= 0) return " ";
   const thumb = Math.max(1, Math.round((viewport * viewport) / (viewport + maxScroll)));
   const track = viewport - thumb;
   const pos = maxScroll ? Math.round((track * scrollTop) / maxScroll) : 0;
-  return i >= pos && i < pos + thumb ? "█" : "░";
+  return i >= pos && i < pos + thumb ? "▐" : " ";
+}
+
+/** `text` with a band of light sweeping across it, `frame` steps along. */
+export function shimmer(text: string, frame: number, color: string): Line {
+  const chars = [...text];
+  const span = chars.length + 12;
+  const at = (frame * 0.9) % span - 6;
+  return chars.map((ch, i) => {
+    const glow = Math.max(0, 1 - Math.abs(i - at) / 4);
+    return { t: ch, c: glow ? lerpColor(color, "#ffffff", glow * 0.85) : color };
+  });
 }
 
 /** Left/right halves of one line, pushed to the two edges of `width`. */
@@ -101,10 +126,10 @@ export function chromeLines(args: {
   const state: Line = args.busy
     ? concat(
         [sp(`${spinnerChar(args.spin)} `, c.warn)],
-        [sp(args.status === "thinking" ? "reaching into the wired" : "answering", c.warn)],
+        shimmer(args.status === "thinking" ? "reaching into the wired" : "answering", args.spin, c.warn),
         [sp(`  ${Math.round(args.elapsed / 1000)}s`, c.mutedDim)],
       )
-    : concat([sp("● ", c.ok)], [sp("ready", c.mutedDim)]);
+    : concat([sp("● ", c.ok)], [sp("ready", c.muted)]);
   const facts: Line = args.quitArmed
     ? concat([sp("⌃C ", c.err)], [sp("again to leave the wired", c.warn)])
     : args.queued
@@ -249,10 +274,18 @@ export function pickerLines(
   const c = theme;
   const n = state.options.length;
   const count = Math.max(1, Math.min(n, maxRows - PICKER_HEADER_ROWS - 1));
-  const start = scrollWindow(prevStart, state.index, n, count);
+  const start = n ? scrollWindow(prevStart, state.index, n, count) : 0;
   const out: Line[] = [blank(width)];
-  const title = ` ${state.title}  ↑↓ or click · enter select · esc cancel `;
+  const search = state.all ? (state.query ? `  filter “${state.query}”` : "  type to filter") : "";
+  const title = ` ${state.title}${search}  ↑↓ or click · enter select · esc cancel `;
   out.push(truncateLine([{ t: `╭─${title}${"─".repeat(Math.max(0, width - title.length - 3))}╮`, c: c.border }], width));
+  if (!n) {
+    // Nothing matches what was typed: say so, and keep the frame its height.
+    const none = concat([sp("   ", c.mutedDim)], [sp("no match — ⌫ to widen", c.mutedDim)]);
+    out.push(concat([sp("│", c.border)], fitLine(none, Math.max(1, width - 2)), [sp("│", c.border)]));
+    out.push([sp(`╰${"─".repeat(Math.max(1, width - 3))}─╯`, c.border)]);
+    return { lines: out, start: 0, count: 0 };
+  }
   for (let i = start; i < start + count; i++) {
     const opt = state.options[i];
     const on = i === state.index;

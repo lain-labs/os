@@ -253,7 +253,7 @@ export function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-/** "#3 ты 0xbe0b…c8d9" — as HTML with the address linked to the explorer. */
+/** "#3 you 0xbe0b…c8d9" — as HTML with the address linked to the explorer. */
 export function htmlWallet(w: Pick<WalletEntry, "address" | "rank" | "label">, link?: string): string {
   const name = `#${w.rank}${w.label ? ` ${escapeHtml(w.label)}` : ""}`;
   const short = shortAddress(w.address);

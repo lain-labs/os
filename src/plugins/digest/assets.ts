@@ -33,12 +33,12 @@ export type PriceSource =
 
 export interface NewsQuery {
   q: string;
-  lang: "ru" | "en";
+  lang: "en";
 }
 
 export interface AssetSpec {
   kind: AssetKind;
-  /** What it is, in a few words — "T-Capital fund on Russian stocks (MOEX)". */
+  /** What it is, in a few words — "T-Capital fund on MOEX-listed stocks". */
   about: string;
   /** Group heading in the digest. */
   group: string;
@@ -54,30 +54,30 @@ export interface Asset extends AssetSpec {
   decimals: number;
 }
 
-const RU_FUNDS = "Российский рынок";
-const CRYPTO = "Крипта";
-const METALS = "Металлы и валюта";
+const MOEX_FUNDS = "MOEX funds";
+const CRYPTO = "Crypto";
+const METALS = "Metals and currencies";
 
 /** Underlyings known without asking anyone. Keyed by upper-case symbol. */
 export const KNOWN_ASSETS: Record<string, AssetSpec> = {
-  BTC: { kind: "crypto", about: "Bitcoin", group: CRYPTO, price: { source: "coingecko", id: "bitcoin" }, news: [{ q: "Bitcoin", lang: "en" }, { q: "биткоин", lang: "ru" }] },
+  BTC: { kind: "crypto", about: "Bitcoin", group: CRYPTO, price: { source: "coingecko", id: "bitcoin" }, news: [{ q: "Bitcoin", lang: "en" }] },
   ETH: { kind: "crypto", about: "Ethereum", group: CRYPTO, price: { source: "coingecko", id: "ethereum" }, news: [{ q: "Ethereum", lang: "en" }] },
   SOL: { kind: "crypto", about: "Solana", group: CRYPTO, price: { source: "coingecko", id: "solana" }, news: [{ q: "Solana", lang: "en" }] },
   XMR: { kind: "crypto", about: "Monero", group: CRYPTO, price: { source: "coingecko", id: "monero" }, news: [{ q: "Monero XMR", lang: "en" }] },
   LTC: { kind: "crypto", about: "Litecoin", group: CRYPTO, price: { source: "coingecko", id: "litecoin" }, news: [{ q: "Litecoin", lang: "en" }] },
   TRX: { kind: "crypto", about: "Tron", group: CRYPTO, price: { source: "coingecko", id: "tron" }, news: [{ q: "Tron TRX", lang: "en" }] },
-  TON: { kind: "crypto", about: "Toncoin", group: CRYPTO, price: { source: "coingecko", id: "the-open-network" }, news: [{ q: "Toncoin TON", lang: "en" }, { q: "Toncoin", lang: "ru" }] },
+  TON: { kind: "crypto", about: "Toncoin", group: CRYPTO, price: { source: "coingecko", id: "the-open-network" }, news: [{ q: "Toncoin TON", lang: "en" }, { q: "Toncoin", lang: "en" }] },
   BNB: { kind: "crypto", about: "BNB", group: CRYPTO, price: { source: "coingecko", id: "binancecoin" }, news: [{ q: "BNB Binance", lang: "en" }] },
   USDT: { kind: "stablecoin", about: "Tether USD", group: CRYPTO, price: { source: "coingecko", id: "tether" }, news: [{ q: "Tether USDT", lang: "en" }] },
   USDC: { kind: "stablecoin", about: "USD Coin", group: CRYPTO, price: { source: "coingecko", id: "usd-coin" }, news: [{ q: "Circle USDC", lang: "en" }] },
-  GOLD: { kind: "metal", about: "gold", group: METALS, price: { source: "yahoo", symbol: "GC=F" }, news: [{ q: "цена золота", lang: "ru" }, { q: "gold price", lang: "en" }] },
-  SILVER: { kind: "metal", about: "silver", group: METALS, price: { source: "yahoo", symbol: "SI=F" }, news: [{ q: "цена серебра", lang: "ru" }] },
-  RUB: { kind: "fx", about: "Russian rouble (USD/RUB)", group: METALS, price: { source: "cbr", code: "USD" }, news: [{ q: "курс рубля", lang: "ru" }] },
-  SPY: { kind: "index", about: "S&P 500 ETF", group: "США", price: { source: "yahoo", symbol: "SPY" }, news: [{ q: "S&P 500", lang: "en" }] },
-  TMOS: { kind: "fund", about: "T-Capital fund on Russian stocks (MOEX index)", group: RU_FUNDS, price: { source: "moex", secid: "TMOS" }, news: [{ q: "индекс Мосбиржи", lang: "ru" }] },
-  TOFZ: { kind: "fund", about: "T-Capital fund on Russian government bonds (OFZ)", group: RU_FUNDS, price: { source: "moex", secid: "TOFZ" }, news: [{ q: "ОФЗ доходность", lang: "ru" }] },
-  TRUR: { kind: "fund", about: "T-Capital rouble liquidity fund (follows the key rate)", group: RU_FUNDS, price: { source: "moex", secid: "TRUR" }, news: [{ q: "ключевая ставка ЦБ", lang: "ru" }] },
-  TGLD: { kind: "fund", about: "T-Capital gold fund (gold in roubles)", group: RU_FUNDS, price: { source: "moex", secid: "TGLD" }, news: [{ q: "золото рубли", lang: "ru" }] },
+  GOLD: { kind: "metal", about: "gold", group: METALS, price: { source: "yahoo", symbol: "GC=F" }, news: [{ q: "gold price", lang: "en" }] },
+  SILVER: { kind: "metal", about: "silver", group: METALS, price: { source: "yahoo", symbol: "SI=F" }, news: [{ q: "silver price", lang: "en" }] },
+  RUB: { kind: "fx", about: "Rouble (USD/RUB)", group: METALS, price: { source: "cbr", code: "USD" }, news: [{ q: "USD RUB exchange rate", lang: "en" }] },
+  SPY: { kind: "index", about: "S&P 500 ETF", group: "US", price: { source: "yahoo", symbol: "SPY" }, news: [{ q: "S&P 500", lang: "en" }] },
+  TMOS: { kind: "fund", about: "T-Capital fund on MOEX-listed stocks (MOEX index)", group: MOEX_FUNDS, price: { source: "moex", secid: "TMOS" }, news: [{ q: "MOEX index", lang: "en" }] },
+  TOFZ: { kind: "fund", about: "T-Capital fund on government bonds (OFZ)", group: MOEX_FUNDS, price: { source: "moex", secid: "TOFZ" }, news: [{ q: "OFZ bond yields", lang: "en" }] },
+  TRUR: { kind: "fund", about: "T-Capital rouble liquidity fund (follows the key rate)", group: MOEX_FUNDS, price: { source: "moex", secid: "TRUR" }, news: [{ q: "central bank key rate", lang: "en" }] },
+  TGLD: { kind: "fund", about: "T-Capital gold fund (gold in roubles)", group: MOEX_FUNDS, price: { source: "moex", secid: "TGLD" }, news: [{ q: "gold in roubles", lang: "en" }] },
   CYBER: { kind: "native", about: "Cyberia's native coin", group: "Cyberia", price: { source: "dex" }, news: [] },
   WCYBER: { kind: "native", about: "wrapped CYBER", group: "Cyberia", price: { source: "dex" }, news: [] },
 };
@@ -267,7 +267,7 @@ async function classifyBatch(runtime: IAgentRuntime, assets: Asset[], nativeSymb
       `Reply with JSON only: an array of {"symbol","kind","about","news":[{"q","lang"}],"coingecko"?}. ` +
       `kind: "crypto" (a real coin — give its coingecko id), "stablecoin", "brand" (named after a real company, product or project — news about it), ` +
       `or "native" (a community/meme/utility/test coin of this chain with no outside news — news: []). ` +
-      `news: one or two short search queries, lang "ru" or "en", whichever finds better news. about: 3–8 words. ` +
+      `news: one or two short search queries, lang "en", using English search terms. about: 3–8 English words. ` +
       `When unsure, choose "native".`,
     messages: [{ role: "user", content: list }],
     maxTokens: 3000,
@@ -283,11 +283,11 @@ async function classifyBatch(runtime: IAgentRuntime, assets: Asset[], nativeSymb
     const news = (Array.isArray(r.news) ? r.news : [])
       .filter((n) => n && typeof n.q === "string" && n.q.trim())
       .slice(0, 2)
-      .map((n) => ({ q: n.q.trim().slice(0, 80), lang: n.lang === "ru" ? ("ru" as const) : ("en" as const) }));
+      .map((n) => ({ q: n.q.trim().slice(0, 80), lang: "en" as const }));
     out.set(sym, {
       kind,
       about: String(r.about ?? asset.name).slice(0, 80),
-      group: kind === "brand" ? "Бренды и проекты" : kind === "native" ? "Cyberia" : CRYPTO,
+      group: kind === "brand" ? "Brands and projects" : kind === "native" ? "Cyberia" : CRYPTO,
       price: kind === "native" ? { source: "dex" } : r.coingecko ? { source: "coingecko", id: String(r.coingecko) } : { source: "dex" },
       news: kind === "native" ? [] : news,
     });

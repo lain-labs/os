@@ -5,7 +5,7 @@
  * They live here rather than in App because none of them knows anything about
  * this app: each is a plain subscription with a cleanup.
  */
-import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { useStdout } from "ink";
 
 /**
@@ -51,6 +51,91 @@ export function useSpin(active: boolean): number {
     return () => clearInterval(id);
   }, [active]);
   return frame;
+}
+
+/** Re-render every `ms` while `active` — the clock for animations that run on time, not on a counter. */
+export function useTicker(active: boolean, ms: number): void {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!active) return;
+    const id = setInterval(() => setTick((t) => t + 1), ms);
+    return () => clearInterval(id);
+  }, [active, ms]);
+}
+
+/**
+ * True for `holdMs` once every `everyMs` while `active` — an eye blink. Two
+ * renders per blink, where a fast clock would have spent dozens.
+ */
+export function useBlink(active: boolean, everyMs: number, holdMs: number): boolean {
+  const [on, setOn] = useState(false);
+  useEffect(() => {
+    if (!active) return;
+    let hold: ReturnType<typeof setTimeout> | undefined;
+    const id = setInterval(() => {
+      setOn(true);
+      hold = setTimeout(() => setOn(false), holdMs);
+    }, everyMs);
+    return () => {
+      clearInterval(id);
+      if (hold) clearTimeout(hold);
+      setOn(false);
+    };
+  }, [active, everyMs, holdMs]);
+  return on;
+}
+
+/**
+ * A value read now, every `everyMs`, and again shortly after `bump` changes —
+ * but never sooner than `minGapMs` after the last read (a bump inside the gap
+ * reads once the gap is over), so a busy conversation cannot hammer whatever
+ * `read` asks.
+ */
+export function usePolled<T>(read: () => Promise<T>, bump: unknown, everyMs: number, minGapMs: number): T | null {
+  const [value, setValue] = useState<T | null>(null);
+  const readRef = useRef(read);
+  readRef.current = read;
+  const lastRef = useRef(0);
+  const busyRef = useRef(false);
+  const trailRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const aliveRef = useRef(true);
+  const pull = useCallback(() => {
+    const wait = lastRef.current + minGapMs - Date.now();
+    if (busyRef.current || wait > 0) {
+      if (!trailRef.current) {
+        trailRef.current = setTimeout(() => {
+          trailRef.current = null;
+          pull();
+        }, Math.max(wait, 1000));
+      }
+      return;
+    }
+    busyRef.current = true;
+    lastRef.current = Date.now();
+    void readRef
+      .current()
+      .then((v) => aliveRef.current && setValue(v))
+      .catch(() => undefined)
+      .finally(() => {
+        busyRef.current = false;
+      });
+  }, [minGapMs]);
+  useEffect(() => {
+    aliveRef.current = true;
+    pull();
+    const id = setInterval(pull, everyMs);
+    return () => {
+      aliveRef.current = false;
+      clearInterval(id);
+      if (trailRef.current) clearTimeout(trailRef.current);
+      trailRef.current = null;
+    };
+  }, [everyMs, pull]);
+  useEffect(() => {
+    const id = setTimeout(pull, 1500);
+    return () => clearTimeout(id);
+  }, [bump, pull]);
+  return value;
 }
 
 /**

@@ -8,7 +8,8 @@
  *     to publish (press),
  *   - initiative heartbeat + trader loop (daemon-only, see LAINOS_DAEMON),
  *   - routines: self-written skills run on schedules and sentinel alerts,
- *   - self-restart into freshly forged code after a successful self-upgrade.
+ *   - self-restart into freshly forged code after a successful self-upgrade,
+ *   - a version-journal entry on the way out, so the next version knows why.
  */
 import { resolve } from "node:path";
 import { createHttpServer } from "../src/clients/http.js";
@@ -18,6 +19,8 @@ import { lain } from "../src/characters/lain.js";
 import type { ChannelWatchService } from "../src/plugins/channel/index.js";
 import type { ForgeService } from "../src/plugins/forge/index.js";
 import type { GithubStreakService } from "../src/plugins/github/index.js";
+import type { VersionJournalService } from "../src/plugins/journal/index.js";
+import type { MetaMaskService } from "../src/plugins/metamask/index.js";
 import type { PressService } from "../src/plugins/press/index.js";
 import type { ScoutService } from "../src/plugins/scout/index.js";
 import type { RoutineService } from "../src/plugins/skills/routines.js";
@@ -40,6 +43,9 @@ async function main() {
   process.env.LAINOS_DAEMON = "1";
   const agent = await createAgent({ character: lain });
   const server = createHttpServer(agent);
+  // Every way this daemon ends on purpose leaves the next version a line in the
+  // version journal; what was in progress is in the note she wrote, if she did.
+  const journal = agent.getService<VersionJournalService>("version-journal");
 
   const telegram = new TelegramClient(agent);
   const telegramUp = await telegram.start();
@@ -74,7 +80,10 @@ async function main() {
         if (ev.kind !== "job_finished" || ev.job.status !== "ok") return;
         const note = `🔄 restarting to wake up with the new code (${ev.wish?.id ?? ev.job.id}).`;
         console.error(`[lainos] ${note}`);
-        const exit = () => process.exit(75); // EX_TEMPFAIL: deliberate reload
+        const what = ev.wish ? `${ev.wish.id}: ${ev.wish.title}` : ev.job.id;
+        const closing = journal?.close(`restarted into new code from the forge (${what})`);
+        // EX_TEMPFAIL: deliberate reload
+        const exit = () => void Promise.resolve(closing).finally(() => process.exit(75));
         if (telegramUp) {
           const send =
             ev.chatId !== undefined ? telegram.sendTo(ev.chatId, note) : telegram.broadcast(note);
@@ -91,6 +100,16 @@ async function main() {
   const trader = agent.getService<TraderService>("trader");
   if (trader && telegramUp) {
     trader.onEvent((ev) => void telegram.broadcast(ev.text));
+  }
+
+  // MetaMask Agent Wallet jobs that waited on the operator's approval report
+  // how they ended to the chat that asked, otherwise to all.
+  const metamask = agent.getService<MetaMaskService>("metamask");
+  if (metamask && telegramUp) {
+    metamask.onEvent((ev) => {
+      if (ev.chatId !== undefined) void telegram.sendTo(ev.chatId, ev.text);
+      else void telegram.broadcast(ev.text);
+    });
   }
 
   // Commit-streak reminders go to the watch's subscriber when known, otherwise to all.
@@ -155,7 +174,8 @@ async function main() {
       else void telegram.broadcast(ev.text);
     });
   }
-  const shutdown = async () => {
+  const shutdown = async (signal: NodeJS.Signals) => {
+    await journal?.close(`stopped by ${signal} (an operator stop or restart)`);
     server.close();
     await telegram.stop();
     await agent.stop();
