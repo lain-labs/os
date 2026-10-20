@@ -837,6 +837,16 @@ export class AgentRuntime implements IAgentRuntime {
     return undefined;
   }
 
+  private async mayRun(action: Action, state: State): Promise<boolean> {
+    if (state.availableActions.includes(action.name)) return true;
+    try {
+      return await action.validate(this, state);
+    } catch (err) {
+      log.warn(`action ${action.name} validate failed`, err);
+      return false;
+    }
+  }
+
   private async executeAction(
     action: Action,
     state: State,
@@ -850,7 +860,13 @@ export class AgentRuntime implements IAgentRuntime {
     const started = Date.now();
     let result: ActionResult;
     try {
-      result = await action.handler(this, state, input);
+      // validate() is the gate, not a hint: a tool the model was never offered
+      // (a guessed name, a simile, an injected call) runs only if it passes now.
+      // Re-checking rather than trusting the turn's snapshot keeps a skill
+      // hot-loaded mid-turn callable.
+      result = (await this.mayRun(action, state))
+        ? await action.handler(this, state, input)
+        : { ok: false, text: `Tool ${action.name} is not available here.` };
     } catch (err) {
       log.error(`action ${action.name} threw`, err);
       // The model must see why, or it guesses — and a guess reads as a fact.
