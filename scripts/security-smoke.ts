@@ -12,7 +12,8 @@
  *   3. an operatorOnly tool is offered to and run for the operator only: the
  *      terminal, or the Telegram operator; never a Telegram guest, an HTTP
  *      caller or a background turn, and the shipped shell, skill, forge and
- *      money tools are all marked.
+ *      money tools are all marked;
+ *   4. a Telegram proxy URL is logged without its credentials.
  */
 import { mkdtemp, rm } from "node:fs/promises";
 import { request } from "node:http";
@@ -22,6 +23,7 @@ import { join } from "node:path";
 import { AgentRuntime, FileMemoryStore, type ModelProvider, type ModelRequest } from "../src/index.js";
 import { lain } from "../src/characters/lain.js";
 import { createHttpServer } from "../src/clients/http.js";
+import { redactUrl } from "../src/clients/telegram.js";
 import { chainPlugin } from "../src/plugins/chain/index.js";
 import { forgePlugin } from "../src/plugins/forge/index.js";
 import { metamaskPlugin } from "../src/plugins/metamask/index.js";
@@ -232,6 +234,12 @@ async function listen(runtime: AgentRuntime) {
   const missing = must.filter((n) => !guardedNames.has(n));
   check(`shell, code and money tools are operator-only${missing.length ? ` (missing: ${missing.join(", ")})` : ""}`, !missing.length);
 }
+
+// ------------------------------------------------- 4. proxy credentials
+
+check("a proxy's password never reaches the log", !redactUrl("http://alice:hunter2@10.0.0.1:8080").includes("hunter2"));
+check("…nor its user", !redactUrl("socks5://alice:hunter2@proxy.example:1080").includes("alice"));
+check("a proxy without credentials is shown as is", redactUrl("http://127.0.0.1:10808") === "http://127.0.0.1:10808");
 
 await rm(tmp, { recursive: true, force: true });
 
