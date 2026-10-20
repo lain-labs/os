@@ -1,5 +1,5 @@
 import { createServer, type Server } from "node:http";
-import { handleAcpTool } from "../acp/tools.js";
+import { bearerMatches, handleAcpTool } from "../acp/tools.js";
 import { createLogger } from "../logger.js";
 import {
   CHAT_PROVIDER_CHOICES,
@@ -38,22 +38,59 @@ export interface HttpOptions {
  *   POST /sessions/{id}/recap -> { recap }
  *   POST /chat {roomId,userId,text,task} -> { text, actions, model, provider, task }
  *   POST /acp/tools {tool,arguments} -> report (bearer LAINOS_ACP_API_KEY; see src/acp/tools.ts)
+ *
+ * The bridge drives an agent that has a shell and a wallet, so who may reach it
+ * is decided here, not by the model:
+ *   - a browser request (one carrying an Origin) is refused unless its origin
+ *     is on LAINOS_HTTP_ALLOWED_ORIGINS — any web page the operator opens can
+ *     otherwise POST to localhost. Clients without an Origin (curl, the Godot
+ *     game) are unaffected;
+ *   - bound to loopback, a request whose Host is not a loopback name (or on
+ *     LAINOS_HTTP_ALLOWED_HOSTS) is refused, which defeats DNS rebinding;
+ *   - LAINOS_HTTP_TOKEN, when set, is required as a bearer on every route but
+ *     /health (and /acp/tools, which has its own key). Set it before binding
+ *     anywhere but loopback;
+ *   - a caller's userId is namespaced as `http:<userId>`, so no request can
+ *     pass for the local operator ("user") and reach operator-only tools.
  */
 export function createHttpServer(runtime: IAgentRuntime, opts: HttpOptions = {}): Server {
   const host = opts.host ?? process.env.LAINOS_HTTP_HOST ?? "127.0.0.1";
   const port = Number(opts.port ?? process.env.LAINOS_HTTP_PORT ?? 7777);
+  const token = runtime.getSetting("LAINOS_HTTP_TOKEN")?.trim() ?? "";
+  const origins = new Set(csv(runtime.getSetting("LAINOS_HTTP_ALLOWED_ORIGINS")));
+  const hosts = new Set(csv(runtime.getSetting("LAINOS_HTTP_ALLOWED_HOSTS")).map((h) => h.toLowerCase()));
+  const loopback = isLoopbackName(host);
+  if (!loopback && !token) {
+    log.warn(
+      `HTTP bridge bound to ${host} without LAINOS_HTTP_TOKEN — anyone who can reach this port ` +
+        `can talk to ${runtime.character.name}. Set LAINOS_HTTP_TOKEN.`,
+    );
+  }
 
   const server = createServer(async (req, res) => {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-    res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+    const origin = req.headers.origin;
+    if (origin !== undefined) {
+      if (!origins.has(origin)) return json(res, 403, { error: "origin not allowed" });
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Vary", "Origin");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+      res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+    }
     if (req.method === "OPTIONS") {
       res.writeHead(204).end();
       return;
     }
+    if (loopback && req.headers.host) {
+      const name = hostName(req.headers.host);
+      if (!isLoopbackName(name) && !hosts.has(name)) return json(res, 403, { error: "host not allowed" });
+    }
 
     if (req.method === "GET" && req.url === "/health") {
       return json(res, 200, { ok: true, agent: runtime.character.name });
+    }
+
+    if (token && req.url !== "/acp/tools" && !bearerMatches(req.headers.authorization, token)) {
+      return json(res, 401, { error: "unauthorized" });
     }
 
     if (req.method === "GET" && req.url?.startsWith("/alerts")) {
@@ -195,7 +232,7 @@ export function createHttpServer(runtime: IAgentRuntime, opts: HttpOptions = {})
         }
         const result = await runtime.handleMessage({
           roomId: typeof roomId === "string" ? roomId : "http",
-          userId: typeof userId === "string" ? userId : "anon",
+          userId: `http:${typeof userId === "string" && userId ? userId : "anon"}`,
           text,
           task: declared && isTaskKind(declared) ? declared : undefined,
         });
@@ -225,6 +262,26 @@ export function createHttpServer(runtime: IAgentRuntime, opts: HttpOptions = {})
     log.info(`HTTP bridge for ${runtime.character.name} on http://${host}:${port}`);
   });
   return server;
+}
+
+const LOOPBACK_NAMES = ["localhost", "127.0.0.1", "::1"];
+
+function isLoopbackName(name: string): boolean {
+  return LOOPBACK_NAMES.includes(name.toLowerCase()) || /^127\./.test(name);
+}
+
+/** `localhost:7777` -> `localhost`, `[::1]:7777` -> `::1`. */
+function hostName(header: string): string {
+  const h = header.trim().toLowerCase();
+  if (h.startsWith("[")) return h.slice(1, h.indexOf("]"));
+  return h.split(":")[0];
+}
+
+function csv(raw: string | undefined): string[] {
+  return (raw ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 function readBody(req: import("node:http").IncomingMessage): Promise<string> {
