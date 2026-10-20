@@ -25,6 +25,8 @@ import type { PressService } from "../src/plugins/press/index.js";
 import type { ScoutService } from "../src/plugins/scout/index.js";
 import type { RoutineService } from "../src/plugins/skills/routines.js";
 import { alertLine, type SentinelService } from "../src/plugins/sentinel/index.js";
+import { sendToOperator } from "../src/plugins/telegram/index.js";
+import type { TrendPaperService } from "../src/plugins/trend-paper/index.js";
 import type { TraderService } from "../src/plugins/trader/index.js";
 
 // The daemon must never die because something somewhere threw: a failed watch,
@@ -100,6 +102,16 @@ async function main() {
   const trader = agent.getService<TraderService>("trader");
   if (trader && telegramUp) {
     trader.onEvent((ev) => void telegram.broadcast(ev.text));
+  }
+
+  // Trend paper's fills and daily report are for the operator alone — never broadcast.
+  const trendPaper = agent.getService<TrendPaperService>("trend-paper");
+  if (trendPaper && telegramUp) {
+    trendPaper.onEvent((ev) => {
+      void sendToOperator((key) => agent.getSetting(key), ev.text, { plain: true }).catch((err) => {
+        console.error(`[lainos] trend-paper ${ev.kind} not delivered:`, err);
+      });
+    });
   }
 
   // MetaMask Agent Wallet jobs that waited on the operator's approval report

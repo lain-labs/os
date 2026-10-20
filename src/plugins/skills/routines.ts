@@ -26,6 +26,8 @@ const log = createLogger("plugin:routines");
 
 export type RoutineTrigger =
   | { kind: "every"; ms: number }
+  /** Once an hour, `minute` minutes past it — e.g. just after an hourly candle closes. */
+  | { kind: "hourly"; minute: number }
   | { kind: "daily"; at: string; timeZone?: string }
   | { kind: "event"; source: "sentinel"; watchId?: string };
 
@@ -74,6 +76,17 @@ interface RoutinesFile {
   counter: number;
 }
 
+/**
+ * A plugin's own scheduled work, run here beside the routines under the same
+ * time triggers and only where routines run (the daemon). Registered in code
+ * on every start, so it is never stored.
+ */
+export interface ScheduledJob {
+  name: string;
+  trigger: Exclude<RoutineTrigger, { kind: "event" }>;
+  run: () => Promise<void>;
+}
+
 export interface NewRoutine {
   skill: string;
   params?: Record<string, unknown>;
@@ -111,6 +124,7 @@ export class RoutineService implements Service {
   private busy = false;
   private subscribers = new Set<(event: RoutineEvent) => void>();
   private unsubscribeSentinel?: () => void;
+  private jobs = new Map<string, { job: ScheduledJob; lastRunAt: number }>();
 
   async start(runtime: IAgentRuntime): Promise<void> {
     this.runtime = runtime;
@@ -148,6 +162,15 @@ export class RoutineService implements Service {
     return () => this.subscribers.delete(fn);
   }
 
+  /** Run a plugin's job on a time trigger, in the daemon only; returns the way to cancel it. */
+  schedule(job: ScheduledJob): () => void {
+    if (job.trigger.kind === "hourly" && !validMinute(job.trigger.minute)) {
+      throw new Error(`${job.name}: an hourly minute is 0–59`);
+    }
+    this.jobs.set(job.name, { job, lastRunAt: 0 });
+    return () => this.jobs.delete(job.name);
+  }
+
   async list(): Promise<Routine[]> {
     await this.load();
     return [...this.routines];
@@ -162,6 +185,9 @@ export class RoutineService implements Service {
     this.assertSchedulable(input.skill, input.params ?? {});
     if (input.trigger.kind === "every" && input.trigger.ms < MIN_INTERVAL_MS) {
       throw new Error(`the shortest interval is ${MIN_INTERVAL_MS / 60_000} minutes`);
+    }
+    if (input.trigger.kind === "hourly" && !validMinute(input.trigger.minute)) {
+      throw new Error("an hourly minute is 0–59");
     }
     if (input.trigger.kind === "daily" && !parseClock(input.trigger.at)) {
       throw new Error("a daily time must look like HH:MM (24h, host-local)");
@@ -274,6 +300,15 @@ export class RoutineService implements Service {
           log.warn(`routine ${routine.id} failed`, err);
         }
       }
+      for (const entry of this.jobs.values()) {
+        if (!dueAt(entry.job.trigger, entry.lastRunAt, now)) continue;
+        entry.lastRunAt = now;
+        try {
+          await entry.job.run();
+        } catch (err) {
+          log.warn(`job ${entry.job.name} failed`, err);
+        }
+      }
     } finally {
       this.busy = false;
     }
@@ -356,13 +391,21 @@ export function fingerprintOf(result: Pick<ActionResult, "text" | "data">): stri
 }
 
 export function isDue(routine: Routine, now: number): boolean {
-  const t = routine.trigger;
-  if (t.kind === "every") return (routine.lastRunAt ?? 0) + t.ms <= now;
+  return dueAt(routine.trigger, routine.lastRunAt ?? 0, now);
+}
+
+function dueAt(t: RoutineTrigger, lastRunAt: number, now: number): boolean {
+  if (t.kind === "every") return lastRunAt + t.ms <= now;
+  if (t.kind === "hourly") {
+    // This hour's slot, or the last one when it has not come yet; a slot slept through runs on waking.
+    const hour = Math.floor(now / 3_600_000) * 3_600_000 + t.minute * 60_000;
+    return lastRunAt < (now >= hour ? hour : hour - 3_600_000);
+  }
   if (t.kind === "daily") {
     const slot = todayAt(t.at, now, t.timeZone);
     if (slot === null || now < slot) return false;
     // A desk that slept through the slot skips it instead of reporting at lunch.
-    return (routine.lastRunAt ?? 0) < slot && now - slot < LATE_DAILY_MS;
+    return lastRunAt < slot && now - slot < LATE_DAILY_MS;
   }
   return false;
 }
@@ -382,8 +425,13 @@ export function describeTrigger(t: RoutineTrigger): string {
     const h = t.ms / 3_600_000;
     return h >= 1 && Number.isInteger(h) ? `every ${h}h` : `every ${Math.round(t.ms / 60_000)}m`;
   }
+  if (t.kind === "hourly") return `hourly at :${String(t.minute).padStart(2, "0")}`;
   if (t.kind === "daily") return `daily at ${t.at}${t.timeZone ? ` ${t.timeZone}` : ""}`;
   return `on sentinel alerts${t.watchId ? ` from ${t.watchId}` : ""}`;
+}
+
+function validMinute(minute: number): boolean {
+  return Number.isInteger(minute) && minute >= 0 && minute <= 59;
 }
 
 function parseClock(at: string): { h: number; m: number } | null {

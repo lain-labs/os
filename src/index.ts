@@ -39,6 +39,7 @@ import { traderPlugin } from "./plugins/trader/index.js";
 import { trenchPlugin } from "./plugins/trench/index.js";
 import { stocksPlugin } from "./plugins/stocks/index.js";
 import { backtestPlugin } from "./plugins/backtest/index.js";
+import { trendPaperPlugin } from "./plugins/trend-paper/index.js";
 import { walletsPlugin } from "./plugins/wallets/index.js";
 import { digestPlugin } from "./plugins/digest/index.js";
 import { AgentRuntime } from "./runtime.js";
@@ -165,6 +166,8 @@ export { traderPlugin, TraderService } from "./plugins/trader/index.js";
 export { trenchPlugin, TrenchService } from "./plugins/trench/index.js";
 export { stocksPlugin, StockDeskService } from "./plugins/stocks/index.js";
 export { backtestPlugin } from "./plugins/backtest/index.js";
+export { trendPaperPlugin, TrendPaperService } from "./plugins/trend-paper/index.js";
+export type { TrendPaperEvent } from "./plugins/trend-paper/index.js";
 export type { TraderEvent } from "./plugins/trader/index.js";
 export { crmPlugin, CrmService } from "./plugins/crm/index.js";
 export { walletsPlugin } from "./plugins/wallets/index.js";
@@ -193,6 +196,7 @@ const BUILTIN_PLUGINS: Record<string, Plugin> = {
   trench: trenchPlugin,
   stocks: stocksPlugin,
   backtest: backtestPlugin,
+  "trend-paper": trendPaperPlugin,
   initiative: initiativePlugin,
   journal: journalPlugin,
   presence: presencePlugin,
