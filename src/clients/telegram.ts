@@ -233,6 +233,14 @@ export class TelegramClient {
       log.info("telegram send-only (LAINOS_TELEGRAM_POLL=0) — not polling for updates.");
       return;
     }
+    if (!this.allowed.size && !this.allowedUsers.size) {
+      log.warn(
+        "telegram is open to anyone who finds the bot (TELEGRAM_ALLOWED_CHATS and TELEGRAM_ALLOWED_USERS are empty). " +
+          (this.runtime.getSetting("TELEGRAM_OPERATOR_ID") || this.runtime.getSetting("TELEGRAM_OPERATOR_USERNAME")
+            ? "Strangers can talk and spend model credits, though shell, code and money tools stay with the operator."
+            : "Shell, code and money tools are off in Telegram until TELEGRAM_OPERATOR_ID is set."),
+      );
+    }
     await this.pollLoop();
   }
 
