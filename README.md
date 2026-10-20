@@ -1231,6 +1231,17 @@ POST /chat { roomId, userId, text, task? } -> { text, actions, model, provider, 
 POST /acp/tools { tool, arguments }   -> report (Bearer LAINOS_ACP_API_KEY)
 ```
 
+Who may reach the bridge is decided in code, not by the model. A browser
+request (one with an `Origin` header) is refused unless that origin is listed
+in `LAINOS_HTTP_ALLOWED_ORIGINS`, so a web page you open cannot drive the
+agent through `localhost`. curl and the Godot game send no Origin and are not
+affected. While the bridge is bound to loopback, a request whose `Host` is not
+a loopback name (or listed in `LAINOS_HTTP_ALLOWED_HOSTS`, e.g. behind a
+reverse proxy) is refused, which stops DNS rebinding. Set `LAINOS_HTTP_TOKEN`
+to require `Authorization: Bearer <token>` on every route but `/health`;
+set it before binding anywhere but loopback. `userId` from `/chat` is stored
+as `http:<userId>`: an HTTP caller is never the local operator.
+
 `/acp/tools` serves what Lain sells on the Virtuals ACP marketplace. The local
 `lain-acp-bridge` calls it after a buyer funds a job. Today it has one tool,
 `token_info` (alias `token_research`), with arguments `{ chainId, tokenAddress }`.
@@ -1298,6 +1309,17 @@ scripts/              chat.ts | tui.ts | serve.ts | smoke.ts | tasks-smoke.ts
 `.env` (gitignored). Without a key, the agent is strictly read-only on-chain.
 With a signer configured, set `TELEGRAM_ALLOWED_CHATS` so strangers cannot ask
 the bot to move funds. Never commit secrets.
+
+Tools that run code, touch keys or move money are **operator-only**
+(`operatorOnly` on the action): the shell and workspace files, writing,
+editing, scheduling and installing skills, the forge (wishes it would build),
+sends, buys, sells, liquidity, and the MetaMask wallet. The runtime offers
+them only to the operator and refuses them for anyone else, whatever the
+model decides. The operator is the local TUI/CLI, or on Telegram the sender
+matching `TELEGRAM_OPERATOR_ID` (or `_USERNAME`), and before either is set,
+anyone on `TELEGRAM_ALLOWED_USERS`. Telegram guests, HTTP `/chat` callers and
+background turns (heartbeat, study) can talk and read, but cannot use these
+tools. Set `TELEGRAM_OPERATOR_ID` if you want those tools in Telegram.
 
 The MetaMask Agent Wallet session lives in `~/.metamask`, outside the repo,
 and its keys stay with MetaMask (server wallet) or in that directory (bring

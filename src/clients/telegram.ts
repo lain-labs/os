@@ -213,7 +213,7 @@ export class TelegramClient {
         this.me = (await this.api<TgUser>("getMe", {})) ?? undefined;
       } catch (err) {
         const hint = this.proxyUrl
-          ? `via proxy ${this.proxyUrl}`
+          ? `via proxy ${redactUrl(this.proxyUrl)}`
           : "no proxy — if api.telegram.org is blocked here, set TELEGRAM_PROXY";
         log.warn(
           `telegram getMe failed (${(err as Error).message}); ${hint}; retrying in ${delay / 1000}s`,
@@ -227,11 +227,19 @@ export class TelegramClient {
       `telegram online as @${this.me.username ?? "?"} (${this.knownChats.size} known chat(s)` +
         `${this.allowed.size ? `, chat allowlist: ${this.allowed.size}` : ""}` +
         `${this.allowedUsers.size ? `, users: ${[...this.allowedUsers].join("/")}` : ""}` +
-        `${this.proxyUrl ? `, proxy ${this.proxyUrl}` : ""})`,
+        `${this.proxyUrl ? `, proxy ${redactUrl(this.proxyUrl)}` : ""})`,
     );
     if (!this.polling) {
       log.info("telegram send-only (LAINOS_TELEGRAM_POLL=0) — not polling for updates.");
       return;
+    }
+    if (!this.allowed.size && !this.allowedUsers.size) {
+      log.warn(
+        "telegram is open to anyone who finds the bot (TELEGRAM_ALLOWED_CHATS and TELEGRAM_ALLOWED_USERS are empty). " +
+          (this.runtime.getSetting("TELEGRAM_OPERATOR_ID") || this.runtime.getSetting("TELEGRAM_OPERATOR_USERNAME")
+            ? "Strangers can talk and spend model credits, though shell, code and money tools stay with the operator."
+            : "Shell, code and money tools are off in Telegram until TELEGRAM_OPERATOR_ID is set."),
+      );
     }
     await this.pollLoop();
   }
@@ -887,6 +895,19 @@ export function splitMessage(text: string, max: number): string[] {
   }
   if (rest) out.push(rest);
   return out;
+}
+
+/** A proxy URL fit for a log line: `http://user:pass@host` loses its credentials. */
+export function redactUrl(raw: string): string {
+  try {
+    const url = new URL(raw);
+    if (!url.username && !url.password) return raw;
+    url.username = "***";
+    url.password = "";
+    return url.toString();
+  } catch {
+    return raw.replace(/\/\/[^/@]*@/, "//***@");
+  }
 }
 
 function sleep(ms: number): Promise<void> {

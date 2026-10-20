@@ -146,7 +146,7 @@ async function main() {
   await refusalRuntime.start();
   const refusal = await refusalRuntime.handleMessage({
     roomId: "refusal-smoke",
-    userId: "tester",
+    userId: "user",
     text: "make a new test working tool",
   });
   const autoLearnOk =

@@ -148,6 +148,12 @@ export interface Action {
   examples: ActionExample[];
   /** JSON schema for the action's params, exposed to the model as a tool. */
   parameters?: ToolSchema["input_schema"];
+  /**
+   * Only the operator may run it (see src/operator.ts): a shell, code that
+   * gets loaded, keys, money. Telegram guests, HTTP callers and background
+   * turns are never offered it and are refused if they call it anyway.
+   */
+  operatorOnly?: boolean;
   /** Cheap gate: can this action even run for the current state? */
   validate(runtime: IAgentRuntime, state: State): Promise<boolean>;
   /** Perform the action. `params` come from the model's tool call. */

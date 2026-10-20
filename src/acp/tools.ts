@@ -84,7 +84,7 @@ export async function handleAcpTool(
 }
 
 /** Constant-time comparison of a `Bearer <key>` header, independent of the key's length. */
-function bearerMatches(header: string | undefined, key: string): boolean {
+export function bearerMatches(header: string | undefined, key: string): boolean {
   const m = /^Bearer\s+(.+)$/i.exec(header?.trim() ?? "");
   if (!m) return false;
   const a = createHash("sha256").update(m[1].trim()).digest();

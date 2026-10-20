@@ -25,7 +25,7 @@
     "analyze:transcripts": "tsx scripts/analyze-transcripts.ts",
     "smoke": "tsx scripts/smoke.ts",
     "wired:smoke": "tsx scripts/wired-smoke.ts",
-    "test": "npm run typecheck && npm run keys:smoke && npm run markdown:smoke && npm run tasks:smoke && npm run limits:smoke && npm run press:smoke && npm run content:smoke && npm run content:trends:smoke && npm run crm:smoke && npm run sentinel:smoke && npm run scout:smoke && npm run skills:smoke && npm run wallets:smoke && npm run telegram:smoke && npm run digest:smoke && npm run metamask:smoke && npm run trench:smoke && npm run stocks:smoke && npm run backtest:smoke && npm run acp:smoke && npm run journal:smoke && npm run tui:smoke",
+    "test": "npm run typecheck && npm run keys:smoke && npm run markdown:smoke && npm run tasks:smoke && npm run limits:smoke && npm run press:smoke && npm run content:smoke && npm run content:trends:smoke && npm run crm:smoke && npm run sentinel:smoke && npm run scout:smoke && npm run skills:smoke && npm run wallets:smoke && npm run telegram:smoke && npm run digest:smoke && npm run metamask:smoke && npm run trench:smoke && npm run stocks:smoke && npm run backtest:smoke && npm run acp:smoke && npm run journal:smoke && npm run security:smoke && npm run tui:smoke",
     "dev": "tsx watch scripts/chat.ts",
     "tui:smoke": "FORCE_COLOR=3 tsx scripts/tui-smoke.tsx",
     "keys:smoke": "tsx scripts/keys-smoke.ts",
@@ -51,7 +51,8 @@
     "trench:smoke": "tsx scripts/trench-smoke.ts",
     "stocks:smoke": "tsx scripts/stocks-smoke.ts",
     "backtest:smoke": "tsx scripts/backtest-smoke.ts",
-    "acp:smoke": "tsx scripts/acp-smoke.ts"
+    "acp:smoke": "tsx scripts/acp-smoke.ts",
+    "security:smoke": "tsx scripts/security-smoke.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",

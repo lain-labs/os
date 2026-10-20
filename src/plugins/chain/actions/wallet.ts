@@ -84,6 +84,7 @@ export const tokenBalanceAction: Action = {
 
 export const sendNativeAction: Action = {
   name: "send_native",
+  operatorOnly: true,
   similes: ["transfer_native", "pay"],
   description:
     "Transfer the chain's native currency from the agent's wallet to an address. Requires a configured signer.",
@@ -126,6 +127,7 @@ export const sendNativeAction: Action = {
 
 export const createWalletAction: Action = {
   name: "create_wallet",
+  operatorOnly: true,
   similes: ["new_wallet", "generate_wallet", "make_wallet", "my_address", "wallet_address"],
   description:
     "Create the agent's own wallet on the configured chain, or report the existing one: generates a keypair, stores the private key on the agent's host where nobody else reads it, and returns the address. Use when someone wants to send the agent funds or asks for the agent's address. Never write key-generation scripts instead — this tool is the only way, and the private key is never shown to anyone.",

@@ -495,6 +495,7 @@ function getSkills(runtime: IAgentRuntime): SkillsService {
 
 const createSkillAction: Action = {
   name: "create_skill",
+  operatorOnly: true,
   similes: ["write_skill", "new_skill", "self_extend", "add_tool_now", "hot_skill"],
   description:
     "Write yourself a new tool RIGHT NOW and have it live seconds later, without any restart. " +
@@ -557,6 +558,7 @@ const createSkillAction: Action = {
 
 const editSkillAction: Action = {
   name: "edit_skill",
+  operatorOnly: true,
   similes: ["patch_skill", "change_skill", "modify_skill", "update_skill"],
   description:
     "Change one of your self-written skills in place when the operator changes what it should do (\"ignore trades below $500\", " +
@@ -677,6 +679,7 @@ function clip(text: string, max: number): string {
 
 const reloadSkillsAction: Action = {
   name: "reload_skills",
+  operatorOnly: true,
   similes: ["refresh_skills", "resync_skills"],
   description:
     "Re-scan the skills directory and hot-load changes. Rarely needed (the directory is watched); use after the forge edits skills or when a load failed.",
@@ -732,6 +735,7 @@ const readSkillAction: Action = {
 
 const revertSkillAction: Action = {
   name: "revert_skill",
+  operatorOnly: true,
   similes: ["undo_skill", "rollback_skill", "restore_skill"],
   description: "Put the previous version of a self-written skill back live (undo the last change). Repeat to go further back.",
   parameters: {
@@ -759,6 +763,7 @@ const revertSkillAction: Action = {
 
 const removeSkillAction: Action = {
   name: "remove_skill",
+  operatorOnly: true,
   similes: ["delete_skill", "drop_skill", "forget_skill"],
   description: "Remove a self-written skill from the live tools. Its last version stays in history; routines using it stop working.",
   parameters: {

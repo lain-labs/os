@@ -619,6 +619,7 @@ const metamaskStatusAction: Action = {
 
 const metamaskLoginAction: Action = {
   name: "metamask_login",
+  operatorOnly: true,
   similes: ["mm_login", "metamask_sign_in", "agent_wallet_login"],
   description:
     "Sign in to MetaMask Agent Wallet. In the TUI, tell the operator to type `/metamask <token>` instead: it is masked and never reaches you or the history. Otherwise, in two calls. Without a token: returns the dashboard link — the operator opens it, signs in with Google or email, clicks Authorize and copies the CLI token. With token: completes sign-in with that token (format cliToken:cliRefreshToken) and reports the wallet. Google, email and MetaMask Mobile each have a DIFFERENT wallet address — tell the operator to keep using the same method. MetaMask Mobile QR sign-in needs a terminal: the operator runs `mm login qr` on the host.",
@@ -674,6 +675,7 @@ const metamaskLoginAction: Action = {
 
 const metamaskSetupAction: Action = {
   name: "metamask_setup",
+  operatorOnly: true,
   similes: ["mm_init", "metamask_init", "agent_wallet_setup", "metamask_trading_mode"],
   description:
     "Set up the MetaMask Agent Wallet after sign-in (`mm init`): wallet mode server-wallet (recommended — keys held by MetaMask in a TEE, an agent wallet of its own) or byok (an existing seed phrase; only when the host has MM_MNEMONIC set), and for a server wallet the trading mode: guard (recommended — network/recipient allowlists, a rolling 24h outflow limit, and approval for anything outside the policy) or beast (only threat scanning). On an already set-up server wallet, changing trading_mode switches it (the operator must approve the switch).",
@@ -767,6 +769,7 @@ const metamaskBalanceAction: Action = {
 
 const metamaskSendAction: Action = {
   name: "metamask_send",
+  operatorOnly: true,
   similes: ["mm_transfer", "metamask_transfer", "agent_wallet_send"],
   description:
     `Send native currency or an ERC-20 from the MetaMask Agent Wallet to an address on one EVM chain (\`mm transfer\`). MetaMask simulates and threat-scans it; outside the wallet's policy it waits for the operator's approval, and I report the outcome when it lands. ERC-20 sends go gasless when the wallet has no gas. ${SEPARATE}`,
@@ -803,6 +806,7 @@ const metamaskSendAction: Action = {
 
 const metamaskSwapAction: Action = {
   name: "metamask_swap",
+  operatorOnly: true,
   similes: ["mm_swap", "metamask_bridge", "agent_wallet_swap", "metamask_trade"],
   description:
     `Swap or bridge tokens with the MetaMask Agent Wallet. Two steps: give from/to/amount/chain to get the best quote (with its quote_id, output, fees and route); then call again with only quote_id to execute that quote. When the operator already asked for the swap outright, execute the quote in the same turn. Set to_chain for a cross-chain bridge. ${SEPARATE}`,
@@ -880,6 +884,7 @@ const metamaskRequestsAction: Action = {
 
 const metamaskCliAction: Action = {
   name: "metamask",
+  operatorOnly: true,
   similes: ["mm", "mm_cli", "metamask_cli", "agent_wallet"],
   description:
     "Run any MetaMask Agent Wallet CLI command (`mm …`, JSON output) for what the dedicated metamask_* tools don't cover. Pass the arguments after `mm`. Surface: " +

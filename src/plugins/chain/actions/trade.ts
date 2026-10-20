@@ -68,6 +68,7 @@ export const quoteTokenBuyAction: Action = {
 
 export const buyTokenAction: Action = {
   name: "buy_token",
+  operatorOnly: true,
   similes: ["swap_buy", "buy", "purchase_token", "swap_exact_native_for_tokens"],
   description:
     "Buy an ERC20 on the configured DEX with native currency from the agent's wallet when the user gives an exact amountNative. If the user asks to buy without specifying an amount or wants the agent to decide, use speculate_token instead. Requires live wrapped-native pair reserves, slippage protection, and a configured signer. In paper mode the buy is simulated from the paper balance at the live quote; nothing is sent.",
@@ -142,6 +143,7 @@ export const buyTokenAction: Action = {
 
 export const sellTokenAction: Action = {
   name: "sell_token",
+  operatorOnly: true,
   similes: ["swap_sell", "sell", "exit_position", "take_profit", "close_position"],
   description:
     "Sell an ERC20 back into the chain's native currency on the configured DEX from the agent's wallet. amountToken may be a number or 'all' (full wallet balance). Quotes live reserves first, refuses above the impact limit, executes with slippage protection, and records the trade (with realised PnL against the journal's cost basis). In paper mode it sells the paper position at the live quote; nothing is sent.",

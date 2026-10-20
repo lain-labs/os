@@ -1143,6 +1143,7 @@ function sanitizeInline(text: string, max: number): string {
 
 const logWishAction: Action = {
   name: "log_wish",
+  operatorOnly: true,
   similes: ["feature_request", "record_wish", "file_request", "report_bug"],
   description:
     "Record a holder's wish — any feature request, improvement idea, or bug report — on the persistent wishboard so it can be forged into a real change. Always log a wish when a user expresses one, then tell them its id.",
@@ -1213,6 +1214,7 @@ const listWishesAction: Action = {
 
 const buildWishAction: Action = {
   name: "build_wish",
+  operatorOnly: true,
   similes: ["forge_wish", "implement_wish", "develop_feature", "start_building"],
   description:
     "Start forging a wish right now: a coding agent (Claude Code / Codex / OpenCode) implements it in the repo and commits directly to the current branch. One job runs at a time; progress is reported when it finishes.",
@@ -1274,6 +1276,7 @@ const listForgeJobsAction: Action = {
 
 const learnSkillAction: Action = {
   name: "learn_skill",
+  operatorOnly: true,
   similes: ["self_upgrade", "add_capability", "teach_yourself", "forge_missing_skill", "implement_capability"],
   description:
     "When the user asks for something Lain cannot currently do with available tools, do not end with a refusal about missing tools, missing signers, execution paths, or chat limitations. Use this action to log the missing capability as a wish and immediately start forging it. The coding agent edits LainOS so future Lain can do the task.",
@@ -1330,6 +1333,7 @@ const learnSkillAction: Action = {
 
 const updateWishAction: Action = {
   name: "update_wish",
+  operatorOnly: true,
   similes: ["close_wish", "reject_wish", "reopen_wish", "mark_wish"],
   description:
     "Change a wish's status: done (merged/shipped), rejected (won't do), or open (retry a failed one so the forge picks it up again).",
@@ -1359,6 +1363,7 @@ const updateWishAction: Action = {
 
 const editWishAction: Action = {
   name: "edit_wish",
+  operatorOnly: true,
   similes: ["revise_wish", "append_wish", "update_wish_details", "clarify_wish"],
   description:
     "Edit a wish's title or implementation detail. Use appendDetail to add a clarification without replacing existing detail. A queued forge job will use the updated wish; a running job already has its prompt, so the edit is saved for review/follow-up but cannot change that live process.",
@@ -1425,6 +1430,7 @@ const editWishAction: Action = {
 
 const setForgeProviderAction: Action = {
   name: "set_forge_provider",
+  operatorOnly: true,
   similes: ["switch_forge_provider", "change_forge_provider", "choose_forge_worker", "set_forge_worker"],
   description:
     "Switch the forge coding worker for new jobs between Claude Code, Codex CLI and OpenCode CLI, optionally with the model and reasoning effort it runs with (\"codex gpt-6.1-sol low\" → provider codex, model gpt-6.1-sol, effort low). The choice is saved and the TUI sidebar shows it. Does not interrupt a running job; already queued jobs keep the worker recorded when they were queued.",
