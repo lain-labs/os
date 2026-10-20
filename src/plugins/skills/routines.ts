@@ -477,6 +477,7 @@ function describeRoutine(r: Routine): string {
 
 export const scheduleSkillAction: Action = {
   name: "schedule_skill",
+  operatorOnly: true,
   similes: ["run_skill_every", "automate_skill", "routine", "schedule_tool", "trigger_skill"],
   description:
     "Make one of your self-written skills run on its own: on an interval (`every`: '30m', '6h', '1d'), daily at a host-local time (`at`: '09:00'), " +
@@ -604,6 +605,7 @@ export const listRoutinesAction: Action = {
 
 export const runRoutineAction: Action = {
   name: "run_routine",
+  operatorOnly: true,
   similes: ["run_now", "trigger_routine"],
   description: "Run a routine right now and return its result (does not wait for its schedule).",
   parameters: {
@@ -627,6 +629,7 @@ export const runRoutineAction: Action = {
 
 export const stopRoutineAction: Action = {
   name: "stop_routine",
+  operatorOnly: true,
   similes: ["unschedule_skill", "remove_routine", "cancel_routine"],
   description: "Stop and delete a routine by id. The skill itself stays.",
   parameters: {

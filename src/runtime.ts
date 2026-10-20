@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { createLogger } from "./logger.js";
+import { isOperator } from "./operator.js";
 import { clientOfRoom, type SessionStore } from "./memory/sessions.js";
 import { TASKS, TaskKind, classifyTask } from "./models/tasks.js";
 import {
@@ -246,11 +247,7 @@ export class AgentRuntime implements IAgentRuntime {
       }),
     );
     for (const a of this.actions) {
-      try {
-        if (await a.validate(this, partialState)) availableActions.push(a.name);
-      } catch (err) {
-        log.warn(`action ${a.name} validate failed`, err);
-      }
+      if (await this.permits(a, partialState)) availableActions.push(a.name);
     }
 
     return partialState;
@@ -839,6 +836,12 @@ export class AgentRuntime implements IAgentRuntime {
 
   private async mayRun(action: Action, state: State): Promise<boolean> {
     if (state.availableActions.includes(action.name)) return true;
+    return this.permits(action, state);
+  }
+
+  /** May this sender run the action at all, and does its own gate pass? */
+  private async permits(action: Action, state: State): Promise<boolean> {
+    if (action.operatorOnly && !isOperator(state, this.getSetting("TELEGRAM_ALLOWED_USERS"))) return false;
     try {
       return await action.validate(this, state);
     } catch (err) {

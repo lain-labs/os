@@ -72,6 +72,7 @@ export const quoteLiquidityAction: Action = {
 
 export const addLiquidityAction: Action = {
   name: "add_liquidity",
+  operatorOnly: true,
   similes: ["mint_lp", "add_lp", "dex_add_liquidity"],
   description:
     "Add liquidity to an existing pool on the configured DEX from the agent wallet. Supports native-token and token-token pairs. Re-quotes live reserves, computes balanced amounts/refunds, checks pool share, requires explicit confirmation for large native spends or token-token adds, approves ERC20s only for needed amounts, submits with deadline/slippage protection, verifies LP balance increase, and journals the action.",

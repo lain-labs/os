@@ -1310,6 +1310,17 @@ scripts/              chat.ts | tui.ts | serve.ts | smoke.ts | tasks-smoke.ts
 With a signer configured, set `TELEGRAM_ALLOWED_CHATS` so strangers cannot ask
 the bot to move funds. Never commit secrets.
 
+Tools that run code, touch keys or move money are **operator-only**
+(`operatorOnly` on the action): the shell and workspace files, writing,
+editing, scheduling and installing skills, the forge (wishes it would build),
+sends, buys, sells, liquidity, and the MetaMask wallet. The runtime offers
+them only to the operator and refuses them for anyone else, whatever the
+model decides. The operator is the local TUI/CLI, or on Telegram the sender
+matching `TELEGRAM_OPERATOR_ID` (or `_USERNAME`), and before either is set,
+anyone on `TELEGRAM_ALLOWED_USERS`. Telegram guests, HTTP `/chat` callers and
+background turns (heartbeat, study) can talk and read, but cannot use these
+tools. Set `TELEGRAM_OPERATOR_ID` if you want those tools in Telegram.
+
 The MetaMask Agent Wallet session lives in `~/.metamask`, outside the repo,
 and its keys stay with MetaMask (server wallet) or in that directory (bring
 your own). A CLI token pasted into chat stays in the chat history and memory

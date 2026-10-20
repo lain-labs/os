@@ -9,6 +9,10 @@
  *      allowed one gets its own origin back (never `*`), a rebinding Host is
  *      refused, LAINOS_HTTP_TOKEN is required when set, and a caller's userId
  *      can never pass for the local operator;
+ *   3. an operatorOnly tool is offered to and run for the operator only: the
+ *      terminal, or the Telegram operator; never a Telegram guest, an HTTP
+ *      caller or a background turn, and the shipped shell, skill, forge and
+ *      money tools are all marked.
  */
 import { mkdtemp, rm } from "node:fs/promises";
 import { request } from "node:http";
@@ -18,7 +22,13 @@ import { join } from "node:path";
 import { AgentRuntime, FileMemoryStore, type ModelProvider, type ModelRequest } from "../src/index.js";
 import { lain } from "../src/characters/lain.js";
 import { createHttpServer } from "../src/clients/http.js";
-import type { Action } from "../src/types.js";
+import { chainPlugin } from "../src/plugins/chain/index.js";
+import { forgePlugin } from "../src/plugins/forge/index.js";
+import { metamaskPlugin } from "../src/plugins/metamask/index.js";
+import { skillsPlugin } from "../src/plugins/skills/index.js";
+import { systemPlugin } from "../src/plugins/system/index.js";
+import type { TelegramSender } from "../src/plugins/telegram/identity.js";
+import type { Action, Plugin } from "../src/types.js";
 
 const results: [string, boolean][] = [];
 const check = (name: string, pass: boolean) => results.push([name, pass]);
@@ -171,6 +181,56 @@ async function listen(runtime: AgentRuntime) {
   check("…a wrong one is refused", (await call(port, "GET", "/routines", { Authorization: "Bearer nope" })).status === 401);
   check("…the right one gets in", (await call(port, "GET", "/routines", { Authorization: "Bearer s3cret" })).status === 200);
   await new Promise<void>((r) => server.close(() => r()));
+}
+
+// ------------------------------------------------------ 3. operator-only tools
+
+{
+  const guarded = probe("guarded_probe", () => true);
+  (guarded as Action).operatorOnly = true;
+  let offered: string[] = [];
+  const model: ModelProvider = {
+    name: "op-stub",
+    modelFor: () => "op-stub",
+    async generate(request: ModelRequest) {
+      const last = request.messages.at(-1)?.content ?? "";
+      if (last.startsWith("Tool results")) return { text: "done", toolCalls: [], model: "op-stub" };
+      offered = (request.tools ?? []).map((t) => t.name);
+      return { text: "", toolCalls: [{ name: "guarded_probe", input: {} }], model: "op-stub" };
+    },
+  };
+  const rt = runtimeWith(join(tmp, "operator"), model, [guarded], { TELEGRAM_OPERATOR_ID: "42" });
+  const tg = (id: number, role: TelegramSender["role"]): Record<string, unknown> => ({
+    telegram: { id, role, operatorKnown: true } satisfies TelegramSender,
+  });
+  const turn = async (userId: string, metadata?: Record<string, unknown>) => {
+    const before = guarded.ran;
+    await rt.handleMessage({ roomId: `op-${userId}`, userId, text: "do it", metadata });
+    return { ran: guarded.ran > before, offered: offered.includes("guarded_probe") };
+  };
+
+  const local = await turn("user");
+  check("the terminal operator is offered and runs it", local.ran && local.offered);
+  const op = await turn("tg:42", tg(42, "operator"));
+  check("the Telegram operator runs it", op.ran && op.offered);
+  const guest = await turn("tg:7", tg(7, "guest"));
+  check("a Telegram guest is neither offered it nor runs it", !guest.ran && !guest.offered);
+  const stranger = await turn("tg:8", tg(8, "unknown"));
+  check("…nor does an unknown sender", !stranger.ran);
+  check("…nor an HTTP caller posing as the operator", !(await turn("http:user")).ran);
+  check("…nor a background turn", !(await turn("heartbeat")).ran && !(await turn("study")).ran);
+}
+
+{
+  const marked = (plugins: Plugin[]) =>
+    new Set(plugins.flatMap((p) => p.actions ?? []).filter((a) => a.operatorOnly).map((a) => a.name));
+  const guardedNames = marked([systemPlugin, skillsPlugin, forgePlugin, chainPlugin, metamaskPlugin]);
+  const must = [
+    "run_shell", "write_file", "create_skill", "edit_skill", "learn_skill", "log_wish",
+    "send_native", "buy_token", "sell_token", "metamask_send", "metamask",
+  ];
+  const missing = must.filter((n) => !guardedNames.has(n));
+  check(`shell, code and money tools are operator-only${missing.length ? ` (missing: ${missing.join(", ")})` : ""}`, !missing.length);
 }
 
 await rm(tmp, { recursive: true, force: true });
