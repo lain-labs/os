@@ -16,7 +16,8 @@
  *   9. offer_choices validates and renders; networks resolve by loose names;
  *  10. token holders are rebuilt from Transfer logs (walking back only until the
  *      supply is minted, then resuming from the cursor) and appended to a watch:
- *      nobody is removed, exclusions hold, the block cursor is untouched.
+ *      nobody is removed, exclusions hold, the block cursor is untouched;
+ *  11. an explorer buy is recognised whether the router is verified or not.
  *
  * Run: npm run wallets:smoke
  */
@@ -24,6 +25,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Address } from "viem";
+import { isSwapExactEthForTokens } from "../src/plugins/chain/explorer.js";
 import { findNetwork, type NetworkProfile } from "../src/plugins/chain/networks.js";
 import { SentinelService, type Alert } from "../src/plugins/sentinel/index.js";
 import { parseChoices, renderChoices } from "../src/plugins/system/choices.js";
@@ -285,6 +287,12 @@ check("one option is not a choice", typeof parseChoices({ question: "?", options
 check("networks resolve by loose name", (await findNetwork(runtime, "Robinhood mainnet"))?.chainId === 4663);
 check("a test name finds the testnet", (await findNetwork(runtime, "robinhood testnet"))?.chainId === 46630);
 check("networks resolve by chain id", (await findNetwork(runtime, "49406"))?.name === "cyberia");
+// Blockscout decodes `method` for a verified router and leaves the selector for an unverified one.
+const swapInput = `0x7ff36ab5${"00".repeat(128)}`;
+check("explorer: a verified router's buy is a buy", isSwapExactEthForTokens({ method: "swapExactETHForTokens", raw_input: swapInput }));
+check("explorer: an unverified router's buy is a buy", isSwapExactEthForTokens({ method: "0x7ff36ab5", raw_input: swapInput }));
+check("explorer: a buy without raw_input is still a buy", isSwapExactEthForTokens({ method: "swapExactETHForTokens" }));
+check("explorer: another router call is not", !isSwapExactEthForTokens({ method: "swapETHForExactTokens", raw_input: `0xfb3bdb41${"00".repeat(128)}` }));
 
 // ---------------------------------------------------------------- 10. token holders
 

@@ -14,6 +14,7 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { loadChainConfig, loadChainTokens, loadDexConfig } from "../src/plugins/chain/index.js";
+import { isSwapExactEthForTokens } from "../src/plugins/chain/explorer.js";
 
 type JournalFile = {
   trades?: unknown[];
@@ -40,6 +41,7 @@ type ExplorerTransaction = {
   value?: string;
   fee?: { value?: string } | string;
   method?: string | null;
+  raw_input?: string;
   status?: string;
 };
 
@@ -195,7 +197,7 @@ async function reconstructedBasis(
     if (!tx || tx.status !== "ok") continue;
     if (!sameAddress(tx.from?.hash ?? "", address)) continue;
     if (!sameAddress(tx.to?.hash ?? "", dexRouter)) continue;
-    if ((tx.method ?? "").toLowerCase() !== "0x7ff36ab5") continue; // swapExactETHForTokens
+    if (!isSwapExactEthForTokens(tx)) continue;
 
     const costWei = BigInt(tx.value ?? "0");
     if (costWei <= 0n) continue;
