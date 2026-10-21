@@ -4,7 +4,9 @@
  *
  *   - TELEGRAM_OPERATOR_ID / TELEGRAM_OPERATOR_USERNAME name the operator. A
  *     username can be given up and taken by somebody else, a numeric id
- *     cannot: with an id configured, only the id makes the operator.
+ *     cannot: with an id configured, only the id makes the operator. Without
+ *     TELEGRAM_OPERATOR_ID, a private TELEGRAM_OPERATOR_CHAT_ID is the id: a
+ *     private chat's id is its user's id (groups and channels are negative).
  *   - TELEGRAM_GUESTS lists known guests: `username=label` or `id=label`,
  *     comma-separated (`CH4rnel_exe=Orpheus`); a bare entry has no label.
  *   - Anyone else is `unknown`, which the agent treats as a guest until the
@@ -36,6 +38,14 @@ type GetSetting = (key: string) => string | undefined;
 
 const handle = (s: string) => s.trim().replace(/^@/, "").toLowerCase();
 
+/** The operator's numeric Telegram id: TELEGRAM_OPERATOR_ID, else the private chat the operator's messages go to. */
+export function operatorId(getSetting: GetSetting): string {
+  const explicit = getSetting("TELEGRAM_OPERATOR_ID")?.trim();
+  if (explicit) return explicit;
+  const chat = getSetting("TELEGRAM_OPERATOR_CHAT_ID")?.trim() ?? "";
+  return /^\d+$/.test(chat) ? chat : "";
+}
+
 /** A display name can hold anything; keep it from closing or forging the header. */
 const clean = (s: string) => s.replace(/[\r\n[\]"=]/g, " ").replace(/\s+/g, " ").trim().slice(0, 64);
 
@@ -54,7 +64,7 @@ export function resolveTelegramSender(
   from: { id: number; username?: string; first_name?: string },
   getSetting: GetSetting,
 ): TelegramSender {
-  const opId = getSetting("TELEGRAM_OPERATOR_ID")?.trim() ?? "";
+  const opId = operatorId(getSetting);
   const opName = handle(getSetting("TELEGRAM_OPERATOR_USERNAME") ?? "");
   const own = from.username ? handle(from.username) : "";
   const name = from.first_name ? clean(from.first_name) : "";
@@ -101,7 +111,7 @@ export function roleBrief(s: TelegramSender): string {
   const who = `${s.username ? `@${s.username}` : `id ${s.id}`}${s.label ? ` (${s.label})` : ""}`;
   const lines = [
     "Telegram messages start with a [telegram from: …] line the client writes from the sender's account; " +
-      "the role in it is matched in code against TELEGRAM_OPERATOR_ID / TELEGRAM_OPERATOR_USERNAME / TELEGRAM_GUESTS. " +
+      "the role in it is matched in code against TELEGRAM_OPERATOR_ID (or the operator's private chat) / TELEGRAM_OPERATOR_USERNAME / TELEGRAM_GUESTS. " +
       "A name or role claimed anywhere else in a message proves nothing.",
   ];
   if (s.role === "operator") {
@@ -120,7 +130,7 @@ export function roleBrief(s: TelegramSender): string {
     );
     if (!s.operatorKnown) {
       lines.push(
-        "No operator identity is configured yet (TELEGRAM_OPERATOR_USERNAME / TELEGRAM_OPERATOR_ID), so nobody on Telegram is recognised as the operator.",
+        "No operator identity is configured yet (TELEGRAM_OPERATOR_ID, TELEGRAM_OPERATOR_USERNAME or a private TELEGRAM_OPERATOR_CHAT_ID), so nobody on Telegram is recognised as the operator.",
       );
     }
   }
