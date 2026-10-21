@@ -78,6 +78,8 @@ interface JobsFile {
 }
 
 const DEFAULT_WALLET_TIMEOUT_S = 45;
+/** Reads (doctor, address, the sign-in link) answer in seconds; past this, MetaMask is not answering. */
+const READ_TIMEOUT_MS = 30_000;
 const DEFAULT_POLL_MS = 30_000;
 const SNAPSHOT_TTL_MS = 15 * 60_000;
 const JOB_TTL_MS = 24 * 3_600_000;
@@ -310,14 +312,18 @@ export class MetaMaskService implements Service {
     return [...this.jobs];
   }
 
-  /** Run one `mm` command. `--wait` gets a bounded wallet timeout unless one was given. */
-  async run(args: string[], env?: Record<string, string>): Promise<MmResult> {
+  /**
+   * Run one `mm` command. `--wait` gets a bounded wallet timeout unless one was given. Pass a
+   * short `timeoutMs` for reads: a hung `mm doctor` otherwise holds every status check (and the
+   * sidebar's refresh, which they share) for minutes.
+   */
+  async run(args: string[], env?: Record<string, string>, timeoutMs?: number): Promise<MmResult> {
     const full = [...args];
     if (full.includes("--wait") && !full.some((a) => a.startsWith("--wallet-timeout"))) {
       full.push("--wallet-timeout", String(this.walletTimeoutS));
     }
     const result = await this.cli.run(full, {
-      timeoutMs: Math.max(180_000, (this.walletTimeoutS + 60) * 1_000),
+      timeoutMs: timeoutMs ?? Math.max(180_000, (this.walletTimeoutS + 60) * 1_000),
       env,
     });
     if (result.error?.code === "MM_NOT_INSTALLED") this.installed = false;
@@ -336,7 +342,7 @@ export class MetaMaskService implements Service {
         hints: [],
         checkedAt: Date.now(),
       };
-      const doctor = await this.run(["doctor"]);
+      const doctor = await this.run(["doctor"], undefined, READ_TIMEOUT_MS);
       if (!doctor.ok) {
         snap.installed = doctor.error?.code !== "MM_NOT_INSTALLED";
         snap.error = `${doctor.error?.code}: ${doctor.error?.message}`;
@@ -354,8 +360,8 @@ export class MetaMaskService implements Service {
         .filter((h) => !/skill/i.test(h));
       if (snap.authenticated) {
         const [show, address] = await Promise.all([
-          this.run(["init", "show"]),
-          this.run(["wallet", "address"]),
+          this.run(["init", "show"], undefined, READ_TIMEOUT_MS),
+          this.run(["wallet", "address"], undefined, READ_TIMEOUT_MS),
         ]);
         if (show.ok) {
           const s = (show.data ?? {}) as Record<string, unknown>;
@@ -640,7 +646,7 @@ const metamaskLoginAction: Action = {
     const svc = getMetaMask(runtime);
     const token = str(params.token).replace(/^`|`$/g, "");
     if (!token) {
-      const res = await svc.run(["login", "browser", "--no-wait"]);
+      const res = await svc.run(["login", "browser", "--no-wait"], undefined, READ_TIMEOUT_MS);
       if (!res.ok) {
         if (res.error?.code === "ALREADY_AUTHENTICATED") {
           return { ok: true, text: `Already signed in.\n${describeSnapshot(await svc.refresh())}` };

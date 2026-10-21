@@ -4,9 +4,10 @@
  * Every command runs with `--json` and answers with one envelope — `{ ok:
  * true, data, hint? }` on stdout, or `{ ok: false, error: { code, message,
  * hint } }` on stderr — optionally preceded by `{ _notice: … }` documents (an
- * MFA pause announces itself that way). Documents are pretty-printed and
- * simply concatenated, so the streams are split by brace depth rather than by
- * line, and both are read.
+ * MFA pause announces itself that way). Once a notice went out, the result
+ * comes as `{ _summary: data, _hint? }` on stdout or `{ _error: error }` on
+ * stderr instead. Documents are pretty-printed and simply concatenated, so the
+ * streams are split by brace depth rather than by line, and both are read.
  *
  * The package is not a dependency of LainOS: its license forbids
  * redistribution, so the operator installs it (`npm install -g
@@ -100,6 +101,8 @@ export function parseEnvelope(stdout: string, stderr: string, exitCode: number |
     const rec = doc as Record<string, unknown>;
     if ("_notice" in rec) notices.push(rec._notice);
     else if (typeof rec.ok === "boolean") envelope = rec as typeof envelope;
+    else if ("_summary" in rec) envelope = { ok: true, data: rec._summary, hint: rec._hint };
+    else if (rec._error && typeof rec._error === "object") envelope = { ok: false, error: rec._error as Partial<MmError> };
   }
   if (envelope) {
     if (envelope.ok) {

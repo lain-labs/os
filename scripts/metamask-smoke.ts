@@ -70,6 +70,19 @@ const env4 = parseEnvelope(
 check("failures arrive on stderr, past bracketed log lines", !env4.ok && env4.error?.code === "AUTH_FAILED");
 const listing = parseEnvelope(JSON.stringify({ ok: true, data: { requests: [{ pollingId: "job-someone-else", status: "AWAITING_MFA" }] } }), "", 0);
 check("a listing of jobs is not a job this run submitted", pollingIds(listing).length === 0);
+// Once a notice went out, the CLI ends with {_summary} or {_error} rather than {ok}.
+const approved = parseEnvelope(
+  `${JSON.stringify(notice, null, 2)}\n${JSON.stringify({ _summary: { status: "CONFIRMED", txHash: "0xfeed" }, _hint: "done" }, null, 2)}\n`,
+  "",
+  0,
+);
+check("a send approved while the CLI waited is a success", approved.ok && (approved.data as { txHash?: string })?.txHash === "0xfeed" && approved.notices.length === 1);
+const held = parseEnvelope(
+  `${JSON.stringify(notice, null, 2)}\n`,
+  `[progress] Waiting for approval...\n${JSON.stringify({ _error: { code: "JOB_TIMEOUT", message: "Timed out waiting for wallet job." } }, null, 2)}\n`,
+  1,
+);
+check("a send still held for approval keeps its error code", !held.ok && held.error?.code === "JOB_TIMEOUT" && pollingIds(held).includes("job-abc123"));
 const env3 = parseEnvelope("", "node: something broke\n", 1);
 check("no envelope: stderr is the message", !env3.ok && env3.error?.code === "MM_NO_RESULT" && env3.error.message.includes("something broke"));
 
