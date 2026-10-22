@@ -8,9 +8,9 @@
 import { join } from "node:path";
 import { mkdir, writeFile } from "node:fs/promises";
 import { createLogger } from "../../logger.js";
-import type { Action, IAgentRuntime, Plugin, Provider } from "../../types.js";
-import { INTERVALS, isInterval, loadSeries, normalizePair, type Interval, type Series } from "./candles.js";
-import { dexMarketFromPool, knownDexMarket, loadDexSeries, type DexMarket } from "./dex.js";
+import type { Action, IAgentRuntime, Plugin } from "../../types.js";
+import { INTERVALS, isInterval, normalizePair, type Interval } from "./candles.js";
+import { dexMarketFromPool, knownDexMarket, type DexMarket } from "./dex.js";
 import { ruleHelp } from "./rules.js";
 import {
   DEFAULT_COSTS,
@@ -22,12 +22,9 @@ import {
   type StrategyInput,
   type StrategyResult,
 } from "./engine.js";
-import { LiveStrategyService, type HistoryRequest } from "./live.js";
 
 export { runBacktest, expandStrategies, PRESETS } from "./engine.js";
 export type { BacktestResult, StrategyInput, StrategySpec } from "./engine.js";
-export { LiveStrategyService } from "./live.js";
-export type { LiveDesk, LiveRun } from "./live.js";
 
 const log = createLogger("plugin:backtest");
 
@@ -129,16 +126,6 @@ export async function backtest(runtime: IAgentRuntime, req: BacktestRequest, onP
     const saved = await save(result, dataDir);
     log.info(`backtest ${result.pair} ${result.interval}: ${result.results.length} strateg${result.results.length === 1 ? "y" : "ies"}, ${result.bars} bars`);
     return report(result, saved);
-  });
-}
-
-/** A live run's closed bars, read where its backtest read them. */
-function liveHistory(req: HistoryRequest, runtime: IAgentRuntime): Promise<Series> {
-  const { dataDir, proxy, rpcUrls } = marketSettings(runtime);
-  return serial(async () => {
-    const dex = await historySource({ pair: req.pair, source: req.source, pool: req.pool }, proxy, rpcUrls);
-    const span = { interval: req.interval, from: req.from, to: req.to, dataDir, proxy };
-    return dex ? loadDexSeries({ ...span, market: dex, rpcUrls }) : loadSeries({ ...span, pair: req.pair });
   });
 }
 
@@ -264,7 +251,7 @@ const USAGE =
   `  intervals: ${Object.keys(INTERVALS).join(" ")} · default: BTC, 5 years, 1d, on-chain, every preset\n` +
   "  your own rules: ask Lain — \"generate five bitcoin strategies and test them on ten years\"\n" +
   "  /backtest presets — what each preset does\n" +
-  "  live on paper: /backtest live <preset> [btc|eth] [interval] [dex|cex] [$1000] · /backtest live (status) · /backtest stop <id|all>";
+  "  on paper from now on: ask Lain to give a strategy to a market of her paper desk";
 
 /** /backtest's words → a request; shared shape with the tool. */
 export function parseBacktestArgs(args: string[]): BacktestRequest | string {
@@ -297,37 +284,9 @@ export async function backtestCommand(runtime: IAgentRuntime, args: string[], on
   const first = args[0]?.toLowerCase();
   if (first === "help") return `${USAGE}\n\nrule functions: ${ruleHelp()}`;
   if (first === "presets" || first === "rules") return `presets (periods count bars):\n${presetList()}\n\nrule functions: ${ruleHelp()}`;
-  if (first === "live") return liveCommand(runtime, args.slice(1));
-  if (first === "stop") return args[1] ? getLive(runtime).end(args[1]) : "usage: /backtest stop <id|all>";
   const req = parseBacktestArgs(args);
   if (typeof req === "string") return req;
   return backtest(runtime, req, onProgress);
-}
-
-// -------------------------------------------------------------------- live
-
-function getLive(runtime: IAgentRuntime): LiveStrategyService {
-  const svc = runtime.getService<LiveStrategyService>("live-strategies");
-  if (!svc) throw new Error("live strategies not started");
-  return svc;
-}
-
-/** /backtest live: status with no words, otherwise one preset started on paper — /backtest live trend_200 btc 1d $5000. */
-async function liveCommand(runtime: IAgentRuntime, args: string[]): Promise<string> {
-  const words = args.map((a) => a.trim()).filter(Boolean);
-  if (!words.length || words[0]!.toLowerCase() === "status") return getLive(runtime).report();
-  let usd: number | undefined;
-  const rest = words.filter((w) => {
-    const m = /^(?:\$|usd=)([\d,.]+)$/i.exec(w);
-    if (m) usd = Number(m[1]!.replace(/,/g, ""));
-    return !m;
-  });
-  const req = parseBacktestArgs(rest);
-  if (typeof req === "string") return req;
-  const presets = (req.presets ?? []).filter((p) => p !== "all");
-  if (presets.length !== 1 || req.presets!.length !== 1) return `name one preset to run live — ${Object.keys(PRESETS).join(", ")} (your own rules: ask Lain)`;
-  const [spec] = expandStrategies(presets, []);
-  return getLive(runtime).begin({ spec: spec!, pair: req.pair, interval: req.interval as Interval | undefined, source: req.source, pool: req.pool, usd });
 }
 
 // --------------------------------------------------------------------- tool
@@ -350,7 +309,7 @@ const backtestAction: Action = {
     `${ruleHelp()}. Presets: ${Object.entries(PRESETS).map(([k, p]) => `${k} (${p.about})`).join("; ")}. ` +
     `Defaults: BTCUSDT, ${DEFAULT_YEARS} years, 1d, every preset when no strategy is given. ` +
     "15m/30m over many years means a slow first download; prefer 1h and up for multi-year runs. " +
-    "To carry a tested strategy on at live prices, start it with live_strategy.",
+    "To trade a tested strategy on paper from now on, give it to one market of your paper desk with paper_desk_strategy.",
   parameters: {
     type: "object",
     properties: {
@@ -415,112 +374,9 @@ const backtestAction: Action = {
   },
 };
 
-const num = (v: unknown): number | undefined => (typeof v === "number" ? v : typeof v === "string" && v.trim() && Number.isFinite(Number(v)) ? Number(v) : undefined);
-
-const liveAction: Action = {
-  name: "live_strategy",
-  similes: ["run_strategy_live", "forward_test", "paper_strategy", "deploy_strategy", "start_strategy", "strategy_live"],
-  description:
-    "Carry a backtested strategy on at live prices, on paper: the same rules read on the same history as its backtest at each bar's close, " +
-    "filled at Robinhood Chain's live Uniswap pools on the stock desk (BTC as cbBTC, or ETH) — nothing is sent. A run starts where the strategy " +
-    "stands: if its rules hold the market at the last close it buys now, otherwise it waits for the entry; stops, trailing stops and take-profits " +
-    "are watched against the live price between closes; the whole budget goes in and out. " +
-    "command 'start' takes the strategy exactly as it was backtested — a preset name, or name/entry/exit/stops with every {param} filled in " +
-    "(the variant that was chosen, not a sweep) — with the pair, interval and source of its backtest, and usd (its budget from the desk's cash, " +
-    "default 1000). 'status' (default) reports every run: in or out, value against the budget, the coin since the start, the next close it reads. " +
-    "'stop' ends a run (id, or 'all') and sells what it holds.",
-  parameters: {
-    type: "object",
-    properties: {
-      command: { type: "string", enum: ["status", "start", "stop"] },
-      preset: { type: "string", description: `For start: a preset instead of rules — ${Object.keys(PRESETS).join(", ")}.` },
-      strategy: {
-        type: "object",
-        description: "For start: the rules, as backtested, with no {param} slots left.",
-        properties: {
-          name: { type: "string" },
-          entry: { type: "string" },
-          exit: { type: "string" },
-          stopLossPct: { type: "number" },
-          takeProfitPct: { type: "number" },
-          trailPct: { type: "number" },
-          maxBars: { type: "number" },
-        },
-        required: ["entry"],
-      },
-      pair: { type: "string", description: "BTCUSDT (default) or ETHUSDT — the coins Robinhood Chain's pools trade." },
-      interval: { type: "string", enum: Object.keys(INTERVALS) },
-      source: { type: "string", enum: ["dex", "cex"], description: "Where the signal's bars come from — the backtest's source (default dex)." },
-      usd: { type: "number", description: "For start: the run's budget in dollars." },
-      id: { type: "string", description: "For stop: the run (s1…), or 'all'." },
-    },
-  },
-  examples: [
-    { user: "run the winner live on paper with $5000", agent: "Starting it on the stock desk at the live BTC pool…" },
-    { user: "how are my live strategies doing?", agent: "Reading the runs…" },
-  ],
-  async validate(runtime) {
-    return Boolean(runtime.getService("live-strategies"));
-  },
-  async handler(runtime, _state, params) {
-    const command = String(params.command ?? "status").toLowerCase();
-    try {
-      const live = getLive(runtime);
-      if (command === "stop") return { ok: true, text: await live.end(String(params.id ?? "")) };
-      if (command !== "start") return { ok: true, text: await live.report() };
-      const preset = typeof params.preset === "string" && params.preset.trim() ? params.preset : undefined;
-      const raw = (params.strategy ?? {}) as Record<string, unknown>;
-      if (!preset && typeof raw.entry !== "string") return { ok: false, text: "live_strategy start: give a preset, or a strategy with an entry rule" };
-      if (!preset && /\{\w+\}/.test(`${raw.entry} ${raw.exit ?? ""}`)) {
-        return { ok: false, text: "live_strategy start: fill every {param} with the value that was chosen — a live run trades one variant" };
-      }
-      const [spec] = preset
-        ? expandStrategies([preset], [])
-        : expandStrategies([], [
-            {
-              name: typeof raw.name === "string" ? raw.name : "strategy",
-              entry: String(raw.entry),
-              ...(typeof raw.exit === "string" && raw.exit ? { exit: raw.exit } : {}),
-              stopLossPct: num(raw.stopLossPct),
-              takeProfitPct: num(raw.takeProfitPct),
-              trailPct: num(raw.trailPct),
-              maxBars: num(raw.maxBars),
-            },
-          ]);
-      const asked = typeof params.interval === "string" && params.interval ? params.interval.toLowerCase() : undefined;
-      if (asked && !isInterval(asked)) return { ok: false, text: `interval must be one of ${Object.keys(INTERVALS).join(", ")}` };
-      const interval = asked as Interval | undefined;
-      const text = await live.begin({
-        spec: spec!,
-        pair: typeof params.pair === "string" && params.pair ? params.pair : undefined,
-        interval,
-        source: params.source === "dex" || params.source === "cex" ? params.source : undefined,
-        usd: num(params.usd),
-      });
-      return { ok: true, text };
-    } catch (err) {
-      return { ok: false, text: `live_strategy: ${(err as Error).message}` };
-    }
-  },
-};
-
-/** Lain knows which strategies run live — from the saved runs, no reads per turn. */
-const liveProvider: Provider = {
-  name: "live-strategies",
-  async get(runtime) {
-    const running = runtime.getService<LiveStrategyService>("live-strategies")?.list().filter((r) => !r.stoppedAt) ?? [];
-    if (!running.length) return "";
-    const runs = running.map((r) => `${r.id} ${r.spec.name} on ${r.asset} ${r.interval} (${BigInt(r.qty) > 0n ? "in" : "out"}, $${r.budgetUsd} budget)`);
-    return `Backtested strategies running live on paper: ${runs.join("; ")}. The live_strategy tool reports them and stops them.`;
-  },
-};
-
 export const backtestPlugin: Plugin = {
   name: "backtest",
   description:
-    "Strategy backtests on years of history — on-chain Uniswap swaps on Ethereum, or Binance and Bitstamp — ranked with a held-out tail, " +
-    "and carried on live on paper at Robinhood Chain's pools.",
-  services: [new LiveStrategyService(liveHistory)],
-  providers: [liveProvider],
-  actions: [backtestAction, liveAction],
+    "Strategy backtests on years of history — on-chain Uniswap swaps on Ethereum, or Binance and Bitstamp — ranked with a held-out tail.",
+  actions: [backtestAction],
 };

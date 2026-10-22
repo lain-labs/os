@@ -8,6 +8,8 @@
  *     to publish (press),
  *   - initiative heartbeat + trader loop (daemon-only, see LAINOS_DAEMON),
  *   - routines: self-written skills run on schedules and sentinel alerts,
+ *   - the paper desk: the $100 demo account checked hourly, fills and a morning
+ *     report to the operator,
  *   - self-restart into freshly forged code after a successful self-upgrade,
  *   - a version-journal entry on the way out, so the next version knows why.
  */
@@ -26,7 +28,7 @@ import type { ScoutService } from "../src/plugins/scout/index.js";
 import type { RoutineService } from "../src/plugins/skills/routines.js";
 import { alertLine, type SentinelService } from "../src/plugins/sentinel/index.js";
 import { sendToOperator } from "../src/plugins/telegram/index.js";
-import type { TrendPaperService } from "../src/plugins/trend-paper/index.js";
+import type { PaperDeskService } from "../src/plugins/desk/index.js";
 import type { TraderService } from "../src/plugins/trader/index.js";
 
 // The daemon must never die because something somewhere threw: a failed watch,
@@ -104,12 +106,12 @@ async function main() {
     trader.onEvent((ev) => void telegram.broadcast(ev.text));
   }
 
-  // Trend paper's fills and daily report are for the operator alone — never broadcast.
-  const trendPaper = agent.getService<TrendPaperService>("trend-paper");
-  if (trendPaper && telegramUp) {
-    trendPaper.onEvent((ev) => {
+  // The paper desk's fills, strategy changes and morning report are for the operator alone — never broadcast.
+  const desk = agent.getService<PaperDeskService>("paper-desk");
+  if (desk && telegramUp) {
+    desk.onEvent((ev) => {
       void sendToOperator((key) => agent.getSetting(key), ev.text, { plain: true }).catch((err) => {
-        console.error(`[lainos] trend-paper ${ev.kind} not delivered:`, err);
+        console.error(`[lainos] paper desk ${ev.kind} not delivered:`, err);
       });
     });
   }

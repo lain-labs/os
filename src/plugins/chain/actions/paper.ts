@@ -464,9 +464,10 @@ export const paperTradingAction: Action = {
   name: "paper_trading",
   // paper_assets was the self-written tool that kept other coins in a ledger
   // of its own, which /paper never read; its calls land here now.
-  similes: ["paper_mode", "paper_trade", "paper_portfolio", "simulated_trading", "demo_trading", "practice_trading", "paper_assets", "paper_wallet", "paper_deposit", "paper_swap"],
+  similes: ["paper_mode", "paper_trade", "paper_portfolio", "simulated_trading", "practice_trading", "paper_assets", "paper_wallet", "paper_deposit", "paper_swap"],
   description:
-    "Paper trading — trades simulated against live DEX pools with a virtual native balance, nothing sent. " +
+    "Paper wallets for trading by hand — buy_token/sell_token/speculate_token simulated against live DEX pools with a virtual native balance, nothing sent. " +
+    "Not your demo account: the $100 paper desk that trades backtested strategies by itself is paper_desk — use that for how your paper/demo trading is doing. " +
     "There are several paper wallets, each with its own cash, positions and coins — one per theory or portfolio. You trade and change only the wallets marked as yours (main always is); a wallet that is the operator's own you may read (status with `wallet`) but never trade, reset or change — that is enforced. " +
     "'wallets' lists them; 'new' opens a wallet of yours (`wallet` = its name, startNative, `note` = the theory it tests) and makes it your current one; 'use' picks your current wallet — where your trades go when they name none. buy_token, sell_token, speculate_token and speculate_basket take `wallet` too. " +
     "mode 'status' (default) reports a wallet (yours unless `wallet` names one): balances (native cash and other coins), positions at live value, equity and return since the start, recent paper trades. " +

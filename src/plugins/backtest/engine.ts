@@ -383,8 +383,33 @@ export async function runBacktest(opts: {
   rpcUrls?: string[];
   onProgress?: (text: string) => void;
 }): Promise<BacktestResult> {
-  if (!opts.strategies.length) throw new Error("no strategies to test");
-  const compiled = opts.strategies.map((spec) => {
+  const { warmup } = compileStrategies(opts.strategies);
+  const barMs = intervalMs(opts.interval);
+  const span = { interval: opts.interval, from: opts.from - warmup * barMs, to: opts.to, dataDir: opts.dataDir, proxy: opts.proxy };
+  const s = opts.dex
+    ? await loadDexSeries({ ...span, market: opts.dex, rpcUrls: opts.rpcUrls, onProgress: opts.onProgress })
+    : await loadSeries({ ...span, pair: opts.pair });
+  // History that begins inside the window, not just inside its warm-up, is worth a line of its own.
+  const notes = [...s.notes];
+  if (s.t[0]! > opts.from + barMs) {
+    notes.push(
+      `the history starts ${new Date(s.t[0]!).toISOString().slice(0, 10)}, later than asked` +
+        (opts.dex ? ` (the pool's first swap) — for earlier years use source "cex" (Binance, Bitstamp before it)` : ""),
+    );
+  }
+  return backtestSeries(s, { from: opts.from, strategies: opts.strategies, costs: opts.costs, holdoutPct: opts.holdoutPct, notes });
+}
+
+export interface CompiledStrategy {
+  spec: StrategySpec;
+  entry: Rule;
+  exit: Rule | null;
+}
+
+/** Parse every strategy's rules, and the bars the slowest of them needs before it can be trusted. */
+export function compileStrategies(strategies: StrategySpec[]): { compiled: CompiledStrategy[]; warmup: number } {
+  if (!strategies.length) throw new Error("no strategies to test");
+  const compiled = strategies.map((spec) => {
     const rule = (src: string, part: string): Rule => {
       try {
         return compileRule(src);
@@ -394,22 +419,18 @@ export async function runBacktest(opts: {
     };
     return { spec, entry: rule(spec.entry, "entry"), exit: spec.exit ? rule(spec.exit, "exit") : null };
   });
-  const warmup = Math.max(0, ...compiled.flatMap((c) => [c.entry.warmup, c.exit?.warmup ?? 0])) + 1;
-  const barMs = intervalMs(opts.interval);
-  const span = { interval: opts.interval, from: opts.from - warmup * barMs, to: opts.to, dataDir: opts.dataDir, proxy: opts.proxy };
-  const s = opts.dex
-    ? await loadDexSeries({ ...span, market: opts.dex, rpcUrls: opts.rpcUrls, onProgress: opts.onProgress })
-    : await loadSeries({ ...span, pair: opts.pair });
+  return { compiled, warmup: Math.max(0, ...compiled.flatMap((c) => [c.entry.warmup, c.exit?.warmup ?? 0])) + 1 };
+}
+
+/** Each strategy and the benchmark over a series already in hand, from its first bar at or after `from`; best first. */
+export function backtestSeries(
+  s: Series,
+  opts: { from: number; strategies: StrategySpec[]; costs: Costs; holdoutPct: number; notes?: string[] },
+): BacktestResult {
+  const { compiled, warmup } = compileStrategies(opts.strategies);
+  const interval = s.interval;
   const start = s.t.findIndex((t) => t >= opts.from);
-  // History that begins inside the window, not just inside its warm-up, is worth a line of its own.
-  const notes = [...s.notes];
-  if (s.t[0]! > opts.from + barMs) {
-    notes.push(
-      `the history starts ${new Date(s.t[0]!).toISOString().slice(0, 10)}, later than asked` +
-        (opts.dex ? ` (the pool's first swap) — for earlier years use source "cex" (Binance, Bitstamp before it)` : ""),
-    );
-  }
-  if (start < 0 || s.t.length - start < 30) throw new Error(`fewer than 30 ${opts.interval} bars of ${s.pair} in that window`);
+  if (start < 0 || s.t.length - start < 30) throw new Error(`fewer than 30 ${interval} bars of ${s.pair} in that window`);
   const n = s.t.length;
   const len = n - start;
   const holdoutPct = Math.max(0, Math.min(60, opts.holdoutPct));
@@ -431,12 +452,12 @@ export async function runBacktest(opts: {
   results.sort((x, y) => y.inSample.sharpe - x.inSample.sharpe);
   return {
     pair: s.pair,
-    interval: opts.interval,
+    interval,
     from: s.t[start]!,
     to: s.t[n - 1]!,
     bars: len,
     stretches: s.stretches,
-    notes,
+    notes: opts.notes ?? [...s.notes],
     warmupShort: start < warmup,
     holdoutFrom: holdout ? s.t[start + split]! : null,
     holdoutPct: holdout ? holdoutPct : 0,

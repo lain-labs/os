@@ -605,25 +605,23 @@ and secret values loaded from the environment.
   /backtest presets          # what each preset does, and the rule functions
   ```
 
-  **Live on paper.** A tested strategy carries on at today's prices: the same
-  rules over the same history as its backtest, read at each bar's close once
-  the bar has closed, with the fills at Robinhood Chain's live pools through
-  the stock desk (BTC as cbBTC, or ETH) — so the position sits on `/stocks`
-  with everything else, and nothing is sent. A run starts where the strategy
-  stands: when its rules have it in the market at the last close it buys at
-  once, otherwise it waits for the entry. Stops, trailing stops and
-  take-profits are watched against the live pool price between closes; the
-  whole budget goes in and out, as in the backtest. Lain starts and reports
-  runs through `live_strategy` ("run the best one live with $5,000"); runs
-  are saved in `data/backtests/live.json` and resume after a restart.
+  **The paper desk — Lain's demo account.** $100 of virtual dollars, $20 on
+  each of five DEX markets: LAIN (Robinhood Chain), CYBER.sol, ETH, SOL and
+  BTC, each read from its pool through GeckoTerminal as hourly bars in
+  dollars. When the desk opens, every market gets the preset its backtest
+  ranks first on that market's own history (with the held-out tail shown
+  beside it). Every hour the daemon reads the new bars and replays each
+  market through the backtest engine — the same rules, fills and costs, so
+  the paper account is that backtest carried on — and sends each new fill to
+  the operator on Telegram, with a report every morning at 09:00 Moscow time:
+  balance, result against holding all five, closed trades, the biggest
+  mistake. Lain reads it with `paper_desk` and sees its balance in every
+  conversation; `paper_desk_strategy` backtests a preset or her own rules on
+  one market and, with `apply`, switches that market to it from the next
+  hour. State lives in `data/desk/` (`state.json`, bar caches under
+  `market/`); nothing on the desk can reach a wallet or send an order.
 
-  ```bash
-  /backtest live trend_200 btc 1d $5000   # a preset, live on paper
-  /backtest live                          # every run: in or out, value vs budget, BTC since the start, next close
-  /backtest stop s1                       # sell what it holds and stop
-  ```
-
-  Lain has the same through `paper_trading` (status / on / off / reset), and
+  Trading by hand on paper is `paper_trading` (status / on / off / reset), and
   `portfolio_pnl` reports the paper account while paper mode is on. The switch
   is per process (`data/paper/mode.json`, default `LAINOS_PAPER`); a new
   account starts with `LAINOS_PAPER_START_NATIVE` (1). Paper trades need a DEX

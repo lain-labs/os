@@ -15,10 +15,6 @@
  *      refuses are split, swap prices decoded from sqrtPriceX96, bars built
  *      from swaps (a quiet day is a flat bar), the cache read back without a
  *      second download, and any pool's tokens read from the chain;
- *   7. live runs against a stand-in desk: a strategy in the market joins at
- *      once, one out of it waits, the exit rule sells at the next close, a
- *      stop sells between closes, a position closed by hand leaves the run
- *      out, and the runs survive a restart.
  *
  * Run: npm run backtest:smoke
  */
@@ -32,7 +28,6 @@ import { bitstampPair, normalizePair, type Series } from "../src/plugins/backtes
 import { buyAndHold, expandStrategies, measure, PRESETS, runBacktest, simulate, type StrategySpec } from "../src/plugins/backtest/engine.js";
 import { parseBacktestArgs, report } from "../src/plugins/backtest/index.js";
 import { DEX_MARKETS, dexMarketFromPool, loadDexSeries } from "../src/plugins/backtest/dex.js";
-import { LiveStrategyService, type LiveDesk } from "../src/plugins/backtest/live.js";
 
 let checks = 0;
 let failed = 0;
@@ -280,101 +275,6 @@ check("any pool: tokens and fee read from the chain, priced in the dollar side",
 server.close();
 const dexArgs = parseBacktestArgs(["0x" + "b".repeat(40), "2y", "dex"]);
 check("/backtest takes a pool address and a source", typeof dexArgs !== "string" && dexArgs.pool === "0x" + "b".repeat(40) && dexArgs.source === "dex");
-
-// 7. live runs, against a stand-in desk and bars that close on demand
-const H = 3_600_000;
-/** Hourly bars ending three hours ago, so the next one is due; push a close to make it arrive. */
-const liveCloses = Array.from({ length: 120 }, (_, i) => 100 + i);
-const hourT0 = Math.floor(Date.now() / H) * H - (liveCloses.length + 2) * H;
-const liveSeries = (): Series => {
-  const n = liveCloses.length;
-  const c = Float64Array.from(liveCloses);
-  return {
-    pair: "WBTC/USDC",
-    interval: "1h",
-    t: Float64Array.from({ length: n }, (_, i) => hourT0 + i * H),
-    open: Float64Array.from(c, (v, i) => (i ? c[i - 1]! : v)),
-    high: Float64Array.from(c, (v) => v * 1.001),
-    low: Float64Array.from(c, (v) => v * 0.999),
-    close: c,
-    volume: new Float64Array(n).fill(1),
-    stretches: [],
-    notes: [],
-  };
-};
-class StandInDesk implements LiveDesk {
-  px = 220;
-  held = 0n;
-  log: string[] = [];
-  blocker() {
-    return null;
-  }
-  async order(symbol: string, dollars: number, _by: string, why: string) {
-    const qty = BigInt(Math.round((dollars / this.px) * 1e8));
-    this.held += qty;
-    this.log.push(`buy ${symbol} ${dollars} — ${why}`);
-    return { line: "bought", qty, px: this.px };
-  }
-  async sellUnits(symbol: string, qty: bigint, _by: string, reason: string) {
-    this.held -= qty;
-    this.log.push(`sell ${symbol} — ${reason}`);
-    return { line: "sold", proceeds: (Number(qty) / 1e8) * this.px };
-  }
-  async price() {
-    return this.px;
-  }
-  async saleValue(_s: string, qty: bigint) {
-    return (Number(qty) / 1e8) * this.px;
-  }
-  holding() {
-    return this.held;
-  }
-}
-const liveDir = mkdtempSync(join(tmpdir(), "lainos-live-"));
-const liveRuntime = { getSetting: (k: string) => (k === "LAINOS_DATA_DIR" ? liveDir : undefined), getService: () => undefined } as unknown as Parameters<LiveStrategyService["start"]>[0];
-const desk = new StandInDesk();
-let loads = 0;
-const live = new LiveStrategyService(async () => {
-  loads += 1;
-  return liveSeries();
-}, desk);
-await live.start(liveRuntime);
-const trendSpec = { name: "trend_50", entry: "close > sma(close, 50)", exit: "close < sma(close, 50)" };
-const joined = await live.begin({ spec: trendSpec, interval: "1h", usd: 5000 });
-check("a strategy in the market at the last close joins at once, at the live price", /IN BTC/.test(joined) && desk.log.length === 1 && /buy BTC 5000/.test(desk.log[0]!), joined);
-check("the run reports its rules, where its signal and fills come from", /close > sma\(close, 50\)/.test(joined) && /WBTC\/USDC/.test(joined) && /Robinhood Chain's live pools/.test(joined), joined);
-await live.tick();
-check("no new close, no new reading", desk.log.length === 1 && live.list()[0]!.qty !== "0");
-liveCloses.push(150);
-desk.px = 150;
-await live.tick();
-const s1 = live.list()[0]!;
-check("the exit rule at the next close sells, and the run books the round trip", s1.qty === "0" && /exit rule/.test(desk.log[1] ?? "") && close(s1.cash, 5000 * (150 / 220), 1e-6), `${desk.log.join(" | ")} cash ${s1.cash}`);
-check("the trade log has both sides, the sale with its return", s1.trades.length === 2 && s1.trades[1]!.side === "sell" && s1.trades[1]!.pnlPct! < -30);
-liveCloses.splice(0, liveCloses.length, ...Array.from({ length: 120 }, (_, i) => 300 - i));
-const waiting = await live.begin({ spec: trendSpec, interval: "1h", usd: 1000 });
-check("a strategy out of the market waits for its entry", /OUT, in dollars/.test(waiting) && /waiting for close > sma/.test(waiting) && desk.log.length === 2, waiting);
-liveCloses.splice(0, liveCloses.length, ...Array.from({ length: 120 }, (_, i) => 100 + i));
-desk.px = 220;
-const stopped = await live.begin({ spec: { ...trendSpec, name: "trend_stop", stopLossPct: 5 }, interval: "1h", usd: 1000 });
-check("a third run joins the uptrend", /IN BTC/.test(stopped));
-desk.px = 220 * 0.94;
-await live.tick();
-const s3 = live.list()[2]!;
-check("a stop-loss sells between closes, on the live price", s3.qty === "0" && /stop-loss/.test(s3.last), s3.last);
-const byHand = await live.begin({ spec: { ...trendSpec, name: "trend_hand" }, interval: "1h", usd: 1000 });
-desk.held = 0n;
-await live.tick();
-check("a position closed on the desk by hand leaves the run out", /IN BTC/.test(byHand) && live.list()[3]!.qty === "0" && /outside the run/.test(live.list()[3]!.last));
-const ended = await live.end("all");
-check("stop ends every running run", (ended.match(/⏹/g) ?? []).length === 4 && live.list().every((r) => r.stoppedAt), ended);
-check("a live run refuses a coin Robinhood Chain has no pool for", await live.begin({ spec: trendSpec, pair: "SOLUSDT" }).then(() => false, (e: Error) => /BTC and ETH/.test(e.message)));
-await live.stop();
-const reborn = new LiveStrategyService(async () => liveSeries(), desk);
-await reborn.start(liveRuntime);
-check("the runs survive a restart", reborn.list().length === 4 && reborn.list()[0]!.trades.length === 2);
-await reborn.stop();
-check("bars were read on start and on new closes only", loads >= 5);
 
 console.log(`\nbacktest smoke ${failed ? `FAILED (${failed}/${checks})` : `ok (${checks} checks)`}`);
 process.exit(failed ? 1 : 0);
