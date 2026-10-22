@@ -105,6 +105,7 @@ export const CHAT_PROVIDER_CHOICES: { name: string; kind: string; desc: string }
   { name: "claude", kind: "claude", desc: "Claude CLI · subscription, no key" },
   { name: "codex", kind: "codex", desc: "Codex CLI · ChatGPT subscription" },
   { name: "opencode", kind: "opencode", desc: "OpenCode CLI · your own OpenCode setup" },
+  { name: "grok", kind: "grok", desc: "Grok CLI · your xAI login" },
   { name: "claude-api", kind: "anthropic", desc: "Anthropic API key · per token" },
 ];
 
@@ -121,6 +122,7 @@ export function resolveChatProviderKind(raw: string): string | undefined {
 export function chatProviderLabel(kind: string): string {
   if (kind === "claude") return "claude (cli)";
   if (kind === "opencode") return "opencode (cli)";
+  if (kind === "grok") return "grok (cli)";
   return kind === "anthropic" ? "claude (anthropic api)" : kind;
 }
 

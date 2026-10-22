@@ -11,7 +11,7 @@
  *
  * Run: npm run tasks:smoke
  */
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentRuntime } from "../src/runtime.js";
@@ -23,6 +23,8 @@ import { resolveEnvTaskRoutes } from "../src/models/index.js";
 import { TaskKind, classifyTask, formatTaskRoute, parseTaskRoute } from "../src/models/tasks.js";
 import { parseFreeModels } from "../src/models/openrouter.js";
 import { OpencodeModelProvider, opencodeFreeModels } from "../src/models/opencode.js";
+import { GrokModelProvider } from "../src/models/grok.js";
+import { parseUsageLimit } from "../src/models/limits.js";
 import {
   ModelTier,
   type Action,
@@ -412,6 +414,41 @@ const ocText = await oc.generate(ocRequest);
 check("opencode: a plain reply stays a reply", ocText.text === "hello" && ocText.toolCalls.length === 0);
 delete process.env.FAKE_OC_MODE;
 await rm(ocDir, { recursive: true, force: true });
+
+// Grok: one headless run per completion; the reply is the JSON object it prints, the prompt goes in a file.
+const gkDir = await mkdtemp(join(tmpdir(), "lainos-grok-run-"));
+const fakeGrok = join(gkDir, "grok");
+await writeFile(
+  fakeGrok,
+  `#!${process.execPath}
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+const prompt = fs.readFileSync(args[args.indexOf("--prompt-file") + 1], "utf8");
+fs.writeFileSync(process.env.FAKE_GROK_ARGS, JSON.stringify({ args, prompt }));
+const mode = process.env.FAKE_GROK_MODE;
+if (mode === "broke") {
+  console.log(JSON.stringify({ type: "error", message: 'Internal error: {\\n  "message": "API error (status 402 Payment Required): Grok Build usage balance exhausted",\\n  "http_status": 402\\n}' }));
+  process.exit(1);
+}
+console.log(JSON.stringify({ text: mode === "json" ? '{"tool":"list_watches","input":{}}' : "hello from grok", stopReason: "end_turn", sessionId: "s1", modelUsage: { "grok-4.7": { modelCalls: 1 } } }));
+`,
+);
+await chmod(fakeGrok, 0o755);
+process.env.FAKE_GROK_ARGS = join(gkDir, "args.json");
+const grok = new GrokModelProvider({ bin: fakeGrok, cwd: join(gkDir, "work"), retries: 0 });
+const gkText = await grok.generate({ ...ocRequest, messages: [{ role: "user", content: "hi @CH4rnel_exe" }] } as ModelRequest);
+const gkRun = JSON.parse(await readFile(process.env.FAKE_GROK_ARGS, "utf8")) as { args: string[]; prompt: string };
+check("grok: a plain reply, named by the model that ran", gkText.text === "hello from grok" && gkText.model === "grok/grok-4.7");
+check("grok: the prompt goes in a file, not argv", gkRun.prompt.includes("hi @CH4rnel_exe") && !gkRun.args.some((a) => a.includes("@CH4rnel_exe")));
+check("grok: fenced to a chat", ["--verbatim", "--disable-web-search", "--no-subagents"].every((f) => gkRun.args.includes(f)) && gkRun.args[gkRun.args.indexOf("--sandbox") + 1] === "strict");
+process.env.FAKE_GROK_MODE = "json";
+check("grok: the JSON protocol works", (await grok.generate(ocRequest)).toolCalls[0]?.name === "list_watches");
+process.env.FAKE_GROK_MODE = "broke";
+const gkErr = await grok.generate(ocRequest).then(() => "", (err: Error) => err.message);
+check("grok: an empty balance reads as a usage limit", gkErr.includes("usage balance exhausted") && parseUsageLimit(gkErr) !== null);
+delete process.env.FAKE_GROK_MODE;
+delete process.env.FAKE_GROK_ARGS;
+await rm(gkDir, { recursive: true, force: true });
 
 // ------------------------------------------------------------------ report
 

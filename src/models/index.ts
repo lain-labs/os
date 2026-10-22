@@ -5,6 +5,7 @@ import { ModelTier, type ModelProvider } from "../types.js";
 import { AnthropicModelProvider } from "./anthropic.js";
 import { ClaudeCliModelProvider, resolveClaudeBin } from "./claude-cli.js";
 import { CodexModelProvider, resolveCodexBin } from "./codex.js";
+import { GrokModelProvider, listGrokModels, resolveGrokBin } from "./grok.js";
 import { usageLimits } from "./limits.js";
 import { MockModelProvider } from "./mock.js";
 import { fetchFreeModels, OpenRouterModelProvider } from "./openrouter.js";
@@ -32,6 +33,7 @@ const log = createLogger("model");
 export { AnthropicModelProvider, MockModelProvider, OpenRouterModelProvider };
 export { ClaudeCliModelProvider, resolveClaudeBin } from "./claude-cli.js";
 export { CodexModelProvider, resolveCodexBin } from "./codex.js";
+export { GrokModelProvider, resolveGrokBin } from "./grok.js";
 export { OpencodeModelProvider, resolveOpenCodeBin } from "./opencode.js";
 export {
   CHAT_PROVIDER_CHOICES,
@@ -80,16 +82,17 @@ function splitArgs(raw?: string): string[] {
  * Pick a model provider from the environment.
  *
  * Base selection order:
- *   1. LAINOS_MODEL_PROVIDER, if set (codex | claude | opencode | openrouter | anthropic | mock)
+ *   1. LAINOS_MODEL_PROVIDER, if set (codex | claude | opencode | grok | openrouter | anthropic | mock)
  *   2. OPENROUTER_API_KEY present  -> openrouter
  *   3. ANTHROPIC_API_KEY present   -> anthropic
  *   4. claude CLI on the machine   -> claude
  *   5. otherwise                   -> offline mock
  *
- * `codex`, `claude` and `opencode` run completions through a coding-agent CLI
- * on the machine (ChatGPT / Claude subscription / OpenCode config, no LainOS
- * API key) and retry a failed call once on their own
- * (LAINOS_CODEX_RETRIES / LAINOS_CLAUDE_RETRIES / LAINOS_OPENCODE_RETRIES).
+ * `codex`, `claude`, `opencode` and `grok` run completions through a coding-agent
+ * CLI on the machine (ChatGPT / Claude subscription / OpenCode config / xAI
+ * login, no LainOS API key) and retry a failed call once on their own
+ * (LAINOS_CODEX_RETRIES / LAINOS_CLAUDE_RETRIES / LAINOS_OPENCODE_RETRIES /
+ * LAINOS_GROK_RETRIES).
  * `claude` and `anthropic` are the same model family by two routes — subscription
  * CLI vs. API key — and each falls back to the other when its own route is
  * missing, so "switch to Claude" works with either one configured.
@@ -260,6 +263,26 @@ export function createModelProvider(
           proxy,
         });
       }
+      case "grok": {
+        const bin = resolveGrokBin(getSetting("LAINOS_GROK_BIN"));
+        if (!bin) {
+          log.warn("grok selected but no grok CLI found (PATH or ~/.local/bin).");
+          return undefined;
+        }
+        const timeoutRaw = Number(getSetting("LAINOS_GROK_TIMEOUT_MS"));
+        const retriesRaw = Number(getSetting("LAINOS_GROK_RETRIES"));
+        return new GrokModelProvider({
+          bin,
+          models: pin(pinned, tierOverrides(getSetting, "LAINOS_GROK_MODEL")),
+          timeoutMs: Number.isFinite(timeoutRaw) && timeoutRaw > 0 ? timeoutRaw : undefined,
+          retries: Number.isFinite(retriesRaw) && retriesRaw >= 0 ? retriesRaw : undefined,
+          extraArgs: splitArgs(getSetting("LAINOS_GROK_ARGS")),
+          cwd:
+            getSetting("LAINOS_GROK_CWD")?.trim() ||
+            join(getSetting("LAINOS_DATA_DIR") ?? "./data", "grok"),
+          proxy,
+        });
+      }
       default:
         log.warn(`unknown model provider "${kind}".`);
         return undefined;
@@ -324,6 +347,9 @@ export function createModelProvider(
     } else if (kind === "claude") {
       // The claude CLI resolves these aliases to the latest model of each line.
       models = ["opus", "sonnet", "haiku"].map((id) => ({ id, free: false }));
+    } else if (kind === "grok") {
+      const bin = resolveGrokBin(getSetting("LAINOS_GROK_BIN"));
+      models = bin ? (await listGrokModels(bin)).map((id) => ({ id, free: false })) : [];
     } else if (kind === "openrouter" && openrouterKey) {
       const free = await fetchFreeModels({
         apiKey: openrouterKey,

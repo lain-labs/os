@@ -27,7 +27,7 @@ const DEFAULT_COOLDOWN_MS = 15 * 60_000;
 const RATE_COOLDOWN_MS = 60_000;
 
 const QUOTA_RE =
-  /hit your (?:[\w-]+ )?limit|usage limit|(?:weekly|daily|monthly|session|hourly|\d+-hour) limit|quota|insufficient[_ ](?:credits?|quota|funds|balance)|credit balance is too low|out of (?:credits|tokens)|payment required/i;
+  /hit your (?:[\w-]+ )?limit|usage limit|(?:weekly|daily|monthly|session|hourly|\d+-hour) limit|quota|insufficient[_ ](?:credits?|quota|funds|balance)|credit balance is too low|balance exhausted|out of (?:credits|tokens)|payment required/i;
 const RATE_RE = /rate.?limit(?:ed)?\b|too many requests/i;
 
 const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];

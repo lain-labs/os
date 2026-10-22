@@ -92,7 +92,7 @@ export interface ForgeEvent {
 }
 
 type ForgeJobStatus = ForgeJob["status"];
-type ForgeAgentKind = "claude" | "codex" | "opencode";
+type ForgeAgentKind = "claude" | "codex" | "opencode" | "grok";
 type ForgeSelectedAgent = ForgeAgentKind | "custom";
 
 interface ForgeFile {
@@ -110,7 +110,7 @@ export interface CoderChoice {
   effort?: string;
 }
 
-/** Effort levels the coding CLIs take (codex: model_reasoning_effort, claude: --effort, opencode: #variant). */
+/** Effort levels the coding CLIs take (codex: model_reasoning_effort, claude: --effort, opencode: #variant, grok: --reasoning-effort). */
 export const CODER_EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 const JOB_CAP = 100;
@@ -278,7 +278,7 @@ export class ForgeService implements Service {
       return "forge provider is controlled by LAINOS_FORGE_CMD; unset it before switching between Claude, Codex and OpenCode";
     }
     const selected = normalizeAgent(provider);
-    if (!selected) return "provider must be claude, codex or opencode";
+    if (!selected) return "provider must be claude, codex, opencode or grok";
     if (!this.availableAgents.has(selected)) {
       const installed = [...this.availableAgents.keys()].join(", ") || "none";
       return `${selected} is not available to the forge (installed: ${installed})`;
@@ -398,7 +398,7 @@ export class ForgeService implements Service {
     if (!this.agentBin) {
       const selected = this.selectedAgent ?? this.agentKind ?? "none";
       return selected === "none"
-        ? "no coding agent found (need claude, codex or opencode in PATH)"
+        ? "no coding agent found (need claude, codex, opencode or grok in PATH)"
         : `selected forge provider ${selected} is unavailable (need ${selected} in PATH)`;
     }
     if (wish.status === "building") return `${id} is already being forged`;
@@ -616,7 +616,7 @@ export class ForgeService implements Service {
 
   /** Installed agents not out of quota, the operator's choice first. */
   private readyAgents(): ForgeAgentKind[] {
-    const order = [this.selectedAgent, "claude", "codex", "opencode"] as const;
+    const order = [this.selectedAgent, "claude", "codex", "opencode", "grok"] as const;
     const ready: ForgeAgentKind[] = [];
     for (const kind of order) {
       if (!kind || ready.includes(kind) || !this.availableAgents.has(kind)) continue;
@@ -712,6 +712,17 @@ export class ForgeService implements Service {
       if (this.forgeYolo()) args.push("--auto");
       return { cmd: agent.bin, args: [...args, ...extra, prompt], shell: false };
     }
+    if (agent.kind === "grok") {
+      const extra = splitArgs(this.runtime?.getSetting("LAINOS_FORGE_GROK_ARGS"));
+      const args = ["-p", prompt, "--cwd", this.repo, "--output-format", "plain", "--no-auto-update"];
+      const model = this.agentModel(agent.kind);
+      if (model) args.push("-m", model);
+      const effort = this.agentEffort(agent.kind);
+      if (effort) args.push("--reasoning-effort", effort === "minimal" ? "low" : effort);
+      // Without yolo, edits are accepted and anything else is refused: nobody can answer a prompt here.
+      args.push(...(this.forgeYolo() ? ["--always-approve"] : ["--permission-mode", "acceptEdits"]));
+      return { cmd: agent.bin, args: [...args, ...extra], shell: false };
+    }
     const extra = splitArgs(this.runtime?.getSetting("LAINOS_FORGE_CLAUDE_ARGS"));
     const model = this.agentModel(agent.kind);
     const effort = this.agentEffort(agent.kind);
@@ -751,6 +762,9 @@ export class ForgeService implements Service {
     }
     if (kind === "opencode") {
       return setting("LAINOS_FORGE_OPENCODE_MODEL") ?? setting("LAINOS_FORGE_MODEL");
+    }
+    if (kind === "grok") {
+      return setting("LAINOS_FORGE_GROK_MODEL") ?? setting("LAINOS_FORGE_MODEL");
     }
     return undefined;
   }
@@ -811,6 +825,8 @@ export class ForgeService implements Service {
       ["opencode", "opencode"],
       ["opencode", join(home, ".local/bin/opencode")],
       ["opencode", join(home, ".opencode/bin/opencode")],
+      ["grok", "grok"],
+      ["grok", join(home, ".local/bin/grok")],
     ];
     for (const [kind, bin] of candidates) {
       if (bin.includes("/") ? existsSync(bin) : whichSync(bin)) {
@@ -934,7 +950,7 @@ function isTruthy(raw?: string): boolean {
 
 function normalizeAgent(raw?: string): ForgeAgentKind | undefined {
   const value = (raw ?? "").trim().toLowerCase();
-  return value === "claude" || value === "codex" || value === "opencode" ? value : undefined;
+  return value === "claude" || value === "codex" || value === "opencode" || value === "grok" ? value : undefined;
 }
 
 /** Last meaningful transcript line, trimmed to fit a chat notification. */
@@ -1427,13 +1443,13 @@ const setForgeProviderAction: Action = {
   name: "set_forge_provider",
   similes: ["switch_forge_provider", "change_forge_provider", "choose_forge_worker", "set_forge_worker"],
   description:
-    "Switch the forge coding worker for new jobs between Claude Code, Codex CLI and OpenCode CLI, optionally with the model and reasoning effort it runs with (\"codex gpt-6.1-sol low\" → provider codex, model gpt-6.1-sol, effort low). The choice is saved and the TUI sidebar shows it. Does not interrupt a running job; already queued jobs keep the worker recorded when they were queued.",
+    "Switch the forge coding worker for new jobs between Claude Code, Codex CLI, OpenCode CLI and Grok CLI, optionally with the model and reasoning effort it runs with (\"codex gpt-6.1-sol low\" → provider codex, model gpt-6.1-sol, effort low). The choice is saved and the TUI sidebar shows it. Does not interrupt a running job; already queued jobs keep the worker recorded when they were queued.",
   parameters: {
     type: "object",
     properties: {
       provider: {
         type: "string",
-        enum: ["claude", "codex", "opencode"],
+        enum: ["claude", "codex", "opencode", "grok"],
         description: "Forge worker to use for new jobs.",
       },
       model: { type: "string", description: "Model id for that worker, e.g. gpt-6.1-sol; 'default' clears it. Omit to keep." },
@@ -1539,7 +1555,7 @@ const forgeProvider: Provider = {
       `You grow by building: holder wishes become code through your forge (provider: ${provider.selected}, ${provider.available ? "ready" : "unavailable"}${provider.fallback ? `, fallback ${provider.fallback}` : ""}).`,
       `Your own source code is ${svc.repoPath} — the repo the forge edits. Changing it is the forge's work: put the change in a wish and build_wish it; don't search or read your source from chat to fix it yourself. Forge state: ${forgeFile}; job logs: ${logDir}/<job>.log.`,
       `If a requested capability is missing, call learn_skill immediately; do not finish with talk about missing tools, missing signers, execution paths, or chat limitations.`,
-      `Use set_forge_provider to switch future forge jobs between claude, codex and opencode without interrupting a running job.`,
+      `Use set_forge_provider to switch future forge jobs between claude, codex, opencode and grok without interrupting a running job.`,
       `Wishboard: ${open} open, ${review.length} ready for review${review.length ? ` (${review.map((w) => w.id).join(", ")})` : ""}.`,
     ];
     if (provider.spent.length) parts.push(`Out of quota: ${provider.spent.join("; ")} — the forge passes them over until then.`);
