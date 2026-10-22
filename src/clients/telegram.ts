@@ -480,7 +480,13 @@ export class TelegramClient {
       await this.sendChunked(chatId, (result.text || "…") + sig, { markdown: true, ...(buttons ? { buttons } : {}) });
     } catch (err) {
       log.error("agent turn failed", err);
-      await this.sendChunked(chatId, "…the wired flickered. try again.").catch(() => {});
+      // The operator gets the reason (which agents failed and how); anyone else, that it was not them.
+      const reason = err instanceof Error ? err.message.split("\n")[0]!.slice(0, 300) : "";
+      const text =
+        sender.role === "operator" || !sender.operatorKnown
+          ? `I couldn't answer that: ${reason || "the model call failed"}. Ask again in a minute, or switch the chat agent with /model.`
+          : "I couldn't answer just now — my models are unavailable. Please try again in a few minutes.";
+      await this.sendChunked(chatId, text).catch(() => {});
     } finally {
       typing();
     }

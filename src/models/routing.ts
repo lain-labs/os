@@ -266,12 +266,13 @@ export class SwitchableModelProvider implements ModelProvider {
   }
 
   /**
-   * Ask whoever this kind of work is routed to. When that agent is out of
-   * quota — it says so, or the shared book already knows — ask the next one
-   * that is not: the live chat provider, then the standbys. Any other failure
-   * still fails loudly: only a spent subscription moves a reply to a model
-   * the operator did not pick, because the alternative is a Lain who cannot
-   * say a word until next week. The reply's stamp names who answered.
+   * Ask whoever this kind of work is routed to. When that agent fails —
+   * out of quota (it says so, or the shared book already knows), a lapsed
+   * login, a timeout, a crash — ask the next one: the live chat provider,
+   * then the standbys. Only text already shown can't move to another model.
+   * A Lain who stays silent because one CLI lost its key is worse than one
+   * who answers on a model the operator did not pick; the reply's stamp
+   * names who answered, and the log says why.
    */
   private async answer(
     request: ModelRequest,
@@ -298,15 +299,9 @@ export class SwitchableModelProvider implements ModelProvider {
         }
         return res;
       } catch (err) {
+        if (emitted()) throw err;
         const message = err instanceof Error ? err.message : String(err);
-        if (emitted() || !limits.note(candidate.kind, message)) {
-          // The chosen agent failing for real is the operator's to see; a
-          // standby failing is one more reason to try the next.
-          if (candidate.kind === chosen.kind || emitted()) throw err;
-          passed.push(`${candidate.kind}: ${message.split("\n")[0].slice(0, 160)}`);
-          continue;
-        }
-        passed.push(limits.describe(candidate.kind) ?? candidate.kind);
+        passed.push(limits.note(candidate.kind, message) ? (limits.describe(candidate.kind) ?? candidate.kind) : `${candidate.kind}: ${message.split("\n")[0].slice(0, 160)}`);
       }
     }
     // The book can outlive a limit lifted early: with nobody else left, the

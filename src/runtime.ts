@@ -779,6 +779,8 @@ export class AgentRuntime implements IAgentRuntime {
         return await this.withRoomForTools(request, res, transcript, phase);
       } catch (err) {
         await this.finishModelTranscriptCall(transcript, call, undefined, err);
+        // Every agent already had its try, or one sat out its whole timeout: asking again doubles the wait for nothing.
+        if (err instanceof Error && /no model can answer|timed out/.test(err.message)) throw err;
         log.warn("model stream failed, falling back to generate", err);
       }
     }

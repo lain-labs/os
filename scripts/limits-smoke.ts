@@ -311,11 +311,20 @@ const firstReply = await chat.generate(chatRequest);
 const secondReply = await chat.generate(chatRequest);
 check("spent chat model hands over", firstReply.text === "still here" && secondReply.model === "codex/gpt");
 check("a spent chat model is skipped", claudeCalls === 1);
+const lapsed: ModelProvider = {
+  name: "opencode",
+  modelFor: () => "free",
+  async generate() {
+    throw new Error("opencode exited 1: Missing Authentication header");
+  },
+};
+const handed = await router(lapsed, codex).generate(chatRequest);
+check("a lapsed login hands over too   ", handed.model === "codex/gpt");
 let loud = "";
 await router(broken, codex)
   .generate(chatRequest)
   .catch((err: Error) => (loud = err.message));
-check("other failures stay loud", loud.includes("unexpected status 500"));
+check("nobody left: the error says why", loud.includes("no model can answer") && loud.includes("unexpected status 500"));
 
 // -------------------------------------------------------- wasted rounds
 

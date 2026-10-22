@@ -98,11 +98,11 @@ function splitArgs(raw?: string): string[] {
  * failed calls on that provider. Off by default so the agent never silently
  * lands on a model the operator didn't choose.
  *
- * Running out of quota is the one exception: a spent subscription fails every
- * call until its reset, so the reply goes to the next agent that is not spent
- * (LAINOS_MODEL_STANDBY, comma-separated kinds in order; default every chat
- * agent this machine has; `none` turns it off). Who is spent lives in
- * data/limits.json, shared with the forge.
+ * A turn whose agent fails outright — out of quota, a lapsed login, a
+ * timeout — goes to the next agent that can answer (LAINOS_MODEL_STANDBY,
+ * comma-separated kinds in order; default every chat agent this machine has;
+ * `none` turns it off), and the reply's stamp names who answered. Who is
+ * spent lives in data/limits.json, shared with the forge.
  *
  * On top of the base, LAINOS_MODEL_TIER_SMALL / _MEDIUM / _LARGE may route a
  * single tier to a different provider.
