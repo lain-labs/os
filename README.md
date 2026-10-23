@@ -433,6 +433,47 @@ master: a `git pull --ff-only` from cron every 20 minutes
 `systemctl restart lainos-press`, which rebuilds — an agent host that redeploys
 itself on every upstream commit is one a red master takes down.
 
+### A node of your own: Docker, with Hermes and OpenClaw
+
+`deploy/node/` runs Lain on a server next to two other agent runtimes, which
+become her **subagents**: [Hermes Agent](https://github.com/NousResearch/hermes-agent)
+and [OpenClaw](https://github.com/openclaw/openclaw), each with its own tools,
+skills and memory. Lain hands one of them a self-contained task with
+`delegate_to_agent` and says who did the work; their answers come back marked
+as third-party text. The first such node shares its host with the Fuji
+validator of Cyberia's L1, so Hermes carries a `fuji-node` skill and reads the
+node's API through a socket (`fuji-rpc.socket`), never over the network.
+
+| Container | What it is | Reachable |
+|---|---|---|
+| `lainos` | this repo's daemon (`lain-serve`), the clone mounted over `/app` so the forge's commits survive restarts | `127.0.0.1:7777` on the host, behind `LAINOS_HTTP_KEY` |
+| `hermes` | Hermes Agent, its API server on | `hermes:8642`, compose network only |
+| `openclaw` | OpenClaw gateway with `/v1/chat/completions` on | `openclaw:18789`, compose network only |
+
+**Free models only.** Every model is an OpenRouter `:free` one, with
+`LAINOS_MODEL_FALLBACK=none`, `LAINOS_MODEL_STANDBY=none`, no fallback provider
+in Hermes or OpenClaw, and the plugins that spend money (`image`) or the free
+pool's daily quota (initiative, study, trader, press) switched off with
+`LAINOS_DISABLE_PLUGINS` and their own flags. Give the key a $0 credit limit
+on openrouter.ai and a mistake cannot cost anything. Free models are
+rate-limited per day; three agents share that one pool.
+
+A validator on the same host must outlive all three: the containers run with
+memory limits and `oom_score_adj: 500`, and avalanchego is pinned to
+`OOMScoreAdjust=-900`.
+
+```bash
+# on the node, as the user that runs rootless Docker
+git clone <this repo's URL> ~/lain-node/lainos
+# then as root — keys are read once, bearers between the containers are generated
+OPENROUTER_API_KEY=sk-or-… CHAOS_MCP_KEY=lain_… bash ~lain/lain-node/lainos/deploy/node/install.sh
+curl -fsS 127.0.0.1:7777/health
+```
+
+`install.sh` is safe to run again: it seeds the agents' configs only once
+(after that they are theirs — update Hermes' skills with `docker compose cp`),
+keeps existing secrets, rebuilds Lain's image and restarts what changed.
+
 ## Debugging model/tool decisions
 
 Every turn writes a JSON transcript under `data/model-transcripts/` by default.
@@ -1279,6 +1320,11 @@ POST /sessions/{id}/recap             -> { recap }
 POST /chat { roomId, userId, text, task? } -> { text, actions, model, provider, task }
 POST /acp/tools { tool, arguments }   -> report (Bearer LAINOS_ACP_API_KEY)
 ```
+
+The bridge listens on `127.0.0.1` with no auth. Once it is reachable from
+anywhere else — a container port, a tunnel — set `LAINOS_HTTP_KEY`: every route
+but `/health` and `/acp/tools` then wants `Authorization: Bearer <key>`, because
+`/chat` drives an agent with a shell, a wallet and a forge.
 
 `/acp/tools` serves what Lain sells on the Virtuals ACP marketplace. The local
 `lain-acp-bridge` calls it after a buyer funds a job. Today it has one tool,

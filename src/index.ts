@@ -44,6 +44,7 @@ import { backtestPlugin } from "./plugins/backtest/index.js";
 import { deskPlugin } from "./plugins/desk/index.js";
 import { walletsPlugin } from "./plugins/wallets/index.js";
 import { digestPlugin } from "./plugins/digest/index.js";
+import { subagentsPlugin } from "./plugins/subagents/index.js";
 import { AgentRuntime } from "./runtime.js";
 import { loadSoul } from "./soul.js";
 import type { Character, Plugin } from "./types.js";
@@ -177,6 +178,8 @@ export { crmPlugin, CrmService } from "./plugins/crm/index.js";
 export { walletsPlugin } from "./plugins/wallets/index.js";
 export { metamaskPlugin, MetaMaskService } from "./plugins/metamask/index.js";
 export { digestPlugin, DigestService } from "./plugins/digest/index.js";
+export { subagentsPlugin, loadSubagents, delegate } from "./plugins/subagents/index.js";
+export type { Subagent } from "./plugins/subagents/index.js";
 export type { CrmRecord, CrmStatus } from "./plugins/crm/index.js";
 export { TradeJournal, applyBuy, applySell } from "./plugins/chain/journal.js";
 export type { LiquidityRecord, Position, TradeRecord } from "./plugins/chain/journal.js";
@@ -212,6 +215,7 @@ const BUILTIN_PLUGINS: Record<string, Plugin> = {
   wallets: walletsPlugin,
   digest: digestPlugin,
   metamask: metamaskPlugin,
+  subagents: subagentsPlugin,
 };
 
 export interface CreateAgentOptions {
@@ -248,7 +252,15 @@ export async function createAgent(opts: CreateAgentOptions): Promise<AgentRuntim
   });
 
   const wanted = new Set(opts.character.plugins ?? ["bootstrap"]);
+  // A host can switch plugins off without editing the character: a node on
+  // free models only drops the ones that spend money (image) or quota.
+  const disabled = new Set(
+    (getSetting("LAINOS_DISABLE_PLUGINS") ?? "").split(/[\s,]+/).map((n) => n.trim().toLowerCase()).filter(Boolean),
+  );
+  disabled.delete("bootstrap");
+  if (disabled.size) log.info(`plugins switched off by LAINOS_DISABLE_PLUGINS: ${[...disabled].join(", ")}`);
   for (const name of wanted) {
+    if (disabled.has(name)) continue;
     const plugin = BUILTIN_PLUGINS[name];
     if (plugin) runtime.use(plugin);
     else log.warn(`character requested unknown plugin: ${name}`);

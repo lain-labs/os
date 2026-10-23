@@ -1,0 +1,68 @@
+# Lain OS on a node of its own, with Hermes Agent and OpenClaw as her subagents.
+# Rootless Docker, run from the node directory (see README, "A node of your own"):
+#
+#   lainos/            a clone of this repo, mounted over /app — the forge commits here
+#   secrets/*.env      mode 0600, never in git (templates: deploy/node/*.env.example)
+#   hermes/ openclaw/  each agent's own state
+#
+# Only Lain's HTTP bridge is published, on the host's loopback and behind
+# LAINOS_HTTP_KEY; the subagents are reachable from her alone, on this network.
+# Every model is a free OpenRouter one (`:free`), with no paid fallback anywhere.
+name: lain-node
+
+x-defaults: &defaults
+  restart: unless-stopped
+  # A validator shares this host: when memory runs out, these go first.
+  oom_score_adj: 500
+  logging:
+    driver: local
+    options: { max-size: 10m, max-file: "3" }
+
+services:
+  lainos:
+    <<: *defaults
+    build: ./lainos
+    image: lainos-node
+    env_file: secrets/lainos.env
+    environment:
+      LAINOS_SUBAGENTS: hermes,openclaw
+      LAINOS_SUBAGENT_HERMES_URL: http://hermes:8642/v1
+      LAINOS_SUBAGENT_HERMES_MODEL: hermes-agent
+      LAINOS_SUBAGENT_HERMES_ABOUT: >-
+        Hermes Agent by Nous Research. Watches this node's Avalanche validator (health, peers,
+        P-Chain balance, the Fuji L1's blocks) and runs its own skills, cron jobs and shell.
+      LAINOS_SUBAGENT_OPENCLAW_URL: http://openclaw:18789/v1
+      LAINOS_SUBAGENT_OPENCLAW_MODEL: openclaw
+      LAINOS_SUBAGENT_OPENCLAW_ABOUT: >-
+        OpenClaw. A general assistant with its own workspace, skills and web tools; good for
+        research and multi-step chores you can describe in one message.
+    volumes:
+      - ./lainos:/app
+    ports:
+      - "127.0.0.1:7777:7777"
+    mem_limit: 1g
+    depends_on: [hermes, openclaw]
+
+  hermes:
+    <<: *defaults
+    image: nousresearch/hermes-agent@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d
+    command: ["gateway", "run"]
+    env_file: secrets/hermes.env
+    environment:
+      API_SERVER_ENABLED: "true"
+      API_SERVER_HOST: 0.0.0.0
+      API_SERVER_PORT: "8642"
+    volumes:
+      - ./hermes:/opt/data
+      # The validator's node API (127.0.0.1:9650 on the host), as a socket: see fuji-rpc.socket.
+      - /run/lain-node:/run/lain-node:ro
+    mem_limit: 900m
+
+  openclaw:
+    <<: *defaults
+    image: ghcr.io/openclaw/openclaw@sha256:7dbff0fe5f5359b1badefe90a23efa9f203cd0d3c36bee095f4896c7a1d3864b
+    command: ["node", "openclaw.mjs", "gateway", "--bind", "lan", "--port", "18789"]
+    env_file: secrets/openclaw.env
+    volumes:
+      - ./openclaw:/home/node/.openclaw
+    mem_limit: 900m

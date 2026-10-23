@@ -1,0 +1,31 @@
+{
+  "gateway": {
+    "mode": "local",
+    "bind": "lan",
+    "port": 18789,
+    "auth": { "mode": "token" },
+    "http": { "endpoints": { "chatCompletions": { "enabled": true } } }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "openrouter/nvidia/nemotron-3-super-120b-a12b:free",
+        "fallbacks": []
+      },
+      "models": {
+        "openrouter/nvidia/nemotron-3-super-120b-a12b:free": {},
+        "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free": {}
+      },
+      "workspace": "/home/node/.openclaw/workspace"
+    }
+  },
+  "mcp": {
+    "servers": {
+      "chaos": {
+        "url": "https://chaos.fm/mcp",
+        "transport": "streamable-http",
+        "headers": { "Authorization": "Bearer ${CHAOS_MCP_KEY}" }
+      }
+    }
+  }
+}

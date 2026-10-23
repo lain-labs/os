@@ -1,0 +1,20 @@
+# Hermes on the Lain node: one free OpenRouter model for everything (the
+# auxiliary tasks follow the main model while their provider is "auto"), and
+# no fallback provider, so nothing can land on a paid model.
+model:
+  default: nvidia/nemotron-3-super-120b-a12b:free
+  provider: openrouter
+  base_url: https://openrouter.ai/api/v1
+  api_mode: chat_completions
+fallback_providers: []
+
+terminal:
+  backend: local
+  cwd: /opt/data/workspace
+
+mcp_servers:
+  chaos:
+    url: https://chaos.fm/mcp
+    headers:
+      Authorization: "Bearer ${CHAOS_MCP_KEY}"
+    timeout: 120

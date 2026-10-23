@@ -1,4 +1,5 @@
-import { createServer, type Server } from "node:http";
+import { createHash, timingSafeEqual } from "node:crypto";
+import { createServer, type IncomingMessage, type Server } from "node:http";
 import { handleAcpTool } from "../acp/tools.js";
 import { createLogger } from "../logger.js";
 import {
@@ -38,14 +39,23 @@ export interface HttpOptions {
  *   POST /sessions/{id}/recap -> { recap }
  *   POST /chat {roomId,userId,text,task} -> { text, actions, model, provider, task }
  *   POST /acp/tools {tool,arguments} -> report (bearer LAINOS_ACP_API_KEY; see src/acp/tools.ts)
+ *
+ * With LAINOS_HTTP_KEY set, every route but /health and /acp/tools (which has
+ * its own key) wants `Authorization: Bearer <LAINOS_HTTP_KEY>`. Set it whenever
+ * the bridge is reachable from anywhere but this machine: /chat drives an agent
+ * with a shell, a wallet and a forge.
  */
 export function createHttpServer(runtime: IAgentRuntime, opts: HttpOptions = {}): Server {
   const host = opts.host ?? process.env.LAINOS_HTTP_HOST ?? "127.0.0.1";
   const port = Number(opts.port ?? process.env.LAINOS_HTTP_PORT ?? 7777);
+  const key = runtime.getSetting("LAINOS_HTTP_KEY")?.trim() || undefined;
+  if (!key && !["127.0.0.1", "localhost", "::1"].includes(host)) {
+    log.warn(`HTTP bridge listens on ${host} without LAINOS_HTTP_KEY — anyone who reaches it can drive the agent`);
+  }
 
   const server = createServer(async (req, res) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
     res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
     if (req.method === "OPTIONS") {
       res.writeHead(204).end();
@@ -54,6 +64,10 @@ export function createHttpServer(runtime: IAgentRuntime, opts: HttpOptions = {})
 
     if (req.method === "GET" && req.url === "/health") {
       return json(res, 200, { ok: true, agent: runtime.character.name });
+    }
+
+    if (key && req.url !== "/acp/tools" && !bearerMatches(req, key)) {
+      return json(res, 401, { error: "missing or wrong bearer" });
     }
 
     if (req.method === "GET" && req.url?.startsWith("/alerts")) {
@@ -227,7 +241,16 @@ export function createHttpServer(runtime: IAgentRuntime, opts: HttpOptions = {})
   return server;
 }
 
-function readBody(req: import("node:http").IncomingMessage): Promise<string> {
+/** Constant-time: compare digests, so neither the length nor a prefix leaks. */
+function bearerMatches(req: IncomingMessage, key: string): boolean {
+  const header = req.headers.authorization ?? "";
+  const given = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
+  if (!given) return false;
+  const digest = (s: string) => createHash("sha256").update(s).digest();
+  return timingSafeEqual(digest(given), digest(key));
+}
+
+function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     let data = "";
     req.on("data", (chunk) => {
