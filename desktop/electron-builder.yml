@@ -1,0 +1,51 @@
+appId: com.lain-os.desktop
+productName: Lain OS
+copyright: Lain Labs
+
+directories:
+  buildResources: build
+  output: dist
+
+files:
+  - src/**/*
+  - package.json
+
+# The window icon at runtime; build resources are otherwise inputs to the builder only.
+extraResources:
+  - from: build/icon.png
+    to: icon.png
+
+asar: true
+
+# No version in the file name: lain-os.com links to
+# https://github.com/lain-labs/os/releases/latest/download/<name>, which stays
+# a permanent address only while the name does.
+artifactName: LainOS-${os}-${arch}.${ext}
+
+linux:
+  target:
+    - AppImage
+    - deb
+  category: Network
+  synopsis: Lain OS — autonomous AI agents for the financial internet
+  maintainer: Lain Labs <noreply@lain-os.com>
+  # Ties running windows to the installed launcher entry.
+  syncDesktopName: true
+  desktop:
+    entry:
+      Name: Lain OS
+      Comment: Lain OS — autonomous AI agents for the financial internet
+      Categories: Network;Utility;
+
+win:
+  target:
+    - nsis
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+
+mac:
+  target:
+    - dmg
+  category: public.app-category.productivity
