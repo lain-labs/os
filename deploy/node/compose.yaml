@@ -40,7 +40,7 @@ services:
       - ./lainos:/app
     ports:
       - "127.0.0.1:7777:7777"
-    mem_limit: 1g
+    mem_limit: 600m
     depends_on: [hermes, openclaw]
 
   hermes:
@@ -56,13 +56,17 @@ services:
       - ./hermes:/opt/data
       # The validator's node API (127.0.0.1:9650 on the host), as a socket: see fuji-rpc.socket.
       - /var/lib/lain-node:/var/lib/lain-node:ro
-    mem_limit: 900m
+    mem_limit: 700m
 
   openclaw:
     <<: *defaults
     image: ghcr.io/openclaw/openclaw@sha256:7dbff0fe5f5359b1badefe90a23efa9f203cd0d3c36bee095f4896c7a1d3864b
     command: ["node", "openclaw.mjs", "gateway", "--bind", "lan", "--port", "18789"]
     env_file: secrets/openclaw.env
+    environment:
+      # A run peaks past 800 MB; a smaller old space makes V8 collect before the cgroup kills it.
+      NODE_OPTIONS: --max-old-space-size=640
     volumes:
       - ./openclaw:/home/node/.openclaw
-    mem_limit: 900m
+    mem_limit: 1400m
+    memswap_limit: 1800m
