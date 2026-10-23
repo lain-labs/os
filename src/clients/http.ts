@@ -14,6 +14,8 @@ import type { SentinelService } from "../plugins/sentinel/index.js";
 import { buildRecap } from "../memory/recap.js";
 import { TASK_ORDER, isTaskKind } from "../models/tasks.js";
 import type { IAgentRuntime } from "../types.js";
+import { NodeJobs } from "./node-jobs.js";
+import { loadSubagents } from "../plugins/subagents/index.js";
 
 const log = createLogger("http");
 
@@ -49,6 +51,7 @@ export function createHttpServer(runtime: IAgentRuntime, opts: HttpOptions = {})
   const host = opts.host ?? process.env.LAINOS_HTTP_HOST ?? "127.0.0.1";
   const port = Number(opts.port ?? process.env.LAINOS_HTTP_PORT ?? 7777);
   const key = runtime.getSetting("LAINOS_HTTP_KEY")?.trim() || undefined;
+  const jobs = new NodeJobs(runtime, runtime.getSetting("LAINOS_DATA_DIR") ?? "data");
   if (!key && !["127.0.0.1", "localhost", "::1"].includes(host)) {
     log.warn(`HTTP bridge listens on ${host} without LAINOS_HTTP_KEY — anyone who reaches it can drive the agent`);
   }
@@ -68,6 +71,40 @@ export function createHttpServer(runtime: IAgentRuntime, opts: HttpOptions = {})
 
     if (key && req.url !== "/acp/tools" && !bearerMatches(req, key)) {
       return json(res, 401, { error: "missing or wrong bearer" });
+    }
+
+    if (req.method === "GET" && req.url === "/node-status") {
+      return json(res, 200, {
+        ok: true, agent: runtime.character.name,
+        model: runtime.model instanceof SwitchableModelProvider ? runtime.model.state() : { provider: runtime.model.name },
+        coder: runtime.getService<ForgeService>("forge")?.forgeProvider(),
+        subagents: loadSubagents(k => runtime.getSetting(k)).map(({ name, model, about }) => ({ name, model, about })),
+        note: "Installed does not mean authenticated or within quota. Health does not test a model completion.",
+      });
+    }
+
+    if (req.url?.split("?")[0] === "/jobs" && (req.method === "GET" || req.method === "POST")) {
+      try {
+        if (req.method === "GET") {
+          const url = new URL(req.url, "http://localhost");
+          const owner = url.searchParams.get("owner");
+          if (!owner) return json(res, 400, { error: "owner is required" });
+          const id = url.searchParams.get("id");
+          const found = await jobs.list(owner, id ?? undefined);
+          if (!id) return json(res, 200, { jobs: found });
+          const job = found.find(job => job.id === id);
+          return json(res, job ? 200 : 404, job ? { job } : { error: "No such task." });
+        }
+        const body = JSON.parse(await readBody(req));
+        if (typeof body.owner !== "string" || !body.owner.trim() || body.owner.length > 100 || typeof body.task !== "string" || (body.id !== undefined && typeof body.id !== "string")) {
+          return json(res, 400, { error: "owner and task are required strings; id is an optional string" });
+        }
+        const job = await jobs.submit(body.owner, body.task, body.id);
+        return json(res, 202, { job });
+      } catch (error) {
+        log.error("node job request failed", error);
+        return json(res, 409, { error: error instanceof Error && /^(Invalid task|Task |The node is busy)/.test(error.message) ? error.message : "Could not process node task." });
+      }
     }
 
     if (req.method === "GET" && req.url?.startsWith("/alerts")) {

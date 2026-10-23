@@ -31,6 +31,7 @@ services:
     env_file: secrets/lainos.env
     environment:
       LAINOS_SUBAGENTS: ${LAINOS_SUBAGENTS:-hermes}
+      PATH: /home/lain/.local/bin:/usr/local/bin:/usr/bin:/bin
       LAINOS_SUBAGENT_HERMES_URL: http://hermes:8642/v1
       LAINOS_SUBAGENT_HERMES_MODEL: hermes-agent
       LAINOS_SUBAGENT_HERMES_ABOUT: >-
@@ -43,6 +44,11 @@ services:
         research and multi-step chores you can describe in one message.
     volumes:
       - ./lainos:/app
+      # Reuse the host's installed CLIs without granting access to the host home.
+      - /home/lain/.local:/home/lain/.local:ro
+      - /home/lain/.opencode:/home/lain/.opencode:ro
+      # CLI logins and sessions survive container recreation, isolated from the host.
+      - ./agent-home:/root
     ports:
       - "127.0.0.1:7777:7777"
     # Runs in ~150 MB; the build before every start (tsc) needs the rest.
