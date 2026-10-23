@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { fetch as undiciFetch, ProxyAgent, type Dispatcher } from "undici";
+import { basename, dirname, join } from "node:path";
+import { fetch as undiciFetch, FormData, ProxyAgent, type Dispatcher } from "undici";
 import { createLogger } from "../logger.js";
 import { buildRecap } from "../memory/recap.js";
 import { fetchFreeModels, type FreeModel } from "../models/openrouter.js";
@@ -15,6 +15,7 @@ import { TASKS, TaskKind, isTaskKind } from "../models/tasks.js";
 import { formatForgeJobs, type ForgeService } from "../plugins/forge/index.js";
 import { describeNetworks, switchNetwork } from "../plugins/chain/networks.js";
 import { digestCommand } from "../plugins/digest/index.js";
+import { imagesDir, imagesFromTurn } from "../plugins/image/index.js";
 import { describeSkills } from "../plugins/skills/index.js";
 import { formatListings, registryIo, searchSkillsSh } from "../plugins/skills/registry.js";
 import { writeSettings } from "../plugins/system/settings.js";
@@ -130,6 +131,7 @@ const HELP_TEXT = [
   "  · /network — which chain i'm on (/network robinhood switches)",
   "  · /digest — portfolio digest now (/digest at 09:00 — daily, /digest off)",
   "  · /skills — the tools i wrote myself (/skills find <query> — search skills.sh)",
+  "  · draw pictures — \"draw lain in the wired, 16:9\" (in a group: mention me)",
   "",
   "try: \"watch 0x… and warn me below 5\"",
 ].join("\n");
@@ -477,6 +479,10 @@ export class TelegramClient {
       // A choice arrives as one-tap buttons; the tapped label comes back as
       // the operator's next message ("2. Mainnet").
       const buttons = result.choices?.options.map((o, i) => `${i + 1}. ${o.label}`);
+      // Pictures the turn drew go first, so the words arrive under them.
+      for (const file of imagesFromTurn(result.actions, imagesDir(this.runtime))) {
+        await this.sendPhoto(chatId, file).catch((err) => log.warn(`could not send ${basename(file)}`, err));
+      }
       await this.sendChunked(chatId, (result.text || "…") + sig, { markdown: true, ...(buttons ? { buttons } : {}) });
     } catch (err) {
       log.error("agent turn failed", err);
@@ -827,6 +833,28 @@ export class TelegramClient {
       await sleep(2_000);
       return this.api<T>(method, body);
     }
+  }
+
+  /**
+   * A local picture as a Telegram photo. Multipart, because the Bot API takes
+   * a file upload only that way; everything else here is JSON through `api()`.
+   * Only ever handed files from the images directory (see imagesFromTurn).
+   */
+  private async sendPhoto(chatId: number, file: string, caption?: string): Promise<void> {
+    const bytes = await readFile(file);
+    const type = file.endsWith(".jpg") ? "image/jpeg" : file.endsWith(".webp") ? "image/webp" : "image/png";
+    const form = new FormData();
+    form.set("chat_id", String(chatId));
+    form.set("photo", new Blob([bytes], { type }), basename(file));
+    if (caption) form.set("caption", caption.slice(0, 1024));
+    const res = await undiciFetch(`https://api.telegram.org/bot${this.token}/sendPhoto`, {
+      method: "POST",
+      body: form,
+      signal: AbortSignal.timeout(60_000),
+      dispatcher: this.dispatcher,
+    });
+    const json = (await res.json()) as { ok: boolean; description?: string };
+    if (!res.ok || !json.ok) throw new Error(`telegram sendPhoto ${res.status}: ${json.description ?? "error"}`);
   }
 
   private async api<T>(

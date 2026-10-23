@@ -804,6 +804,23 @@ and secret values loaded from the environment.
     automatically; an expired session is reinitialized without replaying the
     failed call. Check remote state before deciding whether to retry.
   - Verify locally with `npm run mcp:smoke` (simulated servers, no credentials).
+- **image** — pictures on request: `generate_image({prompt, aspect})` draws with
+  an image model through the same OpenAI-compatible endpoint as the chat models
+  (`OPENROUTER_BASE_URL` / `OPENROUTER_API_KEY`; override with
+  `LAINOS_IMAGE_BASE_URL` / `LAINOS_IMAGE_API_KEY`). Default model
+  `google/gemini-3.1-flash-lite-image` (about $0.03 a picture; `LAINOS_IMAGE_MODEL`
+  changes it — lain-os.com's gateway lists only models that can also answer in
+  text). Files land in `<LAINOS_DATA_DIR>/images/`, and the Telegram client sends
+  each one back as a photo in the chat that asked — only files from that
+  directory, whatever else an action names. A daily cap counted on disk
+  (`LAINOS_IMAGE_DAILY_LIMIT`, default 40) and the team's picture rules on every
+  prompt (`LAINOS_IMAGE_RULES`: no rising price charts, rockets, real faces or
+  other brands' logos), because a group chat is a place where anyone allowed may
+  ask.
+  `press_picture({channel, text, image?})` hands a picture from the chat (the
+  latest one by default) to the press desk on chaos.fm through the chaos MCP's
+  `press_draft` as `image_base64` — the same picture, as a draft a person
+  approves; it needs a chaos.fm with `image_base64` on `press_draft`.
 - **skills** — instant self-extension, no restart needed: `skills/*.mjs`
   modules (each default-exporting `{ name, description, parameters, handler }`)
   are hot-loaded as live tools, and the directory is watched for changes. This
