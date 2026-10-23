@@ -62,6 +62,9 @@ services:
   openclaw:
     <<: *defaults
     image: ghcr.io/openclaw/openclaw@sha256:7dbff0fe5f5359b1badefe90a23efa9f203cd0d3c36bee095f4896c7a1d3864b
+    # Worker pools are sized from the CPUs Node sees (up to 8 per pool, 512 MB of
+    # V8 old space each): one CPU of affinity keeps a run under the memory limit.
+    entrypoint: ["tini", "-s", "--", "taskset", "-c", "0", "node", "/app/docker-entrypoint.mjs"]
     command: ["node", "openclaw.mjs", "gateway", "--bind", "lan", "--port", "18789"]
     env_file: secrets/openclaw.env
     environment:
