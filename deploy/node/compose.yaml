@@ -31,7 +31,13 @@ services:
     env_file: secrets/lainos.env
     environment:
       LAINOS_SUBAGENTS: ${LAINOS_SUBAGENTS:-hermes}
-      PATH: /home/lain/.local/bin:/usr/local/bin:/usr/bin:/bin
+      PATH: /usr/local/bin:/home/lain/.local/bin:/usr/bin:/bin
+      LAINOS_FORGE_OPENCODE_MODEL: openrouter/nvidia/nemotron-3-ultra-550b-a55b:free
+      # Also pin background titles/compaction: OpenCode's default small model can be paid.
+      OPENCODE_CONFIG_CONTENT: >-
+        {"model":"openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+        "small_model":"openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+        "enabled_providers":["openrouter"],"autoupdate":false}
       LAINOS_SUBAGENT_HERMES_URL: http://hermes:8642/v1
       LAINOS_SUBAGENT_HERMES_MODEL: hermes-agent
       LAINOS_SUBAGENT_HERMES_ABOUT: >-
