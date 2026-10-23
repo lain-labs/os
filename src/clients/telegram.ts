@@ -23,6 +23,7 @@ import { htmlToText, replyKeyboard } from "../plugins/telegram/index.js";
 import { defang, resolveTelegramSender, senderHeader, senderTag } from "../plugins/telegram/identity.js";
 import { markdownToTelegramHtml } from "./telegram-format.js";
 import type { IAgentRuntime } from "../types.js";
+import { isNodeChat, relayNodeMessage } from "./node-relay.js";
 
 const log = createLogger("telegram");
 
@@ -368,6 +369,28 @@ export class TelegramClient {
 
     const cmd = content.split(/\s+/)[0]?.toLowerCase().replace(/@\w+$/, "");
     const cmdArgs = content.split(/\s+/).slice(1);
+    if (isNodeChat(chatId, getSetting) || cmd === "/node") {
+      if (!sender.operatorKnown || sender.role !== "operator") {
+        await this.sendChunked(chatId, "Only the configured operator can talk to the autonomous node.");
+        return;
+      }
+      if (cmd === "/start" || cmd === "/help" || (cmd === "/node" && !cmdArgs.length)) {
+        await this.sendChunked(chatId, "This chat is connected to the autonomous Lain on the server. Mention me or reply to a server message to talk to her. In private, use /node followed by your message.\n\n⌁ server Lain");
+        return;
+      }
+      const stopTyping = this.keepTyping(chatId);
+      try {
+        const quote = msg.reply_to_message?.text?.slice(0, 1200);
+        const text = [senderHeader(sender), ...(quote ? [`[quoted message: ${defang(quote)}]`] : []), defang(cmd === "/node" ? cmdArgs.join(" ") : content)].join("\n");
+        const reply = await relayNodeMessage(getSetting, { chatId, sender, text });
+        await this.sendChunked(chatId, `${reply.text}\n\n⌁ server Lain${reply.model ? ` · ${reply.model}` : ""}`, { markdown: true });
+      } catch (error) {
+        await this.sendChunked(chatId, `server Lain: ${error instanceof Error ? error.message : "request failed"}`);
+      } finally {
+        stopTyping();
+      }
+      return;
+    }
     if (
       sender.operatorKnown &&
       sender.role !== "operator" &&
