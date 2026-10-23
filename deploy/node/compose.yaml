@@ -8,6 +8,11 @@
 # Only Lain's HTTP bridge is published, on the host's loopback and behind
 # LAINOS_HTTP_KEY; the subagents are reachable from her alone, on this network.
 # Every model is a free OpenRouter one (`:free`), with no paid fallback anywhere.
+#
+# OpenClaw is opt-in (profile "openclaw"): idle, it grows past 1.3 GB, more than
+# a 4 GB host shared with a validator can give. To run it, put in ./.env:
+#   COMPOSE_PROFILES=openclaw
+#   LAINOS_SUBAGENTS=hermes,openclaw
 name: lain-node
 
 x-defaults: &defaults
@@ -25,7 +30,7 @@ services:
     image: lainos-node
     env_file: secrets/lainos.env
     environment:
-      LAINOS_SUBAGENTS: hermes,openclaw
+      LAINOS_SUBAGENTS: ${LAINOS_SUBAGENTS:-hermes}
       LAINOS_SUBAGENT_HERMES_URL: http://hermes:8642/v1
       LAINOS_SUBAGENT_HERMES_MODEL: hermes-agent
       LAINOS_SUBAGENT_HERMES_ABOUT: >-
@@ -42,7 +47,9 @@ services:
       - "127.0.0.1:7777:7777"
     # Runs in ~150 MB; the build before every start (tsc) needs the rest.
     mem_limit: 1g
-    depends_on: [hermes, openclaw]
+    depends_on:
+      hermes: { condition: service_started }
+      openclaw: { condition: service_started, required: false }
 
   hermes:
     <<: *defaults
@@ -61,6 +68,7 @@ services:
 
   openclaw:
     <<: *defaults
+    profiles: [openclaw]
     image: ghcr.io/openclaw/openclaw@sha256:7dbff0fe5f5359b1badefe90a23efa9f203cd0d3c36bee095f4896c7a1d3864b
     # Worker pools are sized from the CPUs Node sees (up to 8 per pool, 512 MB of
     # V8 old space each): one CPU of affinity keeps a run under the memory limit.

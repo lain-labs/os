@@ -449,7 +449,7 @@ Docker cannot see sockets made under `/run` after it started), never over the ne
 |---|---|---|
 | `lainos` | this repo's daemon (`lain-serve`), the clone mounted over `/app` so the forge's commits survive restarts | `127.0.0.1:7777` on the host, behind `LAINOS_HTTP_KEY` |
 | `hermes` | Hermes Agent, its API server on | `hermes:8642`, compose network only |
-| `openclaw` | OpenClaw gateway with `/v1/chat/completions` on | `openclaw:18789`, compose network only |
+| `openclaw` | OpenClaw gateway with `/v1/chat/completions` on — opt-in (`COMPOSE_PROFILES=openclaw`, `LAINOS_SUBAGENTS=hermes,openclaw` in the node's `.env`): idle it grows past 1.3 GB, too much next to a validator on 4 GB | `openclaw:18789`, compose network only |
 
 **Free models only.** Every model is an OpenRouter `:free` one, with
 `LAINOS_MODEL_FALLBACK=none`, `LAINOS_MODEL_STANDBY=none`, no fallback provider
