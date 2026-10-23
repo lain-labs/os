@@ -40,7 +40,8 @@ services:
       - ./lainos:/app
     ports:
       - "127.0.0.1:7777:7777"
-    mem_limit: 600m
+    # Runs in ~150 MB; the build before every start (tsc) needs the rest.
+    mem_limit: 1g
     depends_on: [hermes, openclaw]
 
   hermes:
