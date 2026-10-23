@@ -57,5 +57,10 @@
       "openai",
       "xai"
     ]
+  },
+  "memory": {
+    "search": {
+      "provider": "none"
+    }
   }
 }
