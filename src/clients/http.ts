@@ -234,7 +234,7 @@ export function createHttpServer(runtime: IAgentRuntime, opts: HttpOptions = {})
     if (req.method === "POST" && req.url === "/chat") {
       try {
         const body = await readBody(req);
-        const { roomId, userId, text, task } = JSON.parse(body || "{}");
+        const { roomId, userId, text, task, metadata } = JSON.parse(body || "{}");
         if (typeof text !== "string" || !text.trim()) {
           return json(res, 400, { error: "field 'text' is required" });
         }
@@ -249,6 +249,8 @@ export function createHttpServer(runtime: IAgentRuntime, opts: HttpOptions = {})
           userId: typeof userId === "string" ? userId : "anon",
           text,
           task: declared && isTaskKind(declared) ? declared : undefined,
+          // Identity metadata is trusted only on the authenticated private bridge.
+          metadata: key && metadata && typeof metadata === "object" && !Array.isArray(metadata) ? metadata : undefined,
         });
         return json(res, 200, result);
       } catch (err) {

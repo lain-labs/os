@@ -775,6 +775,8 @@ export class TelegramClient {
   }
 
   private async sendChunked(chatId: number, text: string, opts: SendOptions = {}): Promise<void> {
+    const prefix = this.runtime.getSetting("TELEGRAM_MESSAGE_PREFIX")?.trim();
+    if (prefix) text = `${prefix}\n${text}`;
     // Markdown is split before it is converted, so a tag never straddles two
     // messages; the margin leaves room for what escaping and tags add.
     const chunks = opts.markdown

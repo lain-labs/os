@@ -108,6 +108,8 @@ export function replyKeyboard(buttons: string[]): Record<string, unknown> {
  * with a broken link beats no message.
  */
 async function deliver(getSetting: GetSetting, chatId: string, text: string, opts: DeliverOptions = {}): Promise<void> {
+  const prefix = getSetting("TELEGRAM_MESSAGE_PREFIX")?.trim();
+  if (prefix) text = `${prefix}\n${text}`;
   const token = getSetting("TELEGRAM_BOT_TOKEN") ?? "";
   const proxy =
     getSetting("TELEGRAM_PROXY") ?? getSetting("HTTPS_PROXY") ?? getSetting("https_proxy");

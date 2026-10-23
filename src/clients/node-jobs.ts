@@ -3,6 +3,10 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { IAgentRuntime } from "../types.js";
 import { scrubSecrets } from "../plugins/journal/index.js";
+import { sendToOperator } from "../plugins/telegram/index.js";
+import { createLogger } from "../logger.js";
+
+const log = createLogger("node-jobs");
 
 export interface NodeJob {
   id: string;
@@ -85,7 +89,16 @@ export class NodeJobs {
       job.error = scrubSecrets(error instanceof Error ? error.message : "Task failed.").slice(0, 2000);
     } finally {
       job.finishedAt = new Date().toISOString();
-      try { await this.save(); } finally { this.active = false; }
+      try {
+        await this.save();
+        if (this.runtime.getSetting("LAINOS_NODE_NOTIFY_JOBS") === "1") {
+          try {
+            await sendToOperator(k => this.runtime.getSetting(k), `Task ${job.id}: ${job.status}\n\n${job.text ?? job.error ?? "No result."}`);
+          } catch {
+            log.warn(`task ${job.id}: Telegram delivery failed; the result remains in the task receipt`);
+          }
+        }
+      } finally { this.active = false; }
     }
   }
 }

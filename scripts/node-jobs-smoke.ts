@@ -8,7 +8,7 @@ import type { IAgentRuntime } from '../src/types.js';
 const directory = await mkdtemp(join(tmpdir(), 'lain-node-jobs-'));
 let calls = 0;
 let finish!: (value: any) => void;
-const runtime = { handleMessage: async () => { calls++; return new Promise(resolve => { finish = resolve; }); } } as unknown as IAgentRuntime;
+const runtime = { getSetting: () => undefined, handleMessage: async () => { calls++; return new Promise(resolve => { finish = resolve; }); } } as unknown as IAgentRuntime;
 try {
   const jobs = new NodeJobs(runtime, directory);
   const first = await jobs.submit('owner-a', 'Inspect files.', 'test-job-123');
