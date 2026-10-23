@@ -1,5 +1,5 @@
 [Unit]
-Description=Proxy from /run/lain-node/fuji.sock to the validator's node API
+Description=Proxy from /var/lib/lain-node/fuji.sock to the validator's node API
 Requires=fuji-rpc.socket
 After=fuji-rpc.socket avalanchego.service
 

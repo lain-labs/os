@@ -55,7 +55,7 @@ services:
     volumes:
       - ./hermes:/opt/data
       # The validator's node API (127.0.0.1:9650 on the host), as a socket: see fuji-rpc.socket.
-      - /run/lain-node:/run/lain-node:ro
+      - /var/lib/lain-node:/var/lib/lain-node:ro
     mem_limit: 900m
 
   openclaw:

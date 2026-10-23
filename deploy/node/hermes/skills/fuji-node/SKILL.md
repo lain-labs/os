@@ -6,7 +6,7 @@ description: Check the Avalanche validator this container runs next to — healt
 # The Fuji node
 
 This host runs the only validator of Cyberia's Fuji L1 (Subnet-EVM). Its node API
-is the socket `/run/lain-node/fuji.sock` (the host's `127.0.0.1:9650`). Every call
+is the socket `/var/lib/lain-node/fuji.sock` (the host's `127.0.0.1:9650`). Every call
 below only reads.
 
 | | |
@@ -17,10 +17,11 @@ below only reads.
 | Validation ID | `2KZnTnX6QqZ1WNAFd7BCp9cKgXWYd3MXoj1zpccdSfVG14ULLJ` |
 
 ```bash
-S="--unix-socket /run/lain-node/fuji.sock -s -H content-type:application/json"
-rpc() { curl $S -X POST "http://node$1" --data "$2"; }
+# The node only answers Host: localhost, so the URL's host is "localhost".
+S="--unix-socket /var/lib/lain-node/fuji.sock -s -H content-type:application/json"
+rpc() { curl $S -X POST "http://localhost$1" --data "$2"; }
 
-curl $S http://node/ext/health                                    # healthy: true, per check
+curl $S http://localhost/ext/health                                    # healthy: true, per check
 rpc /ext/info '{"jsonrpc":"2.0","id":1,"method":"info.isBootstrapped","params":{"chain":"P"}}'
 rpc /ext/info '{"jsonrpc":"2.0","id":1,"method":"info.peers","params":{}}'   # numPeers
 rpc /ext/bc/Lm8HNjKAQ7ujA7XDphehkqbnu8wKjfzxpF1THX3HLyzoJhfv7/rpc '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}'

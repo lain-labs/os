@@ -24,7 +24,8 @@ as_user() {
 # 1. The validator's API, as a socket the containers can mount.
 install -m 0644 "$HERE/fuji-rpc.socket" "$HERE/fuji-rpc.service" /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable --now fuji-rpc.socket
+systemctl enable fuji-rpc.socket
+systemctl restart fuji-rpc.socket # picks up a changed path
 
 # 2. The node directory. Agent configs are seeded once; after that they are the agents' own.
 as_user mkdir -p "$NODE_DIR/secrets" "$NODE_DIR/hermes" "$NODE_DIR/openclaw"

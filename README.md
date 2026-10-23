@@ -442,7 +442,8 @@ skills and memory. Lain hands one of them a self-contained task with
 `delegate_to_agent` and says who did the work; their answers come back marked
 as third-party text. The first such node shares its host with the Fuji
 validator of Cyberia's L1, so Hermes carries a `fuji-node` skill and reads the
-node's API through a socket (`fuji-rpc.socket`), never over the network.
+node's API through a socket (`fuji-rpc.socket`, under `/var/lib/lain-node`: rootless
+Docker cannot see sockets made under `/run` after it started), never over the network.
 
 | Container | What it is | Reachable |
 |---|---|---|

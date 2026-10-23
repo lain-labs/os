@@ -4,8 +4,9 @@ Documentation=file:///home/lain/lain-node/lainos/README.md
 
 # Rootless containers cannot reach the host's loopback, where avalanchego's API
 # listens; a bind-mounted socket reaches it without opening that to the network.
+# Not under /run: rootless Docker sees a copy of /run taken when the daemon started.
 [Socket]
-ListenStream=/run/lain-node/fuji.sock
+ListenStream=/var/lib/lain-node/fuji.sock
 SocketMode=0666
 DirectoryMode=0755
 
