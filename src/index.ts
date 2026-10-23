@@ -27,6 +27,7 @@ import { githubPlugin } from "./plugins/github/index.js";
 import { initiativePlugin } from "./plugins/initiative/index.js";
 import { journalPlugin } from "./plugins/journal/index.js";
 import { metamaskPlugin } from "./plugins/metamask/index.js";
+import { mcpPlugin } from "./plugins/mcp/index.js";
 import { presencePlugin } from "./plugins/presence/index.js";
 import { pressPlugin } from "./plugins/press/index.js";
 import { scoutPlugin } from "./plugins/scout/index.js";
@@ -127,6 +128,7 @@ export type {
 export { TelegramClient } from "./clients/telegram.js";
 export { telegramPlugin, resolveOperatorChatId, sendToOperator } from "./plugins/telegram/index.js";
 export { skillsPlugin, SkillsService } from "./plugins/skills/index.js";
+export { mcpPlugin, RemoteMcpService } from "./plugins/mcp/index.js";
 export type { SkillModule } from "./plugins/skills/index.js";
 export { initiativePlugin, InitiativeService } from "./plugins/initiative/index.js";
 export { journalPlugin, VersionJournalService, scrubSecrets } from "./plugins/journal/index.js";
@@ -192,6 +194,7 @@ const BUILTIN_PLUGINS: Record<string, Plugin> = {
   channel: channelPlugin,
   telegram: telegramPlugin,
   skills: skillsPlugin,
+  mcp: mcpPlugin,
   trader: traderPlugin,
   trench: trenchPlugin,
   stocks: stocksPlugin,

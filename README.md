@@ -770,6 +770,40 @@ and secret values loaded from the environment.
   the forge repo is the one the daemon runs from, a successful job makes the
   daemon restart itself into the new code (exit 75; systemd revives it and
   `ExecStartPre` rebuilds `dist/`) — set `LAINOS_FORGE_RESTART=0` to opt out.
+- **mcp** — persistent remote MCP servers using the official MCP SDK's
+  [Streamable HTTP transport](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports),
+  including JSON and SSE responses, session/version negotiation and paginated
+  `tools/list`. Enabled for Lain by default.
+  - Put the HTTPS endpoint into an owner-only local file using a local editor,
+    outside chat, tool arguments, wishboard, source code and shell history.
+    For chaos.fm, use `<LAINOS_DATA_DIR>/mcp/chaos.endpoint` (default data
+    directory: `./data`); the service creates `mcp/` with mode `0700`. The
+    endpoint file must be a regular file owned by the daemon user, mode `0600`.
+    Never print its contents or commit it. An alternative `endpoint_file`
+    path must have the same file protections.
+  - Call `connect_remote_mcp({server: "chaos"})`, or supply `endpoint_file`
+    containing only a file path. The tool reports success only after a real
+    initialization and discovery, and returns the actual tool inventory.
+    No chaos.fm connection is preconfigured or claimed by this implementation;
+    compatibility must be verified against the operator's private endpoint.
+  - Tools become `mcp_<server>__<tool>`, preserving their input schemas.
+    `call_remote_mcp({server: "chaos", tool: "<discovered name>", arguments: {}})`
+    also works immediately in the connecting turn, before the next turn picks
+    up the newly registered native tools. Remote tools may change remote state.
+  - `list_remote_mcp_tools({})` lists status and schemas; supplying `server`
+    reconnects and refreshes discovery. `disconnect_remote_mcp({server: "chaos"})`
+    unloads the tools and removes the saved endpoint, retaining the original
+    operator-managed endpoint file.
+  - Connections persist in `<LAINOS_DATA_DIR>/mcp/connections.json`, mode `0600`,
+    within the mode-`0700` directory, and reconnect at startup. Keep the data
+    directory outside version control (the default `data/` is ignored).
+    Insecure files or directories are refused. Endpoints and credential
+    components are scrubbed from discovery/results; raw transport errors,
+    response bodies and session IDs are never logged or returned. HTTPS is
+    required and redirects are refused. Failed tool calls are never replayed
+    automatically; an expired session is reinitialized without replaying the
+    failed call. Check remote state before deciding whether to retry.
+  - Verify locally with `npm run mcp:smoke` (simulated servers, no credentials).
 - **skills** — instant self-extension, no restart needed: `skills/*.mjs`
   modules (each default-exporting `{ name, description, parameters, handler }`)
   are hot-loaded as live tools, and the directory is watched for changes. This
