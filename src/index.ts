@@ -37,6 +37,7 @@ import { skillsPlugin } from "./plugins/skills/index.js";
 import { studyPlugin } from "./plugins/study/index.js";
 import { systemPlugin } from "./plugins/system/index.js";
 import { telegramPlugin } from "./plugins/telegram/index.js";
+import { telethonPlugin } from "./plugins/telethon/index.js";
 import { traderPlugin } from "./plugins/trader/index.js";
 import { trenchPlugin } from "./plugins/trench/index.js";
 import { stocksPlugin } from "./plugins/stocks/index.js";
@@ -128,6 +129,8 @@ export type {
 } from "./plugins/channel/index.js";
 export { TelegramClient } from "./clients/telegram.js";
 export { telegramPlugin, resolveOperatorChatId, sendToOperator } from "./plugins/telegram/index.js";
+export { telethonPlugin, TelethonService, formatMessage, isPublicChat, watchMatches } from "./plugins/telethon/index.js";
+export type { TgChat, TgMessage, TgWatch } from "./plugins/telethon/index.js";
 export { skillsPlugin, SkillsService } from "./plugins/skills/index.js";
 export { mcpPlugin, RemoteMcpService } from "./plugins/mcp/index.js";
 export { imagePlugin, ImageService } from "./plugins/image/index.js";
@@ -195,6 +198,7 @@ const BUILTIN_PLUGINS: Record<string, Plugin> = {
   github: githubPlugin,
   channel: channelPlugin,
   telegram: telegramPlugin,
+  telethon: telethonPlugin,
   skills: skillsPlugin,
   mcp: mcpPlugin,
   image: imagePlugin,

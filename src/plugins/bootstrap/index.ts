@@ -8,6 +8,7 @@ import {
 import { TASKS, TASK_ORDER, TaskKind, isTaskKind } from "../../models/tasks.js";
 import type { Action, Evaluator, IAgentRuntime, Plugin, Provider } from "../../types.js";
 import type { VersionJournalService } from "../journal/index.js";
+import { aiResourcesProvider, aiUsageAction } from "./usage.js";
 
 /** Injects the current wall-clock time so the agent is temporally grounded. */
 const timeProvider: Provider = {
@@ -362,7 +363,8 @@ export const bootstrapPlugin: Plugin = {
     chatProviderStatusAction,
     setTaskRouteAction,
     taskRoutesAction,
+    aiUsageAction,
   ],
-  providers: [timeProvider],
+  providers: [timeProvider, aiResourcesProvider],
   evaluators: [factEvaluator],
 };
