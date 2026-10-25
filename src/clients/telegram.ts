@@ -18,6 +18,7 @@ import { digestCommand } from "../plugins/digest/index.js";
 import { describeSkills } from "../plugins/skills/index.js";
 import { formatListings, registryIo, searchSkillsSh } from "../plugins/skills/registry.js";
 import { writeSettings } from "../plugins/system/settings.js";
+import { overhear } from "../plugins/chatter/index.js";
 import { htmlToText, replyKeyboard } from "../plugins/telegram/index.js";
 import { defang, resolveTelegramSender, senderHeader, senderTag } from "../plugins/telegram/identity.js";
 import { markdownToTelegramHtml } from "./telegram-format.js";
@@ -350,6 +351,9 @@ export class TelegramClient {
     const isGroup = msg.chat.type === "group" || msg.chat.type === "supergroup";
     let content = text;
     if (isGroup) {
+      // Every group line is overheard (memory only) so chatter can comment on
+      // the conversation; only an addressed one starts an agent turn.
+      overhear(chatId, { from: msg.from.username ? `@${msg.from.username}` : (msg.from.first_name ?? String(msg.from.id)), text, at: Date.now() });
       const mention = this.me?.username ? `@${this.me.username}` : null;
       const mentioned = mention ? content.includes(mention) : false;
       const repliedToMe = msg.reply_to_message?.from?.id === this.me?.id;

@@ -107,7 +107,7 @@ export function replyKeyboard(buttons: string[]): Record<string, unknown> {
  * An HTML chunk Telegram cannot parse is sent again as plain text — a message
  * with a broken link beats no message.
  */
-async function deliver(getSetting: GetSetting, chatId: string, text: string, opts: DeliverOptions = {}): Promise<void> {
+export async function deliver(getSetting: GetSetting, chatId: string, text: string, opts: DeliverOptions = {}): Promise<void> {
   const token = getSetting("TELEGRAM_BOT_TOKEN") ?? "";
   const proxy =
     getSetting("TELEGRAM_PROXY") ?? getSetting("HTTPS_PROXY") ?? getSetting("https_proxy");
