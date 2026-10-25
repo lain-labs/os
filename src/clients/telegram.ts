@@ -18,7 +18,7 @@ import { digestCommand } from "../plugins/digest/index.js";
 import { describeSkills } from "../plugins/skills/index.js";
 import { formatListings, registryIo, searchSkillsSh } from "../plugins/skills/registry.js";
 import { writeSettings } from "../plugins/system/settings.js";
-import { overhear } from "../plugins/chatter/index.js";
+import { isTalkChat, overhear, replyInTalkChat } from "../plugins/chatter/index.js";
 import { htmlToText, replyKeyboard } from "../plugins/telegram/index.js";
 import { defang, resolveTelegramSender, senderHeader, senderTag } from "../plugins/telegram/identity.js";
 import { markdownToTelegramHtml } from "./telegram-format.js";
@@ -82,6 +82,8 @@ interface TgChat {
   id: number;
   type: "private" | "group" | "supergroup" | "channel";
   title?: string;
+  /** Public groups only. */
+  username?: string;
 }
 
 interface TgMessage {
@@ -353,11 +355,23 @@ export class TelegramClient {
     if (isGroup) {
       // Every group line is overheard (memory only) so chatter can comment on
       // the conversation; only an addressed one starts an agent turn.
-      overhear(chatId, { from: msg.from.username ? `@${msg.from.username}` : (msg.from.first_name ?? String(msg.from.id)), text, at: Date.now() });
+      overhear(
+        chatId,
+        { from: msg.from.username ? `@${msg.from.username}` : (msg.from.first_name ?? String(msg.from.id)), text, at: Date.now() },
+        msg.chat.username,
+      );
       const mention = this.me?.username ? `@${this.me.username}` : null;
       const mentioned = mention ? content.includes(mention) : false;
       const repliedToMe = msg.reply_to_message?.from?.id === this.me?.id;
       if (!mentioned && !repliedToMe) return;
+      // A talk chat (the token's public chat) gets words and nothing else:
+      // no agent turn, no tools, no commands, free models only.
+      if (isTalkChat((k) => this.runtime.getSetting(k), chatId, msg.chat.username)) {
+        if (content.startsWith("/")) return;
+        const reply = await replyInTalkChat(this.runtime, chatId);
+        if (reply) await this.send("sendMessage", { chat_id: chatId, text: reply, reply_parameters: { message_id: msg.message_id, allow_sending_without_reply: true } });
+        return;
+      }
       if (mention) content = content.split(mention).join("").trim() || "hi";
     }
 

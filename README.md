@@ -889,10 +889,15 @@ and secret values loaded from the environment.
   being read at all.
 - **chatter** — she speaks up in her token's Telegram chat: every ~90 min
   (`LAINOS_CHATTER_INTERVAL_MS`) she reads the last lines the bot overheard in
-  each chat named in `LAINOS_CHATTER_CHATS` (numeric ids, comma-separated) and
-  either drops one short comment or stays silent. It is a single text-only
-  model call — no tools, no MCP, no memory, no providers — so nothing anyone
-  writes in that chat can make her do anything but say a sentence. Off unless
+  each chat named in `LAINOS_CHATTER_CHATS` (numeric ids or a public
+  `@username`, comma-separated, e.g. `@Lain_OS_Chat`) and either drops one
+  short comment or stays silent. A mention or a reply to her in those chats is
+  answered the same way, and commands there are ignored. Every one of these is
+  a single text-only model call — no tools, no MCP, no memory, no providers —
+  so nothing anyone writes in that chat can make her do anything but say a
+  sentence, and it always goes to OpenRouter's free router
+  (`LAINOS_CHATTER_MODEL`, default `openrouter/free`), never the paid chat
+  provider; without `OPENROUTER_API_KEY` she stays silent there. Off unless
   the variable is set. The bot overhears a group only with privacy mode
   **off** in @BotFather (`/setprivacy` → Disable) or as a group admin, and the
   chat must be in `TELEGRAM_ALLOWED_CHATS` if that list is set. Guard rails:

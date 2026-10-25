@@ -13,7 +13,7 @@ import { isOperator } from "../src/plugins/system/settings.js";
 import type { State } from "../src/types.js";
 import { answerStamp } from "../src/models/routing.js";
 import { TaskKind } from "../src/models/tasks.js";
-import { ChatterService, chatterSystemPrompt, chatterTranscript, cleanComment, overhear, overheardIn } from "../src/plugins/chatter/index.js";
+import { ChatterService, chatterSystemPrompt, chatterTranscript, cleanComment, isTalkChat, overhear, overheardIn, replyInTalkChat, useFreeModelForTests } from "../src/plugins/chatter/index.js";
 import { lain as lainCharacter } from "../src/characters/lain.js";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -107,10 +107,17 @@ check("the chatter persona names no tools", !/send_telegram|create_skill|buy_tok
     LAINOS_DATA_DIR: await mkdtemp(join(tmpdir(), "chatter-")),
     LAINOS_CHATTER_QUIET: "0-0",
   };
+  let answer = "NOTHING";
+  const paid: ModelRequest[] = [];
+  useFreeModelForTests({
+    name: "fake-free",
+    modelFor: () => "fake",
+    generate: async (req: ModelRequest) => { requests.push(req); return { text: answer, toolCalls: [], model: "fake" }; },
+  });
   const fake = {
     character: lainCharacter,
     getSetting: (k: string) => env[k],
-    model: { generate: async (req: ModelRequest) => { requests.push(req); return { text: "NOTHING", toolCalls: [], model: "fake" }; } },
+    model: { generate: async (req: ModelRequest) => { paid.push(req); return { text: "paid", toolCalls: [], model: "paid" }; } },
   } as unknown as IAgentRuntime;
   const chatter = new ChatterService();
   await chatter.start(fake);
@@ -120,6 +127,21 @@ check("the chatter persona names no tools", !/send_telegram|create_skill|buy_tok
   for (let i = 0; i < 5; i += 1) overhear(-200, { from: "@b", text: `chart ${i}`, at: Date.now() });
   check("a comment is asked for with no tools", (await chatter.tick("-200")) === null && requests.length === 1 && requests[0].tools === undefined);
   check("lines already looked at are not asked again", (await chatter.tick("-200")) === null && requests.length === 1);
+
+  env.LAINOS_CHATTER_CHATS = "-200, @Lain_OS_Chat";
+  check("a talk chat matches by id", isTalkChat(fake.getSetting, -200));
+  check("a talk chat matches by @username, any case", isTalkChat(fake.getSetting, -300, "lain_os_chat"));
+  check("other groups are not talk chats", !isTalkChat(fake.getSetting, -400, "other"));
+  overhear(-300, { from: "@c", text: "@lainbot ты кто", at: Date.now() }, "Lain_OS_Chat");
+  check("a public chat's lines are found by its @username", overheardIn("@Lain_OS_Chat").length === 1);
+  answer = "я лейн.";
+  const reply = await replyInTalkChat(fake, -300);
+  const last = requests[requests.length - 1];
+  check(
+    "a mention in a talk chat is answered on the free model, with no tools",
+    reply === "я лейн." && last.tools === undefined && last.messages[0].content.includes("ты кто") && paid.length === 0,
+  );
+  useFreeModelForTests(undefined);
 }
 
 let failed = 0;
