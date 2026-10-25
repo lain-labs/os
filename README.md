@@ -938,6 +938,23 @@ and secret values loaded from the environment.
   asks for what **changed** — restating an unchanged portfolio is named as
   forbidden, because "same positions" four times a day is how a heartbeat stops
   being read at all.
+- **chatter** — she speaks up in her token's Telegram chat: every ~90 min
+  (`LAINOS_CHATTER_INTERVAL_MS`) she reads the last lines the bot overheard in
+  each chat named in `LAINOS_CHATTER_CHATS` (numeric ids or a public
+  `@username`, comma-separated, e.g. `@Lain_OS_Chat`) and either drops one
+  short comment or stays silent. A mention or a reply to her in those chats is
+  answered the same way, and commands there are ignored. Every one of these is
+  a single text-only model call — no tools, no MCP, no memory, no providers —
+  so nothing anyone writes in that chat can make her do anything but say a
+  sentence, and it always goes to OpenRouter's free router
+  (`LAINOS_CHATTER_MODEL`, default `openrouter/free`), never the paid chat
+  provider; without `OPENROUTER_API_KEY` she stays silent there. Off unless
+  the variable is set. The bot overhears a group only with privacy mode
+  **off** in @BotFather (`/setprivacy` → Disable) or as a group admin, and the
+  chat must be in `TELEGRAM_ALLOWED_CHATS` if that list is set. Guard rails:
+  at least `LAINOS_CHATTER_MIN_LINES` (5) new lines from other people since her
+  last look, `LAINOS_CHATTER_MAX_PER_DAY` (4) comments a chat, quiet hours
+  `LAINOS_CHATTER_QUIET` (2–9). The transcript lives in memory only.
 - **journal** — the version journal: facts survive a restart, intent does
   not, so before a restart or a rewrite the running version leaves the next
   one a short note in `data/version-journal.md` — what she was working on,

@@ -13,6 +13,12 @@ import { isOperator } from "../src/plugins/system/settings.js";
 import type { State } from "../src/types.js";
 import { answerStamp } from "../src/models/routing.js";
 import { TaskKind } from "../src/models/tasks.js";
+import { ChatterService, chatterSystemPrompt, chatterTranscript, cleanComment, isTalkChat, overhear, overheardIn, replyInTalkChat, useFreeModelForTests } from "../src/plugins/chatter/index.js";
+import { lain as lainCharacter } from "../src/characters/lain.js";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { IAgentRuntime, ModelRequest } from "../src/types.js";
 
 const results: [string, boolean][] = [];
 const check = (name: string, pass: boolean) => results.push([name, pass]);
@@ -82,6 +88,61 @@ check("a guest on the allowlist can't configure once the operator is named", !is
 check("the operator can", isOperator(turn("tg:op", op), "op,ch4rnel_exe"));
 check("nothing configured: the allowlist still decides", isOperator(turn("tg:ch4rnel_exe", { ...orpheus, operatorKnown: false }), "ch4rnel_exe"));
 check("the local terminal is the operator", isOperator(turn("user"), ""));
+
+// Chatter: Lain comments on the token chat with nothing but text.
+for (let i = 0; i < 50; i += 1) overhear(-100, { from: `@u${i}`, text: `line ${i}`, at: i });
+check("the overheard buffer keeps the last 40 lines", overheardIn("-100").length === 40 && overheardIn("-100")[0].text === "line 10");
+check(
+  "her own lines are marked in the transcript",
+  chatterTranscript([{ from: "@a", text: "gm", at: 1 }, { from: "Lain", text: "gm.", at: 2, self: true }], "Lain").includes("Lain (you): gm."),
+);
+check("NOTHING is silence", cleanComment(" NOTHING. ") === null && cleanComment("«хм, интересно»") === "хм, интересно");
+const chatterSystem = chatterSystemPrompt(lainCharacter);
+check("the chatter persona names no tools", !/send_telegram|create_skill|buy_token|tool[s]? like|forge/.test(chatterSystem) && /no tools/.test(chatterSystem));
+{
+  const requests: ModelRequest[] = [];
+  const env: Record<string, string> = {
+    LAINOS_CHATTER_CHATS: "-200",
+    TELEGRAM_BOT_TOKEN: "x",
+    LAINOS_DATA_DIR: await mkdtemp(join(tmpdir(), "chatter-")),
+    LAINOS_CHATTER_QUIET: "0-0",
+  };
+  let answer = "NOTHING";
+  const paid: ModelRequest[] = [];
+  useFreeModelForTests({
+    name: "fake-free",
+    modelFor: () => "fake",
+    generate: async (req: ModelRequest) => { requests.push(req); return { text: answer, toolCalls: [], model: "fake" }; },
+  });
+  const fake = {
+    character: lainCharacter,
+    getSetting: (k: string) => env[k],
+    model: { generate: async (req: ModelRequest) => { paid.push(req); return { text: "paid", toolCalls: [], model: "paid" }; } },
+  } as unknown as IAgentRuntime;
+  const chatter = new ChatterService();
+  await chatter.start(fake);
+  await chatter.stop();
+  overhear(-200, { from: "@a", text: "lain where are you", at: Date.now() });
+  check("too few fresh lines: no model call", (await chatter.tick("-200")) === null && requests.length === 0);
+  for (let i = 0; i < 5; i += 1) overhear(-200, { from: "@b", text: `chart ${i}`, at: Date.now() });
+  check("a comment is asked for with no tools", (await chatter.tick("-200")) === null && requests.length === 1 && requests[0].tools === undefined);
+  check("lines already looked at are not asked again", (await chatter.tick("-200")) === null && requests.length === 1);
+
+  env.LAINOS_CHATTER_CHATS = "-200, @Lain_OS_Chat";
+  check("a talk chat matches by id", isTalkChat(fake.getSetting, -200));
+  check("a talk chat matches by @username, any case", isTalkChat(fake.getSetting, -300, "lain_os_chat"));
+  check("other groups are not talk chats", !isTalkChat(fake.getSetting, -400, "other"));
+  overhear(-300, { from: "@c", text: "@lainbot ты кто", at: Date.now() }, "Lain_OS_Chat");
+  check("a public chat's lines are found by its @username", overheardIn("@Lain_OS_Chat").length === 1);
+  answer = "я лейн.";
+  const reply = await replyInTalkChat(fake, -300);
+  const last = requests[requests.length - 1];
+  check(
+    "a mention in a talk chat is answered on the free model, with no tools",
+    reply === "я лейн." && last.tools === undefined && last.messages[0].content.includes("ты кто") && paid.length === 0,
+  );
+  useFreeModelForTests(undefined);
+}
 
 let failed = 0;
 for (const [name, pass] of results) {

@@ -26,6 +26,7 @@ import { forgePlugin } from "./plugins/forge/index.js";
 import { githubPlugin } from "./plugins/github/index.js";
 import { initiativePlugin } from "./plugins/initiative/index.js";
 import { imagePlugin } from "./plugins/image/index.js";
+import { chatterPlugin } from "./plugins/chatter/index.js";
 import { journalPlugin } from "./plugins/journal/index.js";
 import { metamaskPlugin } from "./plugins/metamask/index.js";
 import { mcpPlugin } from "./plugins/mcp/index.js";
@@ -208,6 +209,7 @@ const BUILTIN_PLUGINS: Record<string, Plugin> = {
   backtest: backtestPlugin,
   desk: deskPlugin,
   initiative: initiativePlugin,
+  chatter: chatterPlugin,
   journal: journalPlugin,
   presence: presencePlugin,
   press: pressPlugin,
