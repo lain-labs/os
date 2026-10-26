@@ -33,7 +33,7 @@ export interface FomoThesis {
   realizedPnlUsd?: number | null;
   unrealizedPnlUsd?: number | null;
   closedAt?: string | null;
-  fomoCreatedAt?: string | null;
+  fomoCreatedAt?: string | number | null;
   tokenSymbol?: string | null;
   tokenNetwork?: string | null;
 }
@@ -120,9 +120,16 @@ const clip = (s: string | null | undefined, n = 140) => {
   return t.length > n ? `${t.slice(0, n - 1)}…` : t;
 };
 
+/** Fomoscan sends times as epoch seconds, epoch millis or ISO strings. */
+function toMs(at: string | number | null | undefined): number {
+  if (at === null || at === undefined || at === "") return NaN;
+  const n = typeof at === "number" ? at : /^\d+$/.test(at) ? Number(at) : NaN;
+  if (Number.isFinite(n)) return n < 1e12 ? n * 1000 : n;
+  return Date.parse(String(at));
+}
+
 function observed(at: string | number | null | undefined): string {
-  if (at === null || at === undefined) return "";
-  const ms = typeof at === "number" ? (at < 1e12 ? at * 1000 : at) : Date.parse(at);
+  const ms = toMs(at);
   if (!Number.isFinite(ms)) return "";
   const h = Math.max(0, Math.round((Date.now() - ms) / 3_600_000));
   return h < 1 ? ", seen <1h ago" : h < 48 ? `, seen ${h}h ago` : `, seen ${Math.round(h / 24)}d ago`;
@@ -131,7 +138,8 @@ function observed(at: string | number | null | undefined): string {
 /** One line per thesis: who, what they said, and what they held when they said it. */
 export function thesisLine(t: FomoThesis): string {
   const who = `@${t.authorHandle ?? t.authorName ?? "?"}${t.authorIsDev ? " (dev)" : ""}`;
-  const when = t.fomoCreatedAt ? ` ${String(t.fomoCreatedAt).slice(0, 10)}` : "";
+  const ms = toMs(t.fomoCreatedAt);
+  const when = Number.isFinite(ms) ? ` ${new Date(ms).toISOString().slice(0, 10)}` : "";
   const held = t.holdingsUsd != null ? `held ${usd(t.holdingsUsd)} when posting` : "position at post time unknown";
   const closed = t.closedAt ? ", position closed" : "";
   return `${who}${when} [${held}${closed}] "${clip(t.thesis)}"`;
