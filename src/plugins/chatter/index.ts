@@ -27,7 +27,9 @@ const log = createLogger("plugin:chatter");
  *
  * The same chats are text-only for replies too: a message that mentions her
  * or replies to her there is answered by `replyInTalkChat` with the same kind
- * of call, never by an agent turn, and commands are ignored. Every one of
+ * of call, never by an agent turn, and commands are ignored. The configured
+ * operator (TELEGRAM_OPERATOR_ID / _USERNAME) is the one exception: their plain
+ * messages there get a full agent turn, tools included. Every one of
  * these calls goes to OpenRouter's free router (LAINOS_CHATTER_MODEL, default
  * `openrouter/free`), never to the operator's paid chat provider; without
  * OPENROUTER_API_KEY she stays silent there rather than spend.
