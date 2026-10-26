@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { handleAcpTool } from "../acp/tools.js";
 import { createLogger } from "../logger.js";
@@ -38,22 +39,39 @@ export interface HttpOptions {
  *   POST /sessions/{id}/recap -> { recap }
  *   POST /chat {roomId,userId,text,task} -> { text, actions, model, provider, task }
  *   POST /acp/tools {tool,arguments} -> report (bearer LAINOS_ACP_API_KEY; see src/acp/tools.ts)
+ *
+ * Loopback is not a boundary for a browser: any page the operator opens can
+ * POST here. So a request carrying an Origin is served only when that origin
+ * is listed in LAINOS_HTTP_ORIGINS (comma-separated), and gets its own origin
+ * back rather than "*". Local tools (curl, the console, the Godot game) send
+ * no Origin. An HTTP caller may also never speak as a privileged identity —
+ * see callerIdentity() — unless it holds LAINOS_HTTP_KEY as a bearer, which
+ * is how a gateway that already authenticated a Telegram sender relays them.
  */
 export function createHttpServer(runtime: IAgentRuntime, opts: HttpOptions = {}): Server {
   const host = opts.host ?? process.env.LAINOS_HTTP_HOST ?? "127.0.0.1";
   const port = Number(opts.port ?? process.env.LAINOS_HTTP_PORT ?? 7777);
 
   const server = createServer(async (req, res) => {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-    res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+    if (req.method === "GET" && req.url === "/health") {
+      return json(res, 200, { ok: true, agent: runtime.character.name });
+    }
+
+    const origin = req.headers.origin;
+    if (origin !== undefined) {
+      const allowed = String(runtime.getSetting("LAINOS_HTTP_ORIGINS") ?? "")
+        .split(",")
+        .map((o) => o.trim())
+        .filter(Boolean);
+      if (!allowed.includes(origin)) return json(res, 403, { error: "origin not allowed" });
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Vary", "Origin");
+      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+      res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+    }
     if (req.method === "OPTIONS") {
       res.writeHead(204).end();
       return;
-    }
-
-    if (req.method === "GET" && req.url === "/health") {
-      return json(res, 200, { ok: true, agent: runtime.character.name });
     }
 
     if (req.method === "GET" && req.url?.startsWith("/alerts")) {
@@ -193,9 +211,11 @@ export function createHttpServer(runtime: IAgentRuntime, opts: HttpOptions = {})
         if (declared && !isTaskKind(declared)) {
           return json(res, 400, { error: `field 'task' must be one of: ${TASK_ORDER.join(", ")}` });
         }
+        const caller = trustedCaller(runtime, req.headers.authorization) ? String(userId ?? "anon") : callerIdentity(userId);
+        if (!caller) return json(res, 403, { error: "this userId is reserved for local and Telegram clients" });
         const result = await runtime.handleMessage({
           roomId: typeof roomId === "string" ? roomId : "http",
-          userId: typeof userId === "string" ? userId : "anon",
+          userId: caller,
           text,
           task: declared && isTaskKind(declared) ? declared : undefined,
         });
@@ -225,6 +245,29 @@ export function createHttpServer(runtime: IAgentRuntime, opts: HttpOptions = {})
     log.info(`HTTP bridge for ${runtime.character.name} on http://${host}:${port}`);
   });
   return server;
+}
+
+/** A gateway holding LAINOS_HTTP_KEY (bearer) has already authenticated who it speaks for. */
+function trustedCaller(runtime: IAgentRuntime, authorization: string | undefined): boolean {
+  const key = String(runtime.getSetting("LAINOS_HTTP_KEY") ?? "");
+  if (!key || !authorization?.startsWith("Bearer ")) return false;
+  const given = Buffer.from(authorization.slice(7));
+  const want = Buffer.from(key);
+  return given.length === want.length && timingSafeEqual(given, want);
+}
+
+/**
+ * The identity an HTTP caller may speak as, or null. "user" is the TUI on
+ * this machine and isOperator() trusts it outright; "tg:…" is matched against
+ * TELEGRAM_ALLOWED_USERS; "agent" is Lain herself. None of them arrive over
+ * this bridge, so naming one here is an impersonation, not a mistake.
+ */
+export function callerIdentity(userId: unknown): string | null {
+  if (typeof userId !== "string" || !userId.trim()) return "anon";
+  const id = userId.trim();
+  const lower = id.toLowerCase();
+  if (lower === "user" || lower === "agent" || lower.startsWith("tg:")) return null;
+  return id;
 }
 
 function readBody(req: import("node:http").IncomingMessage): Promise<string> {
