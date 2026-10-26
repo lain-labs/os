@@ -368,8 +368,15 @@ export class TelegramClient {
       const repliedToMe = msg.reply_to_message?.from?.id === this.me?.id;
       if (!mentioned && !repliedToMe) return;
       // A talk chat (the token's public chat) gets words and nothing else:
-      // no agent turn, no tools, no commands, free models only.
-      if (isTalkChat((k) => this.runtime.getSetting(k), chatId, msg.chat.username)) {
+      // no agent turn, no tools, no commands, free models only. The one
+      // exception is the configured operator: their plain messages there get
+      // a full turn, so tools can be shown working in public, and nobody
+      // else's words can reach a tool.
+      const fromOperator = (() => {
+        const s = resolveTelegramSender(msg.from!, (k) => this.runtime.getSetting(k));
+        return s.operatorKnown && s.role === "operator";
+      })();
+      if (isTalkChat((k) => this.runtime.getSetting(k), chatId, msg.chat.username) && (!fromOperator || content.startsWith("/"))) {
         if (content.startsWith("/")) return;
         const reply = await replyInTalkChat(this.runtime, chatId);
         if (reply) await this.send("sendMessage", { chat_id: chatId, text: reply, reply_parameters: { message_id: msg.message_id, allow_sending_without_reply: true } });
