@@ -1,3 +1,5 @@
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import type { Action, IAgentRuntime, Plugin, Provider } from "../../types.js";
 
 /**
@@ -18,6 +20,12 @@ import type { Action, IAgentRuntime, Plugin, Provider } from "../../types.js";
  * 10 CU a page). Wallet → trader and whole-wallet PnL cost 30,000 CU a hit,
  * more than the free plan's 25,000 in total, so they are not here. Off unless
  * FOMOSCAN_API_KEY is set.
+ *
+ * Credits are finite, so every complete answer is kept on disk
+ * (data/fomoscan-cache.json, raw items, never pruned) and a token asked again
+ * within FOMOSCAN_CACHE_HOURS (default 24) is answered from there for free,
+ * saying how old it is. Only an explicit `fresh` request spends credits again.
+ * A wall that failed is never cached.
  */
 
 const BASE = "https://api.fomoscan.sh";
@@ -63,6 +71,8 @@ export interface SocialWalls {
   theses: FomoThesis[] | null;
   callouts: PumpCallout[] | null;
   errors: string[];
+  /** Set when the answer came from the disk cache: when it was fetched (epoch ms). */
+  cachedAt?: number;
 }
 
 type Fetch = typeof fetch;
@@ -71,7 +81,33 @@ export class Fomoscan {
   constructor(
     private readonly key: string,
     private readonly fetcher: Fetch = fetch,
+    private readonly cache: { file: string; ttlMs: number } | null = null,
   ) {}
+
+  /** Solana mints are case-sensitive; EVM addresses are not. */
+  private static cacheKey(token: string): string {
+    const t = token.trim();
+    return /^0x[0-9a-f]{40}$/i.test(t) ? t.toLowerCase() : t;
+  }
+
+  private async readCache(): Promise<Record<string, SocialWalls & { fetchedAt: number }>> {
+    if (!this.cache) return {};
+    try {
+      return JSON.parse(await readFile(this.cache.file, "utf8"));
+    } catch {
+      return {};
+    }
+  }
+
+  private async writeCache(key: string, w: SocialWalls): Promise<void> {
+    if (!this.cache) return;
+    const all = await this.readCache();
+    all[key] = { ...w, fetchedAt: Date.now() };
+    await mkdir(dirname(this.cache.file), { recursive: true });
+    const tmp = `${this.cache.file}.tmp`;
+    await writeFile(tmp, JSON.stringify(all));
+    await rename(tmp, this.cache.file);
+  }
 
   private async get(path: string): Promise<unknown | null> {
     const res = await this.fetcher(`${BASE}${path}`, {
@@ -84,7 +120,15 @@ export class Fomoscan {
   }
 
   /** Both walls for one token. A wall that failed is null and says why; it is never an empty list. */
-  async walls(token: string, limit = 20): Promise<SocialWalls> {
+  async walls(token: string, limit = 20, fresh = false): Promise<SocialWalls> {
+    const key = Fomoscan.cacheKey(token);
+    if (this.cache && !fresh) {
+      const hit = (await this.readCache())[key];
+      if (hit && Date.now() - hit.fetchedAt < this.cache.ttlMs) {
+        const { fetchedAt, ...walls } = hit;
+        return { ...walls, cachedAt: fetchedAt };
+      }
+    }
     const t = encodeURIComponent(token.trim());
     const errors: string[] = [];
     const [theses, callouts] = await Promise.all([
@@ -97,7 +141,9 @@ export class Fomoscan {
         (e: Error) => (errors.push(`pump.fun callouts: ${e.message}`), null),
       ),
     ]);
-    return { token: token.trim(), theses, callouts, errors };
+    const walls = { token: token.trim(), theses, callouts, errors };
+    if (!errors.length) await this.writeCache(key, walls);
+    return walls;
   }
 
   /** Plan and what is left of it (free, not metered). */
@@ -159,7 +205,10 @@ export function calloutLine(c: PumpCallout): string {
 
 /** The walls as text, with the count of authors who are still in vs already out. */
 export function wallsReport(w: SocialWalls, show = 8): string {
-  const out: string[] = [`social calls on ${w.token} (via fomoscan.sh):`];
+  const age = w.cachedAt ? Math.round((Date.now() - w.cachedAt) / 60_000) : null;
+  const out: string[] = [
+    `social calls on ${w.token} (via fomoscan.sh${age === null ? "" : `, from cache fetched ${age < 60 ? `${age}m` : `${Math.round(age / 60)}h`} ago, no credits spent`}):`,
+  ];
   const section = <T>(name: string, rows: T[] | null, line: (r: T) => string, exited: (r: T) => boolean | null) => {
     if (rows === null) return out.push(`${name}: unreadable`);
     if (!rows.length) return out.push(`${name}: none`);
@@ -183,7 +232,10 @@ export function wallsReport(w: SocialWalls, show = 8): string {
 
 function client(): Fomoscan | null {
   const key = process.env.FOMOSCAN_API_KEY?.trim();
-  return key ? new Fomoscan(key) : null;
+  if (!key) return null;
+  const hours = Number(process.env.FOMOSCAN_CACHE_HOURS ?? 24);
+  const file = join(process.env.LAINOS_DATA_DIR ?? "./data", "fomoscan-cache.json");
+  return new Fomoscan(key, fetch, { file, ttlMs: (Number.isFinite(hours) && hours >= 0 ? hours : 24) * 3_600_000 });
 }
 
 const socialCallsAction: Action = {
@@ -192,12 +244,14 @@ const socialCallsAction: Action = {
   description:
     "What traders say about a token on Fomo (theses; Solana, Base, BNB) and on pump.fun (callouts), with each author's position next to the words: " +
     "still holding and for how much, in profit or not, or already sold. Give the token's contract/mint address. " +
-    "command 'usage' reports the Fomoscan credits left. Costs credits: use it when somebody asks about a specific token, not on a loop.",
+    "command 'usage' reports the Fomoscan credits left. Costs credits (free plan, finite): use it when somebody asks about a specific token, not on a loop. " +
+    "A token checked in the last day is answered from cache for free; set fresh=true only when the person explicitly asks for new data.",
   parameters: {
     type: "object",
     properties: {
       command: { type: "string", enum: ["calls", "usage"] },
       token: { type: "string", description: "Token contract or mint address." },
+      fresh: { type: "boolean", description: "Bypass the cache and spend credits. Only when explicitly asked." },
     },
   },
   examples: [
@@ -213,7 +267,7 @@ const socialCallsAction: Action = {
       if (String(params.command ?? "calls") === "usage") return { ok: true, text: await api.usage() };
       const token = String(params.token ?? "").trim();
       if (!token) return { ok: false, text: "social_calls: give a token address" };
-      const walls = await api.walls(token);
+      const walls = await api.walls(token, 20, params.fresh === true);
       return { ok: true, text: wallsReport(walls), data: { walls } };
     } catch (err) {
       return { ok: false, text: `fomoscan: ${(err as Error).message}` };
