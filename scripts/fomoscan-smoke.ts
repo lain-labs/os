@@ -58,6 +58,27 @@ assert.match(brokenText, /Fomo theses: unreadable/);
 assert.match(brokenText, /pump\.fun callouts: none/);
 assert.match(brokenText, /! fomo theses: HTTP 500/);
 
+// A complete answer is cached on disk; the same token (any case for EVM) costs nothing the second time.
+const { mkdtemp } = await import("node:fs/promises");
+const { tmpdir } = await import("node:os");
+const { join } = await import("node:path");
+const file = join(await mkdtemp(join(tmpdir(), "fomoscan-")), "cache.json");
+let calls = 0;
+const counting = (async (...a: Parameters<typeof fetch>) => { calls++; return fake({ "/v2/thesis/token/": [200, { items: [] }], "/v2/pump/thesis/token/": [200, { items: [] }] })(...a); }) as typeof fetch;
+const cached = new Fomoscan("k", counting, { file, ttlMs: 3_600_000 });
+const evm = "0x2b79A071a75dd40f1aca68146d7978204eFD156A";
+await cached.walls(evm);
+assert.equal(calls, 2);
+const again = await cached.walls(evm.toLowerCase());
+assert.equal(calls, 2, "second ask is served from cache");
+assert.ok(again.cachedAt);
+assert.match(wallsReport(again), /from cache fetched 0m ago, no credits spent/);
+await cached.walls(evm, 20, true);
+assert.equal(calls, 4, "fresh=true spends credits again");
+const failing = new Fomoscan("k", fake({ "/v2/thesis/token/": [500, {}] }), { file, ttlMs: 3_600_000 });
+await failing.walls(mint);
+assert.equal((await new Fomoscan("k", counting, { file, ttlMs: 3_600_000 }).walls(mint)).cachedAt, undefined, "a failed wall is not cached");
+
 delete process.env.FOMOSCAN_API_KEY;
 const action = fomoscanPlugin.actions!.find((a) => a.name === "social_calls")!;
 assert.equal(await action.validate({} as never, {} as never), false);
