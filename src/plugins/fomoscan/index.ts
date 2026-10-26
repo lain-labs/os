@@ -6,10 +6,13 @@ import type { Action, IAgentRuntime, Plugin, Provider } from "../../types.js";
  * callouts from pump.fun — and, for each author, the position behind the
  * words: still holding, how much, in profit or not, already out.
  *
- * That last part is the point. A callout is cheap; a callout from somebody who
- * sold an hour later is a different fact, and the API states it next to the
- * text. So Lain reports both walls with the money attached, and never as a
- * signal on its own.
+ * That last part is the point, and it is only as good as the field behind it.
+ * A Fomo thesis carries `holdingsUsd` at *post time* and a `closedAt` that
+ * stays empty when the author sold from a wallet Fomo does not watch — an
+ * author who sold weeks ago still reads as "open" there. So a thesis line says
+ * what the author held when they wrote it and never claims they still hold;
+ * only `closedAt` is reported, as "closed". The pump.fun position is a live
+ * observation and is printed with its age.
  *
  * Only the two cheap reads are used (theses: 200 CU per 20 rows, pump wall:
  * 10 CU a page). Wallet → trader and whole-wallet PnL cost 30,000 CU a hit,
@@ -51,6 +54,7 @@ export interface PumpCallout {
     pnlUsd?: number | null;
     pnlPercentage?: number | null;
     isExited?: boolean | null;
+    observedAt?: string | number | null;
   } | null;
 }
 
@@ -116,17 +120,21 @@ const clip = (s: string | null | undefined, n = 140) => {
   return t.length > n ? `${t.slice(0, n - 1)}…` : t;
 };
 
-/** One line per thesis: who, what they said, and where their money is now. */
+function observed(at: string | number | null | undefined): string {
+  if (at === null || at === undefined) return "";
+  const ms = typeof at === "number" ? (at < 1e12 ? at * 1000 : at) : Date.parse(at);
+  if (!Number.isFinite(ms)) return "";
+  const h = Math.max(0, Math.round((Date.now() - ms) / 3_600_000));
+  return h < 1 ? ", seen <1h ago" : h < 48 ? `, seen ${h}h ago` : `, seen ${Math.round(h / 24)}d ago`;
+}
+
+/** One line per thesis: who, what they said, and what they held when they said it. */
 export function thesisLine(t: FomoThesis): string {
   const who = `@${t.authorHandle ?? t.authorName ?? "?"}${t.authorIsDev ? " (dev)" : ""}`;
-  const pnl = (t.realizedPnlUsd ?? 0) + (t.unrealizedPnlUsd ?? 0);
-  const hasPnl = t.realizedPnlUsd != null || t.unrealizedPnlUsd != null;
-  const money = t.closedAt
-    ? `out${hasPnl ? `, ${pnl >= 0 ? "+" : ""}${usd(pnl)}` : ""}`
-    : t.holdingsUsd != null
-      ? `holds ${usd(t.holdingsUsd)}${hasPnl ? `, ${pnl >= 0 ? "+" : ""}${usd(pnl)}` : ""}`
-      : "position unknown";
-  return `${who} [${money}] "${clip(t.thesis)}"`;
+  const when = t.fomoCreatedAt ? ` ${String(t.fomoCreatedAt).slice(0, 10)}` : "";
+  const held = t.holdingsUsd != null ? `held ${usd(t.holdingsUsd)} when posting` : "position at post time unknown";
+  const closed = t.closedAt ? ", position closed" : "";
+  return `${who}${when} [${held}${closed}] "${clip(t.thesis)}"`;
 }
 
 export function calloutLine(c: PumpCallout): string {
@@ -136,7 +144,7 @@ export function calloutLine(c: PumpCallout): string {
     ? "position unknown"
     : p.isExited
       ? `out, ${(p.pnlUsd ?? 0) >= 0 ? "+" : ""}${usd(p.pnlUsd)}`
-      : `holds ${usd(p.valueUsd)}, ${(p.pnlUsd ?? 0) >= 0 ? "+" : ""}${usd(p.pnlUsd)}`;
+      : `holds ${usd(p.valueUsd)}, ${(p.pnlUsd ?? 0) >= 0 ? "+" : ""}${usd(p.pnlUsd)}${observed(p.observedAt)}`;
   const since = c.calledOutAtMcap ? ` · called at ${usd(c.calledOutAtMcap)} mcap${c.multiple ? `, now ${c.multiple.toFixed(2)}×` : ""}` : "";
   return `${who} [${money}]${since} "${clip(c.thesis)}"`;
 }
@@ -152,7 +160,13 @@ export function wallsReport(w: SocialWalls, show = 8): string {
     out.push(`${name}: ${rows.length} — ${known.length - outCount} still holding, ${outCount} already out${known.length < rows.length ? `, ${rows.length - known.length} unknown` : ""}`);
     for (const r of rows.slice(0, show)) out.push(`  ${line(r)}`);
   };
-  section("Fomo theses", w.theses, thesisLine, (t) => (t.closedAt ? true : t.holdingsUsd != null ? false : null));
+  if (w.theses === null) out.push("Fomo theses: unreadable");
+  else if (!w.theses.length) out.push("Fomo theses: none");
+  else {
+    const closed = w.theses.filter((t) => t.closedAt).length;
+    out.push(`Fomo theses: ${w.theses.length} (${closed} marked closed; who still holds is not known from theses — the amounts are at post time)`);
+    for (const t of w.theses.slice(0, show)) out.push(`  ${thesisLine(t)}`);
+  }
   section("pump.fun callouts", w.callouts, calloutLine, (c) => (c.position ? Boolean(c.position.isExited) : null));
   for (const e of w.errors) out.push(`! ${e}`);
   out.push("a call is not a result: words plus where the author's money is, never a signal on their own.");

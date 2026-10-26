@@ -42,9 +42,10 @@ assert.ok(seen.some((s) => s.url.endsWith(`/v2/thesis/token/${mint}?limit=20`)))
 assert.ok(seen.some((s) => s.url.endsWith(`/v2/pump/thesis/token/${mint}`)));
 
 const text = wallsReport(walls);
-assert.match(text, /Fomo theses: 2 — 1 still holding, 1 already out/);
-assert.match(text, /@alice \[holds \$420, \+\$120\]/);
-assert.match(text, /@bob \(dev\) \[out, −\$35\]/);
+assert.match(text, /Fomo theses: 2 \(1 marked closed; who still holds is not known/);
+assert.match(text, /@alice \[held \$420 when posting\]/);
+assert.match(text, /@bob \(dev\) \[position at post time unknown, position closed\]/);
+assert.doesNotMatch(text, /@alice \[holds/);
 assert.match(text, /pump\.fun callouts: 2 — 1 still holding, 0 already out, 1 unknown/);
 assert.match(text, /carol \(x: @carol_x\) ✓ \[holds \$80, \+\$48\] · called at \$12,000 mcap, now 2\.50×/);
 assert.match(text, /dave \[position unknown\]/);
