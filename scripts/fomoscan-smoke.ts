@@ -26,7 +26,7 @@ const fake = (routes: Record<string, [number, unknown]>) =>
 const mint = "So1anaMint1111111111111111111111111111pump";
 const api = new Fomoscan("fsk_test_x", fake({
   "/v2/thesis/token/": [200, { items: [
-    { authorHandle: "alice", thesis: "dev ships every day", holdingsUsd: 420, realizedPnlUsd: 0, unrealizedPnlUsd: 120 },
+    { authorHandle: "alice", fomoCreatedAt: 1792917114, thesis: "dev ships every day", holdingsUsd: 420, realizedPnlUsd: 0, unrealizedPnlUsd: 120 },
     { authorHandle: "bob", authorIsDev: true, thesis: "send it", closedAt: "2026-10-26T00:00:00Z", realizedPnlUsd: -35 },
   ] }],
   "/v2/pump/thesis/token/": [200, { items: [
@@ -43,7 +43,7 @@ assert.ok(seen.some((s) => s.url.endsWith(`/v2/pump/thesis/token/${mint}`)));
 
 const text = wallsReport(walls);
 assert.match(text, /Fomo theses: 2 \(1 marked closed; who still holds is not known/);
-assert.match(text, /@alice \[held \$420 when posting\]/);
+assert.match(text, /@alice 2026-10-25 \[held \$420 when posting\]/);
 assert.match(text, /@bob \(dev\) \[position at post time unknown, position closed\]/);
 assert.doesNotMatch(text, /@alice \[holds/);
 assert.match(text, /pump\.fun callouts: 2 — 1 still holding, 0 already out, 1 unknown/);
