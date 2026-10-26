@@ -29,6 +29,7 @@ import { imagePlugin } from "./plugins/image/index.js";
 import { chatterPlugin } from "./plugins/chatter/index.js";
 import { journalPlugin } from "./plugins/journal/index.js";
 import { metamaskPlugin } from "./plugins/metamask/index.js";
+import { fomoscanPlugin } from "./plugins/fomoscan/index.js";
 import { mcpPlugin } from "./plugins/mcp/index.js";
 import { presencePlugin } from "./plugins/presence/index.js";
 import { pressPlugin } from "./plugins/press/index.js";
@@ -179,6 +180,7 @@ export type { DeskEvent } from "./plugins/desk/index.js";
 export type { TraderEvent } from "./plugins/trader/index.js";
 export { crmPlugin, CrmService } from "./plugins/crm/index.js";
 export { walletsPlugin } from "./plugins/wallets/index.js";
+export { fomoscanPlugin, Fomoscan, wallsReport } from "./plugins/fomoscan/index.js";
 export { metamaskPlugin, MetaMaskService } from "./plugins/metamask/index.js";
 export { digestPlugin, DigestService } from "./plugins/digest/index.js";
 export type { CrmRecord, CrmStatus } from "./plugins/crm/index.js";
@@ -218,6 +220,7 @@ const BUILTIN_PLUGINS: Record<string, Plugin> = {
   wallets: walletsPlugin,
   digest: digestPlugin,
   metamask: metamaskPlugin,
+  fomoscan: fomoscanPlugin,
 };
 
 export interface CreateAgentOptions {
