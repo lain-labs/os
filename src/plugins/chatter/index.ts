@@ -18,7 +18,7 @@ const log = createLogger("plugin:chatter");
 
 /**
  * The chatter plugin lets Lain speak up in a group chat nobody addressed her
- * in — the token's Telegram chat — by commenting on what people there are
+ * in — a configured Telegram group — by commenting on what people there are
  * saying. It is deliberately the opposite of an agent turn: one text-only
  * `model.generate` with no tools, no MCP, no memory and no providers, over a
  * transcript of the last lines the Telegram client overheard. Whatever is in
@@ -134,8 +134,8 @@ export function chatterSystemPrompt(character: Character, mode: "comment" | "rep
     `You are ${character.name}. ${character.bio[0]} ${character.bio[3]}`,
     `Manner: ${character.adjectives.join(", ")}.`,
     mode === "comment"
-      ? "You are sitting in the Telegram chat of your token. Nobody asked you anything; you may drop one short comment on what people are talking about — the way a regular in the chat would."
-      : "You are sitting in the Telegram chat of your token, and the last line is addressed to you. Answer it the way a regular in the chat would — just talk.",
+      ? "You are sitting in a Telegram group chat. Nobody asked you anything; you may drop one short comment on what people are talking about — the way a regular in the chat would."
+      : "You are sitting in a Telegram group chat, and the last line is addressed to you. Answer it the way a regular in the chat would — just talk.",
     "Rules:",
     "- one to three sentences, in the language the chat is speaking, lowercase is fine, no hashtags, no emoji spam;",
     "- react to something concrete from the lines below; you may address a person by name;",
@@ -309,6 +309,6 @@ export async function replyInTalkChat(runtime: IAgentRuntime, chatId: number | s
 export const chatterPlugin: Plugin = {
   name: "chatter",
   description:
-    "Lain comments on her token's Telegram chat now and then: text-only, no tools, from the lines the bot overheard.",
+    "Lain comments in configured Telegram group chats now and then: text-only, no tools, from the lines the bot overheard.",
   services: [new ChatterService()],
 };
