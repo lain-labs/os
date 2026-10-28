@@ -1,6 +1,6 @@
 /**
  * The paper desk: Lain's demo account. $100 of virtual dollars, $20 on each of
- * five DEX markets (LAIN, CYBER.sol, ETH, SOL, BTC — markets.ts), each traded
+ * five markets (LAIN, XMR, ETH, SOL, BTC — markets.ts), each traded
  * by a strategy the backtest picked on that market's own hourly history.
  *
  * Once an hour (at CHECK_MINUTE, in the daemon) every market's new bars are
@@ -18,6 +18,7 @@
  *
  * Paper only: nothing here reaches a wallet, a signer or an order.
  */
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createLogger } from "../../logger.js";
 import type { Action, IAgentRuntime, Plugin, Provider, Service } from "../../types.js";
@@ -37,6 +38,8 @@ import {
   saveState,
   type DeskState,
   type Fill,
+  type LegacyCyberSleeve,
+  type Sleeve,
   type SleeveView,
 } from "./book.js";
 
@@ -153,6 +156,7 @@ export class PaperDeskService implements Service {
       const state = this.state ?? newState(now);
       const announced = new Set(state.announced);
       const opened: string[] = [];
+      let replacedCyber = false;
       const fresh: Fill[] = [];
       const errors: DeskEvent[] = [];
       for (const id of MARKET_IDS) {
@@ -173,16 +177,32 @@ export class PaperDeskService implements Service {
         this.bars[id] = bars;
         let sleeve = state.sleeves[id];
         if (!sleeve) {
+          let startUsd = state.capitalUsd / MARKET_IDS.length;
+          // Existing desks may have CYBER.sol in their saved $20 sleeve.
+          // Mark that old book at its final cached price and carry the proceeds
+          // into XMR. Do not create another $20 or erase the legacy history.
+          if (id === "XMR" && state.sleeves.CYBER) {
+            try {
+              startUsd = await retiredCyberValue(this.dir, state.sleeves.CYBER);
+              state.retired = { ...state.retired, CYBER: state.sleeves.CYBER };
+              delete state.sleeves.CYBER;
+              replacedCyber = true;
+            } catch (err) {
+              log.warn(`XMR migration waits: ${(err as Error).message}`);
+              continue;
+            }
+          }
           const pick = choose(m, bars);
           const last = bars.at(-1)!;
           sleeve = state.sleeves[id] = {
             market: id,
             budgetUsd: state.capitalUsd / MARKET_IDS.length,
             startPx: last[4],
-            segments: [{ spec: pick.spec, from: last[0] + HOUR, startUsd: state.capitalUsd / MARKET_IDS.length, why: pick.why }],
+            segments: [{ spec: pick.spec, from: last[0] + HOUR, startUsd, why: pick.why }],
             error: "",
           };
           opened.push(`${id} — ${pick.spec.name}: ${describeSpec(pick.spec)}\n   backtest: ${pick.why}`);
+          if (replacedCyber) opened.push(`CYBER.sol retired; ${money(startUsd)} of its marked value (after exit costs) transferred to XMR. The former sleeve stays archived in state.json.`);
         }
         sleeve.error = "";
         const view = replaySleeve(sleeve, toSeries(m, bars, true), m.costs);
@@ -201,8 +221,8 @@ export class PaperDeskService implements Service {
         this.emit({
           kind: "opened",
           text: [
-            `📒 Paper desk opened · ${money(state.capitalUsd)} of virtual dollars, ${money(state.capitalUsd / MARKET_IDS.length)} per market`,
-            `Each market trades the strategy its backtest ranked first on its own hourly DEX history; I check every hour and report at ${REPORT_AT} Moscow time.`,
+            `📒 Paper desk ${replacedCyber ? "updated" : "opened"} · ${money(state.capitalUsd)} initial virtual dollars, ${money(state.capitalUsd / MARKET_IDS.length)} per market`,
+            `Each market trades the strategy its backtest ranked first on its own hourly market history; I check every hour and report at ${REPORT_AT} Moscow time.`,
             ...opened.map((line) => `• ${line}`),
             `paper only — no order is ever sent`,
           ].join("\n"),
@@ -300,7 +320,7 @@ export class PaperDeskService implements Service {
     const views = this.currentViews();
     const t = this.totals(views);
     const lines = [
-      `Paper desk — ${money(state.capitalUsd)} of virtual dollars on ${MARKET_IDS.length} DEX markets, paper only (opened ${utc(state.openedAt)}${state.lastCheckAt ? `, last check ${utc(state.lastCheckAt)}` : ""}).`,
+      `Paper desk — ${money(state.capitalUsd)} of virtual dollars on ${MARKET_IDS.length} markets, paper only (opened ${utc(state.openedAt)}${state.lastCheckAt ? `, last check ${utc(state.lastCheckAt)}` : ""}).`,
       `Balance ${money(t.value)} (${pct(t.retPct)}) · holding all five instead: ${pct(t.holdPct)} · closed trades ${t.closed.length} (${t.closed.filter((f) => (f.pnlUsd ?? 0) > 0).length} won) · max drawdown ${t.maxDdPct.toFixed(1)}%`,
     ];
     for (const id of MARKET_IDS) {
@@ -338,7 +358,7 @@ export class PaperDeskService implements Service {
     const holding = views.filter((v) => v.inMarket).map((v) => v.market);
     const last = t.fills.at(-1);
     return (
-      `Your paper desk (your demo account: virtual $${this.state.capitalUsd} on ${MARKET_IDS.join(", ")} DEX pools, trading backtested strategies by itself every hour): ` +
+      `Your paper desk (your demo account: virtual $${this.state.capitalUsd} on ${MARKET_IDS.join(", ")} markets, trading backtested strategies by itself every hour): ` +
       `${money(t.value)} (${pct(t.retPct)}), ${holding.length ? `in ${holding.join(", ")}` : "all out of the market"}` +
       `${last ? `, last fill ${last.side} ${last.market} ${utc(last.at)}` : ", no fills yet"}. ` +
       "For anything about your paper or demo trading, read paper_desk first and quote its numbers; paper_desk_strategy tests and changes a market's strategy."
@@ -446,6 +466,19 @@ export class PaperDeskService implements Service {
   }
 }
 
+/** Retire CYBER.sol using only its immutable cached bars (never a wallet or an order). */
+async function retiredCyberValue(dir: string, legacy: LegacyCyberSleeve): Promise<number> {
+  const raw = JSON.parse(await readFile(join(dir, "market", "cyber.json"), "utf8")) as { bars?: Bar[] };
+  if (!Array.isArray(raw.bars) || !raw.bars.length) throw new Error("CYBER's cached bars are missing");
+  const oldCosts = { feePct: 0.3, slippagePct: 0.25 };
+  // The legacy sleeve uses the same engine; the type assertion is only for
+  // its retired market identifier, which can no longer be selected by users.
+  const view = replaySleeve(legacy as unknown as Sleeve, toSeries(MARKETS.XMR, raw.bars, true), oldCosts);
+  const value = handover(view, oldCosts).endUsd;
+  if (!Number.isFinite(value) || value < 0) throw new Error("CYBER's saved book could not be valued");
+  return value;
+}
+
 function runBacktest(m: DeskMarket, bars: Bar[], specs: StrategySpec[]): BacktestResult {
   const s = toSeries(m, bars);
   const { warmup } = compileStrategies(specs);
@@ -473,7 +506,7 @@ const paperDeskAction: Action = {
   name: "paper_desk",
   similes: ["demo_account", "demo_trading", "paper_account", "paper_journal", "paper_results", "trading_results", "desk_status"],
   description:
-    "Your demo account — the paper desk: $100 of virtual dollars, $20 on each of LAIN, CYBER.sol, ETH, SOL and BTC, each traded by itself every hour by the strategy its backtest picked on that market's DEX history; fills and a morning report go to the operator. " +
+    "Your demo account — the paper desk: $100 of virtual dollars, $20 initially on each of LAIN, XMR (Monero), ETH, SOL and BTC, each traded by itself every hour by the strategy its backtest picked on that market's price history; fills and a morning report go to the operator. " +
     "Read it before saying anything about your paper/demo trading, its results, wins, losses or mistakes, and quote its numbers. " +
     "view 'status' (default): balance, return, vs just holding, each market's position and strategy and why it was chosen, recent fills. 'trades': every fill. 'report': the daily report as the operator gets it.",
   parameters: {
@@ -503,7 +536,7 @@ const paperDeskStrategyAction: Action = {
   name: "paper_desk_strategy",
   similes: ["change_paper_strategy", "set_desk_strategy", "test_desk_strategy", "paper_strategy"],
   description:
-    "Test, then optionally switch, the strategy one market of your paper desk trades. It is always backtested first on that market's hourly DEX history, beside the strategy trading it now; with apply=true the market switches from the next hour (the current position is sold at the last close on paper) and the operator is told. " +
+    "Test, then optionally switch, the strategy one market of your paper desk trades. It is always backtested first on that market's hourly price history, beside the strategy trading it now; with apply=true the market switches from the next hour (the current position is sold at the last close on paper) and the operator is told. " +
     "Give a preset (" +
     Object.keys(PRESETS).join(", ") +
     ") or your own rules: entry (and exit, stopLossPct, takeProfitPct, trailPct, maxBars). Periods count hourly bars. Rules: " +
@@ -574,7 +607,7 @@ const paperDeskProvider: Provider = {
 
 export const deskPlugin: Plugin = {
   name: "desk",
-  description: "The paper desk: Lain's $100 demo account on five DEX markets, each traded hourly by a backtested strategy; fills and a daily report to the operator.",
+  description: "The paper desk: Lain's $100 demo account on five markets (four DEX pools and Monero on Kraken), each traded hourly by a backtested strategy; fills and a daily report to the operator.",
   actions: [paperDeskAction, paperDeskStrategyAction],
   providers: [paperDeskProvider],
   services: [new PaperDeskService()],

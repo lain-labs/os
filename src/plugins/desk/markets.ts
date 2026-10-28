@@ -1,9 +1,10 @@
 /**
  * The paper desk's five markets and where their hours come from.
  *
- * Each market is one DEX pool — the pool a real order would go through, never
- * an exchange — read through GeckoTerminal's public OHLCV API as hourly bars
- * priced in dollars (currency=usd, the pool's base token).
+ * Four markets are DEX pools read through GeckoTerminal as dollar-priced
+ * hourly OHLCV bars. Native Monero (XMR/USD) uses Kraken spot candles:
+ * Monero has no native EVM/Solana DEX pool to read. Kraken supplies up to
+ * 720 recent hourly bars, including a still-forming bar we must discard.
  *
  * Facts, checked 2026-10-22: GeckoTerminal answers at most 1000 bars a
  * request, newest first, and never more than about 56 days of them (a pool
@@ -36,15 +37,18 @@ const MAX_PAGES = 8;
 const PAGE_GAP_MS = 7_000;
 const UA = "Mozilla/5.0 (LainOS paper desk)";
 
-export type MarketId = "LAIN" | "CYBER" | "ETH" | "SOL" | "BTC";
-export const MARKET_IDS: readonly MarketId[] = ["LAIN", "CYBER", "ETH", "SOL", "BTC"];
+export type MarketId = "LAIN" | "XMR" | "ETH" | "SOL" | "BTC";
+export const MARKET_IDS: readonly MarketId[] = ["LAIN", "XMR", "ETH", "SOL", "BTC"];
 
 export interface DeskMarket {
   id: MarketId;
   /** What the operator reads: the coin, the chain, the pool. */
   label: string;
-  /** GeckoTerminal's network id. */
+  /** Kraken for native XMR, GeckoTerminal for DEX pools (the default). */
+  source?: "kraken";
+  /** GeckoTerminal network id; unused by Kraken. */
   network: string;
+  /** DEX pool address, or Kraken's pair identifier. Also identifies the cache. */
   pool: string;
   /**
    * Per fill: the pool's fee, and slippage for a fill the size of a sleeve
@@ -52,9 +56,8 @@ export interface DeskMarket {
    */
   costs: Costs;
   /**
-   * Hours in a row the pool may go without a trade before a missing bar means
-   * the indexer stalled rather than nobody trading: then no hour after the
-   * last bar it has is written yet.
+   * Hours in a row the source may go without a settled bar before the
+   * indexer/feed is considered behind, rather than filling gaps flat.
    */
   quietHours: number;
 }
@@ -68,13 +71,14 @@ export const MARKETS: Record<MarketId, DeskMarket> = {
     costs: { feePct: 1, slippagePct: 0.25 },
     quietHours: Infinity,
   },
-  CYBER: {
-    id: "CYBER",
-    label: "CYBER.sol · Solana (PumpSwap, CYBER/SOL)",
-    network: "solana",
-    pool: "Dk19ZrUAJLW2e6Ra1qkaZk1pwb48y5cwQu6xfcFXYtEg",
-    costs: { feePct: 0.3, slippagePct: 0.25 },
-    quietHours: Infinity,
+  XMR: {
+    id: "XMR",
+    label: "Monero (XMR) · Kraken spot (XMR/USD)",
+    source: "kraken",
+    network: "",
+    pool: "XMRUSD",
+    costs: { feePct: 0.4, slippagePct: 0.02 },
+    quietHours: 2,
   },
   ETH: {
     id: "ETH",
@@ -125,12 +129,16 @@ interface Cache {
 }
 
 /** [unix seconds, o, h, l, c, volume usd], newest first. */
-type GtBar = [number, number, number, number, number, number];
+type FeedBar = [number, number, number, number, number, number];
+type KrakenRow = [number, string, string, string, string, string, string, number];
 
-async function page(env: MarketEnv, m: DeskMarket, before?: number): Promise<GtBar[]> {
-  const url =
-    `${GT}/networks/${m.network}/pools/${m.pool}/ohlcv/hour?aggregate=1&limit=1000&currency=usd&token=base` +
-    (before ? `&before_timestamp=${Math.floor(before / 1000)}` : "");
+async function page(env: MarketEnv, m: DeskMarket, before?: number): Promise<FeedBar[]> {
+  const kraken = m.source === "kraken";
+  const provider = kraken ? "Kraken" : "GeckoTerminal";
+  const url = kraken
+    ? `https://api.kraken.com/0/public/OHLC?pair=${m.pool}&interval=60`
+    : `${GT}/networks/${m.network}/pools/${m.pool}/ohlcv/hour?aggregate=1&limit=1000&currency=usd&token=base` +
+      (before ? `&before_timestamp=${Math.floor(before / 1000)}` : "");
   for (let attempt = 0; ; attempt++) {
     try {
       const res = await env.fetch(url, { headers: { accept: "application/json", "user-agent": UA }, signal: AbortSignal.timeout(60_000) });
@@ -138,12 +146,19 @@ async function page(env: MarketEnv, m: DeskMarket, before?: number): Promise<GtB
         await env.sleep(15_000 * (attempt + 1));
         continue;
       }
-      if (!res.ok) throw new Error(`GeckoTerminal HTTP ${res.status} for ${m.id}`);
-      const body = (await res.json()) as { data?: { attributes?: { ohlcv_list?: GtBar[] } } };
+      if (!res.ok) throw new Error(`${provider} HTTP ${res.status} for ${m.id}`);
+      if (kraken) {
+        const body = (await res.json()) as { error?: string[]; result?: Record<string, KrakenRow[] | number> };
+        if (body.error?.length) throw new Error(`Kraken ${m.id}: ${body.error.join(", ")}`);
+        const rows = Object.values(body.result ?? {}).find((v): v is KrakenRow[] => Array.isArray(v));
+        if (!rows) throw new Error(`Kraken ${m.id}: missing OHLC rows`);
+        return rows.map((r) => [Number(r[0]), Number(r[1]), Number(r[2]), Number(r[3]), Number(r[4]), Number(r[6]) * Number(r[4])]);
+      }
+      const body = (await res.json()) as { data?: { attributes?: { ohlcv_list?: FeedBar[] } } };
       return body.data?.attributes?.ohlcv_list ?? [];
     } catch (err) {
-      if ((err as Error).message.startsWith("GeckoTerminal HTTP")) throw err;
-      if (attempt >= 3) throw new Error(`GeckoTerminal unreachable: ${(err as Error).message}`);
+      if ((err as Error).message.startsWith(`${provider} `)) throw err;
+      if (attempt >= 3) throw new Error(`${provider} unreachable: ${(err as Error).message}`);
       await env.sleep(2_000 * 2 ** attempt);
     }
   }
@@ -179,11 +194,11 @@ export async function loadBars(m: DeskMarket, env: MarketEnv): Promise<Bar[]> {
   if (last !== null && last >= lastClosed) return cache.bars;
 
   // Page back until the pages reach the last bar on disk (one page, normally), run dry, or go past 180 days.
-  const raw = new Map<number, GtBar>();
+  const raw = new Map<number, FeedBar>();
   let before: number | undefined;
-  for (let p = 0; p < MAX_PAGES; p++) {
+  for (let p = 0; p < (m.source === "kraken" ? 1 : MAX_PAGES); p++) {
     // A first download pages hard; GeckoTerminal answers a burst by holding the connection open.
-    if (p > 0 || last === null) await env.sleep(PAGE_GAP_MS);
+    if (m.source !== "kraken" && (p > 0 || last === null)) await env.sleep(PAGE_GAP_MS);
     const got = await page(env, m, before);
     if (!got.length) break;
     for (const b of got) raw.set(b[0] * 1000, b);
@@ -193,9 +208,14 @@ export async function loadBars(m: DeskMarket, env: MarketEnv): Promise<Bar[]> {
     before = oldest;
   }
 
+  // Kraken has only a rolling 720-hour window. Never invent a month of flat prices after a long outage.
+  if (m.source === "kraken" && last !== null && raw.size && Math.min(...raw.keys()) > last + HOUR) {
+    throw new Error("Kraken XMR history gap exceeds its 720-bar window; preserved the last cached book");
+  }
   const times = [...raw.keys()].filter((t) => t <= lastClosed && (last === null || t > last)).sort((a, b) => a - b);
   // A liquid pool silent for longer than it ever is: the indexer is behind, so wait for it.
-  const lastRaw = [...raw.keys()].reduce((a, b) => Math.max(a, b), -Infinity);
+  // Kraken always includes a forming candle; that cannot prove a settled hour exists.
+  const lastRaw = [...raw.keys()].filter((t) => t <= lastClosed).reduce((a, b) => Math.max(a, b), -Infinity);
   const upTo = lastClosed - lastRaw > m.quietHours * HOUR ? lastRaw : lastClosed;
   let prevClose = cache.bars.at(-1)?.[4] ?? null;
   let t = last !== null ? last + HOUR : (times[0] ?? null);
@@ -239,7 +259,7 @@ export function toSeries(m: DeskMarket, bars: readonly Bar[], live = false): Ser
     low: col(3),
     close: col(4),
     volume: col(5),
-    stretches: rows.length ? [{ source: "dex", pair: `${m.id}/USD`, from: rows[0]![0], to: rows.at(-1)![0] }] : [],
+    stretches: rows.length ? [{ source: m.source === "kraken" ? "kraken" : "dex", pair: `${m.id}/USD`, from: rows[0]![0], to: rows.at(-1)![0] }] : [],
     notes: [],
   };
 }

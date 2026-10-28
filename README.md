@@ -606,9 +606,10 @@ and secret values loaded from the environment.
   ```
 
   **The paper desk — Lain's demo account.** $100 of virtual dollars, $20 on
-  each of five DEX markets: LAIN (Robinhood Chain), CYBER.sol, ETH, SOL and
-  BTC, each read from its pool through GeckoTerminal as hourly bars in
-  dollars. When the desk opens, every market gets the preset its backtest
+  each of five markets: LAIN (Robinhood Chain), XMR (native Monero), ETH,
+  SOL and BTC. Four DEX pools use GeckoTerminal; XMR/USD uses Kraken spot
+  hourly candles (not a wrapped XMR token). When the desk opens, every
+  market gets the preset its backtest
   ranks first on that market's own history (with the held-out tail shown
   beside it). Every hour the daemon reads the new bars and replays each
   market through the backtest engine — the same rules, fills and costs, so
@@ -620,6 +621,11 @@ and secret values loaded from the environment.
   one market and, with `apply`, switches that market to it from the next
   hour. State lives in `data/desk/` (`state.json`, bar caches under
   `market/`); nothing on the desk can reach a wallet or send an order.
+  Kraken exposes only the latest 720 hourly candles, so XMR builds a longer
+  local history as it runs. An outage beyond that window pauses XMR instead
+  of inventing missing prices. Existing CYBER.sol sleeves are retired into
+  the saved state; their last cached marked value moves into XMR after the
+  simulated exit cost (no extra deposit).
 
   Trading by hand on paper is `paper_trading` (status / on / off / reset), and
   `portfolio_pnl` reports the paper account while paper mode is on. The switch
