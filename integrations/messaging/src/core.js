@@ -11,7 +11,8 @@ export function sessionKey({ platform, workspace, channel, thread, user, dm }) {
 
 export function stripMention(text, platform, botId) {
   if (!botId) return String(text ?? "").trim();
-  const escaped = String(botId).replace(/[.*+?^$()|[\]{}\\]/g, "\\$&");
+  const escaped = String(botId);
+  if (!/^[A-Za-z0-9]+$/.test(escaped)) return String(text ?? "").trim();
   const pattern = platform === "slack"
     ? new RegExp("<@" + escaped + "(?:\\|[^>]*)?>", "g")
     : new RegExp("<@!?" + escaped + ">", "g");
@@ -59,7 +60,8 @@ const SYSTEM = [
 export class LainBridge {
   constructor({ apiKey, baseUrl = "https://lain-os.com/v1", model = "lain-free", fetchImpl = fetch }) {
     if (!apiKey) throw new Error("LAIN_API_KEY is required");
-    const url = new URL(baseUrl.replace(/\\/$/, "") + "/chat/completions");
+    const normalizedBase = baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
+    const url = new URL(normalizedBase + "/chat/completions");
     if (url.protocol !== "https:" && !["localhost", "127.0.0.1"].includes(url.hostname)) {
       throw new Error("LAIN_API_BASE_URL must be HTTPS (except local development)");
     }
