@@ -132,7 +132,7 @@ export async function backtest(runtime: IAgentRuntime, req: BacktestRequest, onP
 // ------------------------------------------------------------------ report
 
 const date = (t: number) => new Date(t).toISOString().slice(0, 10);
-const SOURCE_NAMES = { binance: "Binance ", bitstamp: "Bitstamp ", dex: "on-chain, every swap of " } as const;
+const SOURCE_NAMES = { binance: "Binance ", bitstamp: "Bitstamp ", dex: "on-chain, every swap of ", kraken: "Kraken spot " } as const;
 const signed = (v: number, digits = 1) => `${v >= 0 ? "+" : ""}${v.toFixed(digits)}%`;
 /** Totals run to thousands of percent over a decade; past ×10 a multiple reads better. */
 const total = (pct: number) => (pct >= 900 ? `×${(1 + pct / 100).toFixed(pct >= 9_900 ? 0 : 1)}` : signed(pct, 0));
