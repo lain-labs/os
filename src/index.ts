@@ -21,6 +21,7 @@ import { createModelProvider } from "./models/index.js";
 import { bootstrapPlugin } from "./plugins/bootstrap/index.js";
 import { channelPlugin } from "./plugins/channel/index.js";
 import { chainPlugin } from "./plugins/chain/index.js";
+import { arenaPlugin } from "./plugins/arena/index.js";
 import { crmPlugin } from "./plugins/crm/index.js";
 import { forgePlugin } from "./plugins/forge/index.js";
 import { githubPlugin } from "./plugins/github/index.js";
@@ -179,6 +180,7 @@ export { deskPlugin, PaperDeskService } from "./plugins/desk/index.js";
 export type { DeskEvent } from "./plugins/desk/index.js";
 export type { TraderEvent } from "./plugins/trader/index.js";
 export { crmPlugin, CrmService } from "./plugins/crm/index.js";
+export { arenaPlugin, ArenaService } from "./plugins/arena/index.js";
 export { walletsPlugin } from "./plugins/wallets/index.js";
 export { fomoscanPlugin, Fomoscan, wallsReport } from "./plugins/fomoscan/index.js";
 export { metamaskPlugin, MetaMaskService } from "./plugins/metamask/index.js";
@@ -217,6 +219,7 @@ const BUILTIN_PLUGINS: Record<string, Plugin> = {
   press: pressPlugin,
   study: studyPlugin,
   crm: crmPlugin,
+  arena: arenaPlugin,
   wallets: walletsPlugin,
   digest: digestPlugin,
   metamask: metamaskPlugin,
