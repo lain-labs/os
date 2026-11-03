@@ -110,7 +110,15 @@ export class TradeJournal {
     try {
       const parsed = JSON.parse(await readFile(this.file, "utf8")) as JournalFile;
       this.data = {
-        trades: parsed.trades ?? [],
+        // Journals written before the multi-chain rename kept the native
+        // amount as `cyberWei`; read it as `nativeWei` so every consumer
+        // (positions, the arena outbox) sees one shape.
+        trades: (parsed.trades ?? []).map((trade) => {
+          const legacy = (trade as TradeRecord & { cyberWei?: string }).cyberWei;
+          if (trade.nativeWei !== undefined || legacy === undefined) return trade;
+          const { cyberWei: _, ...rest } = trade as TradeRecord & { cyberWei?: string };
+          return { ...rest, nativeWei: legacy };
+        }),
         positions: parsed.positions ?? {},
         liquidity: parsed.liquidity ?? [],
       };
