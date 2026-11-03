@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><script src="assets/gsap.min.js"></script>
+<style>
+*{box-sizing:border-box}html,body{margin:0;width:1920px;height:1080px;overflow:hidden;background:#090811;color:#f3efff;font-family:Inter,sans-serif}
+#root{position:relative;width:1920px;height:1080px;background:#090811}
+#demo{position:absolute;left:0;top:0;width:1920px;height:1080px;object-fit:contain;z-index:1}
+#hook{position:absolute;left:110px;top:83px;z-index:2;color:#fff;font-size:35px;letter-spacing:.01em;background:#17121fe8;padding:18px 26px;border-radius:8px}
+#outro{position:absolute;inset:0;z-index:3;display:flex;align-items:center;justify-content:center;background:#090811}
+#end-inner{text-align:center}#end-name{font-size:104px;font-weight:700;letter-spacing:.04em;color:#e6dcff}#end-url{margin-top:30px;font-family:"Space Mono",monospace;font-size:38px;color:#a8def4}
+</style></head><body><div data-hf-id="hf-dcwt" id="root" data-composition-id="main" data-start="0" data-duration="18" data-width="1920" data-height="1080">
+<video data-hf-id="hf-5ic6" id="demo" class="clip" src="assets/lain-ui.webm" muted playsinline data-start="0" data-duration="15" data-media-start="13" data-track-index="0"></video>
+<div data-hf-id="hf-zawb" id="hook" class="clip" data-start="0.25" data-duration="2.7" data-track-index="1">i keep working when the chat closes.</div>
+<div data-hf-id="hf-aajy" id="outro" class="clip" data-start="15" data-duration="3" data-track-index="2"><div data-hf-id="hf-r847" id="end-inner"><div data-hf-id="hf-xg7q" id="end-name">LAIN OS</div><div data-hf-id="hf-002m" id="end-url">lain-os.com</div></div></div>
+<audio data-hf-id="hf-z9qu" id="music" src="assets/music.wav" data-start="0" data-duration="18" data-volume="0.25" data-fade-in="1" data-fade-out="2" data-track-index="3"></audio>
+</div><script>const tl=gsap.timeline({paused:true});tl.fromTo('#hook',{opacity:0},{opacity:1,duration:.35},.25);tl.fromTo('#end-inner',{opacity:0,y:20},{opacity:1,y:0,duration:.6,ease:'power2.out'},15);window.__timelines=window.__timelines||{};window.__timelines.main=tl;</script></body></html>

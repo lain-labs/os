@@ -40,6 +40,8 @@ export interface ContentPlan {
   pillars: { name: string; share?: number; what: string }[];
   rules: string[];
   voice: string[];
+  /** Optional complete system instructions for this plan's author. */
+  writerInstructions?: string[];
   range: { from: string; to: string };
   slots: PostSlot[];
 }
@@ -98,6 +100,7 @@ export function parsePlan(raw: string): ContentPlan {
     pillars: Array.isArray(p.pillars) ? p.pillars : [],
     rules: Array.isArray(p.rules) ? p.rules : [],
     voice: Array.isArray(p.voice) ? p.voice : [],
+    writerInstructions: Array.isArray(p.writerInstructions) ? p.writerInstructions.filter((v): v is string => typeof v === "string") : undefined,
     range: p.range ?? { from: clean[0].date, to: clean[clean.length - 1].date },
     slots: clean,
   };
@@ -162,7 +165,7 @@ export function slotText(slot: PostSlot): string {
     `Date: ${slot.date} (${slot.day})`,
     `Pillar: ${slot.pillar}`,
     `Today's thesis: ${slot.primary}`,
-    `Asset the operator will attach: ${slot.asset}`,
+    `Visual to prepare: ${slot.asset}`,
     `Today's CTA: ${slot.cta}`,
   ].join("\n");
 }

@@ -82,6 +82,8 @@ export interface MemoryStore {
   /** Durable agent facts not tied to a single room (learned knowledge). */
   remember(fact: string, metadata?: Record<string, unknown>): Promise<void>;
   facts(limit: number): Promise<string[]>;
+  rules?(roomId: string, userId: string): Promise<string[]>;
+  saveRules?(roomId: string, userId: string, rules: string[], mode: "add" | "replace" | "remove"): Promise<string[]>;
 }
 
 /**

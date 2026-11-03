@@ -221,6 +221,20 @@ try {
   let unsafeStartup = false;
   try { await boot(); } catch (error) { unsafeStartup = privateOutput(String(error)); }
   check("startup refuses an insecure saved registry without leaking it", unsafeStartup);
+
+  const priorsDir = join(tmp, "priors-test");
+  current = await boot(priorsDir);
+  const preset = await current.act("connect_priors");
+  check("Priors preset connects and discovers tools without an endpoint file", preset.ok && current.actions.some((item) => item.name === mcpToolName("priors", "status")) && requests.some((item) => item.path === "/mcp" && item.method === "initialize"));
+  check("Priors tools dispatch through the existing MCP client", (await current.act("call_remote_mcp", { server: "priors", tool: "status" })).ok);
+  await current.service.stop();
+  current = await boot(priorsDir);
+  check("Priors reconnects after restart", current.actions.some((item) => item.name === mcpToolName("priors", "status")));
+  check("Priors disconnect removes the saved connection", (await current.act("disconnect_remote_mcp", { server: "priors" })).ok && !current.actions.some((item) => item.name.startsWith("mcp_priors__")));
+  const other = join(priorsDir, "mcp", "other.endpoint");
+  await writeFile(other, jsonEndpoint, { mode: 0o600 });
+  check("an operator can use a custom priors namespace", (await current.act("connect_remote_mcp", { server: "priors", endpoint_file: other })).ok);
+  check("Priors preset refuses to replace a different saved endpoint", !(await current.act("connect_priors")).ok && JSON.parse(await readFile(join(priorsDir, "mcp", "connections.json"), "utf8")).servers[0].endpoint === jsonEndpoint);
   console.log(`${checks} MCP checks passed.`);
 } finally {
   await current?.service.stop();

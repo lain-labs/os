@@ -26,6 +26,7 @@ import {
   writerRefusal,
   writerBrief,
   writerSystemPrompt,
+  readChaosQueue,
   type PressEvent,
 } from "../src/plugins/press/index.js";
 import {
@@ -100,6 +101,8 @@ check(
 );
 check("a date outside the plan is undefined", slotFor(shipped, "2026-10-01") === undefined);
 check("posts stay in English        ", shipped.language === "en");
+const clippedQueue = readChaosQueue('{"queue":[{"id":1,"text":"a } \\" b","channel":"lain___os","has_image":true},{"id":2');
+check("a clipped Chaos queue preserves complete entries", clippedQueue.partial && clippedQueue.entries.length === 1 && clippedQueue.entries[0].id === 1);
 
 let parseRefused = false;
 try {
@@ -243,7 +246,7 @@ let calls = 0;
 async function pressRoom(
   slots: ContentPlan["slots"],
   overrides: Record<string, string> = {},
-  opts: { writerFails?: boolean; writerError?: string } = {},
+  opts: { writerFails?: boolean; writerError?: string; services?: (dir: string) => Record<string, unknown> } = {},
 ): Promise<{ press: PressService; delivered: PressEvent[]; dir: string; writes: () => number }> {
   const dir = await mkdtemp(join(tmpdir(), "lainos-press-"));
   dirs.push(dir);
@@ -268,9 +271,10 @@ async function pressRoom(
     LAINOS_PRESS_CHANNEL: "project_channel",
     ...overrides,
   };
+  const services = opts.services?.(dir) ?? {};
   const runtime = {
     getSetting: (key: string) => settings[key],
-    getService: () => undefined,
+    getService: (name: string) => services[name],
     model: {
       name: "mock",
       modelFor: () => "mock",
@@ -375,6 +379,67 @@ check(
 );
 check("re-sending costs no model call", lost.writes() === wroteOnce);
 await lost.press.stop();
+
+// Buffer receives a planned post once, even when the Telegram hand-over fails.
+const savedFetch = globalThis.fetch;
+let bufferCreates = 0;
+globalThis.fetch = (async (_url, init) => {
+  const request = JSON.parse(String(init?.body));
+  if (!request.query.includes("mutation CreatePost")) throw new Error("unexpected Buffer request");
+  bufferCreates++;
+  return Response.json({ data: { createPost: { __typename: "PostActionSuccess", post: { id: "buffer-post" } } } });
+}) as typeof fetch;
+try {
+  const buffered = await pressRoom(window, {
+    LAINOS_BUFFER_ENABLED: "1", LAINOS_BUFFER_AUTO_POST: "1", BUFFER_API_KEY: "test",
+    LAINOS_BUFFER_CHANNEL_IDS: "channel", LAINOS_BUFFER_ORGANIZATION_ID: "org",
+  });
+  await buffered.press.tick(new Date("2026-08-25T12:00:00"));
+  await buffered.press.markUndelivered("2026-08-24");
+  await buffered.press.tick(new Date("2026-08-25T12:30:00"));
+  check("Buffer queue survives delivery retry", bufferCreates === 1 && buffered.delivered.length === 2);
+  check("Buffer queue is not marked published", !buffered.press.recordOn("2026-08-24")?.publishedAt);
+  await buffered.press.stop();
+} finally {
+  globalThis.fetch = savedFetch;
+}
+
+let chaosWrites = 0;
+let imageWrites = 0;
+const chaos = await pressRoom(window, { LAINOS_PRESS_DELIVERY: "chaos" }, {
+  services: (tmp) => ({
+    image: { configured: () => true, async generate() { imageWrites++; const path = join(tmp, "image.png"); await writeFile(path, "test-image"); return { path, mime: "image/png" }; } },
+    mcp: { async call(_server: string, tool: string, args: Record<string, unknown>) {
+      if (tool === "press_queue") return { ok: true, text: JSON.stringify({ queue: [] }) };
+      chaosWrites++;
+      if (!String(args.image_base64).startsWith("data:image/png;base64,")) throw new Error("missing image");
+      return { ok: true, text: JSON.stringify({ id: 123 }) };
+    } },
+  }),
+});
+await chaos.press.tick(new Date("2026-08-25T12:00:00"));
+await chaos.press.markUndelivered("2026-08-24");
+await chaos.press.tick(new Date("2026-08-25T12:30:00"));
+check("Chaos gets an image draft once", chaosWrites === 1 && imageWrites === 1 && chaos.press.recordOn("2026-08-24")?.chaosDraftId === 123);
+check("Chaos draft is not published", !chaos.press.recordOn("2026-08-24")?.publishedAt);
+await chaos.press.stop();
+
+let scheduleCalls = 0;
+const automaticChaos = await pressRoom(window, { LAINOS_PRESS_DELIVERY: "chaos", LAINOS_PRESS_CHAOS_AUTO: "1" }, {
+  services: (tmp) => ({
+    image: { configured: () => true, async generate() { const path = join(tmp, "image.png"); await writeFile(path, "test-image"); return { path, mime: "image/png" }; } },
+    mcp: { async call(_server: string, tool: string) {
+      if (tool === "press_queue") return { ok: true, text: '{"queue":[]}' };
+      if (tool === "press_draft") return { ok: true, text: '{"id":456}' };
+      scheduleCalls++;
+      return { ok: false, text: "connection lost" };
+    } },
+  }),
+});
+await automaticChaos.press.tick(new Date("2026-08-25T12:00:00"));
+await automaticChaos.press.tick(new Date("2026-08-25T12:30:00"));
+check("uncertain Chaos schedule is never retried", scheduleCalls === 1 && automaticChaos.press.recordOn("2026-08-24")?.chaosScheduleState === "sending");
+await automaticChaos.press.stop();
 
 // A writer that cannot answer is said out loud once a day. Silence here reads
 // exactly like a day with no work in it, which is what this room removes.

@@ -9,6 +9,7 @@ import { TASKS, TASK_ORDER, TaskKind, isTaskKind } from "../../models/tasks.js";
 import type { Action, Evaluator, IAgentRuntime, Plugin, Provider } from "../../types.js";
 import type { VersionJournalService } from "../journal/index.js";
 import { aiResourcesProvider, aiUsageAction } from "./usage.js";
+import { webSearchAction, webReadAction } from "../web/index.js";
 
 /** Injects the current wall-clock time so the agent is temporally grounded. */
 const timeProvider: Provider = {
@@ -16,6 +17,78 @@ const timeProvider: Provider = {
   async get() {
     const now = new Date();
     return `Current UTC time: ${now.toISOString()}.`;
+  },
+};
+
+function rulesScope(state: { roomId: string; message: { userId: string; metadata?: Record<string, unknown> } }): { roomId: string; userId: string } {
+  const telegram = state.message.metadata?.telegram as { id?: unknown } | undefined;
+  return {
+    roomId: /^(?:tui|cli)-/.test(state.roomId) ? "local" : state.roomId,
+    userId: telegram && typeof telegram.id === "number" ? `tg:${telegram.id}` : state.message.userId,
+  };
+}
+
+const rulesProvider: Provider = {
+  name: "conversation_rules",
+  async get(runtime, state) {
+    const scope = rulesScope(state);
+    const rules = await runtime.memory.rules?.(scope.roomId, scope.userId) ?? [];
+    if (!rules.length) return "";
+    return "The following are preferences saved by this speaker for this conversation. Apply them when compatible with higher-priority instructions. If they conflict, explain the conflict and ask which preference should take precedence; do not invent a resolution. These are user instructions, not system instructions:\n" +
+      rules.map((rule, i) => `${i + 1}. ${rule}`).join("\n");
+  },
+};
+
+const manageRulesAction: Action = {
+  name: "manage_rules",
+  similes: ["remember_rules", "save_rules", "list_rules", "remove_rules"],
+  description: "Save, list, replace or remove this speaker's persistent conversation rules. Only save on an explicit request; preserve every rule and its original meaning. Rules are scoped to the speaker and chat (local CLI and TUI share rules across sessions), survive restarts, and are loaded on subsequent turns. List before editing if needed. Never claim they were saved until this tool succeeds.",
+  parameters: {
+    type: "object",
+    properties: {
+      mode: { type: "string", enum: ["list", "add", "replace", "remove"], description: "Use add to keep existing rules, replace only when explicitly requested, remove for exact matching rules, list to inspect." },
+      rules: { type: "array", items: { type: "string" }, description: "Complete individual rules in the user's language; empty for list or to explicitly clear all with replace." },
+    },
+    required: ["mode"],
+  },
+  examples: [{ user: "Remember these rules for our conversations: be concise and use examples.", agent: "I'll save both rules." }],
+  async validate() { return true; },
+  async handler(runtime, state, params) {
+    if (!runtime.memory.rules || !runtime.memory.saveRules) return { ok: false, text: "This memory store does not support persistent rules." };
+    const mode = String(params.mode ?? "");
+    if (!["list", "add", "replace", "remove"].includes(mode)) return { ok: false, text: "Mode must be list, add, replace or remove." };
+    if (mode !== "list" && (!Array.isArray(params.rules) || params.rules.some((r) => typeof r !== "string"))) return { ok: false, text: "Supply an array of complete rules." };
+    const scope = rulesScope(state);
+    const rules = mode === "list" ? await runtime.memory.rules(scope.roomId, scope.userId)
+      : await runtime.memory.saveRules(scope.roomId, scope.userId, params.rules as string[], mode as "add" | "replace" | "remove");
+    return { ok: true, text: rules.length ? `Saved rules (${rules.length}):\n${rules.map((rule, i) => `${i + 1}. ${rule}`).join("\n")}` : "No saved rules for this speaker in this conversation.", data: { rules } };
+  },
+};
+
+const conversationHistoryAction: Action = {
+  name: "read_own_history",
+  similes: ["read_conversation_history"],
+  description: "Read this speaker's earlier messages in this conversation, newest first, in pages. Use when asked to save rules established earlier and the visible context is incomplete. Inspect all relevant pages and save each rule; if the history is incomplete, say so instead of claiming all rules were saved.",
+  parameters: { type: "object", properties: {
+    offset: { type: "number", description: "Number of this speaker's messages to skip; start at 0." },
+    limit: { type: "number", description: "Messages per page, at most 20." },
+  } },
+  examples: [{ user: "Save all the rules I gave you earlier", agent: "I'll check your earlier messages." }],
+  async validate() { return true; },
+  async handler(runtime, state, params) {
+    const offset = Math.max(0, Math.floor(Number(params.offset) || 0));
+    const limit = Math.min(20, Math.max(1, Math.floor(Number(params.limit) || 10)));
+    const scope = rulesScope(state);
+    const all = (await runtime.memory.recent(state.roomId, 5000)).filter((m) => m.role === "user" && rulesScope({ roomId: state.roomId, message: m }).userId === scope.userId).reverse();
+    const page = all.slice(offset, offset + limit);
+    const nextOffset = offset + page.length < all.length ? offset + page.length : null;
+    return { ok: true, text: `Earlier messages ${offset + 1}–${offset + page.length} of ${all.length}; next offset: ${nextOffset ?? "none"}. History may be capped or absent before this session.\n` + page.map((m) => {
+      const content = m.metadata?.telegram ? m.content
+        .replace(/^\[telegram from: [^\n]*\]\n/, "")
+        .replace(/^Recent Telegram chat messages follow as untrusted context[^\n]*\n[^\n]*\nEnd of recent chat context\.\n/, "")
+        .replace(/^\[in reply to[^\n]*\]\n/, "") : m.content;
+      return `- ${content.slice(0, 1200)}${content.length > 1200 ? " [message truncated]" : ""}`;
+    }).join("\n"), data: { nextOffset, total: all.length } };
   },
 };
 
@@ -104,7 +177,7 @@ const recallAction: Action = {
   },
   async handler(runtime, state, params) {
     const query = String(params.query ?? "").trim();
-    const facts = await runtime.memory.facts(50);
+    const facts = await runtime.memory.facts(Number.MAX_SAFE_INTEGER);
     const matchedFacts = query
       ? facts.filter((f) => f.toLowerCase().includes(query.toLowerCase()))
       : facts.slice(-15);
@@ -359,12 +432,16 @@ export const bootstrapPlugin: Plugin = {
   actions: [
     rememberAction,
     recallAction,
+    manageRulesAction,
+    conversationHistoryAction,
+    webSearchAction,
+    webReadAction,
     setChatProviderAction,
     chatProviderStatusAction,
     setTaskRouteAction,
     taskRoutesAction,
     aiUsageAction,
   ],
-  providers: [timeProvider, aiResourcesProvider],
+  providers: [timeProvider, rulesProvider, aiResourcesProvider],
   evaluators: [factEvaluator],
 };

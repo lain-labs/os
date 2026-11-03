@@ -27,6 +27,7 @@ const log = createLogger("memory");
 export class FileMemoryStore implements MemoryStore {
   private memories: Memory[] = [];
   private learned: { fact: string; metadata?: Record<string, unknown>; at: number }[] = [];
+  private userRules: { roomId: string; userId: string; rules: string[] }[] = [];
   /** memory id -> embedding vector (only populated when `embedder` is set). */
   private embeddings = new Map<string, number[]>();
   private loaded = false;
@@ -47,6 +48,7 @@ export class FileMemoryStore implements MemoryStore {
       const parsed = JSON.parse(raw);
       this.memories = parsed.memories ?? [];
       this.learned = parsed.learned ?? [];
+      this.userRules = parsed.userRules ?? [];
     } catch {
       // Fresh store.
     }
@@ -65,7 +67,7 @@ export class FileMemoryStore implements MemoryStore {
   private async persist() {
     await mkdir(dirname(this.file), { recursive: true });
     const payload = JSON.stringify(
-      { memories: this.memories, learned: this.learned },
+      { memories: this.memories, learned: this.learned, userRules: this.userRules },
       null,
       2,
     );
@@ -201,6 +203,28 @@ export class FileMemoryStore implements MemoryStore {
   async facts(limit: number): Promise<string[]> {
     await this.ensureLoaded();
     return this.learned.slice(-limit).map((l) => l.fact);
+  }
+
+  async rules(roomId: string, userId: string): Promise<string[]> {
+    await this.ensureLoaded();
+    return [...(this.userRules.find((r) => r.roomId === roomId && r.userId === userId)?.rules ?? [])];
+  }
+
+  async saveRules(roomId: string, userId: string, rules: string[], mode: "add" | "replace" | "remove"): Promise<string[]> {
+    await this.ensureLoaded();
+    const current = await this.rules(roomId, userId);
+    const cleaned = rules.map((rule) => rule.trim()).filter(Boolean);
+    const key = (rule: string) => rule.toLocaleLowerCase();
+    const next = mode === "replace" ? cleaned : mode === "remove"
+      ? current.filter((rule) => !cleaned.some((item) => key(item) === key(rule)))
+      : [...current, ...cleaned];
+    const unique = [...new Map(next.map((rule) => [key(rule), rule])).values()];
+    if (unique.length > 100 || unique.some((rule) => rule.length > 1000) || unique.join("\n").length > 16000)
+      throw new Error("Rules exceed the limit (100 rules, 1000 characters per rule, 16000 characters total). No changes were saved.");
+    this.userRules = this.userRules.filter((r) => r.roomId !== roomId || r.userId !== userId);
+    if (unique.length) this.userRules.push({ roomId, userId, rules: unique });
+    await this.persist();
+    return [...unique];
   }
 }
 

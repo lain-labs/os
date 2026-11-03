@@ -201,7 +201,7 @@ export function createHttpServer(runtime: IAgentRuntime, opts: HttpOptions = {})
     if (req.method === "POST" && req.url === "/chat") {
       try {
         const body = await readBody(req);
-        const { roomId, userId, text, task } = JSON.parse(body || "{}");
+        const { roomId, userId, text, task, metadata } = JSON.parse(body || "{}");
         if (typeof text !== "string" || !text.trim()) {
           return json(res, 400, { error: "field 'text' is required" });
         }
@@ -211,13 +211,15 @@ export function createHttpServer(runtime: IAgentRuntime, opts: HttpOptions = {})
         if (declared && !isTaskKind(declared)) {
           return json(res, 400, { error: `field 'task' must be one of: ${TASK_ORDER.join(", ")}` });
         }
-        const caller = trustedCaller(runtime, req.headers.authorization) ? String(userId ?? "anon") : callerIdentity(userId);
+        const trusted = trustedCaller(runtime, req.headers.authorization);
+        const caller = trusted ? String(userId ?? "anon") : callerIdentity(userId);
         if (!caller) return json(res, 403, { error: "this userId is reserved for local and Telegram clients" });
         const result = await runtime.handleMessage({
           roomId: typeof roomId === "string" ? roomId : "http",
           userId: caller,
           text,
           task: declared && isTaskKind(declared) ? declared : undefined,
+          ...(trusted && metadata && typeof metadata === "object" && !Array.isArray(metadata) ? { metadata } : {}),
         });
         return json(res, 200, result);
       } catch (err) {

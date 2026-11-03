@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "LainOS — a small, hackable framework for autonomous AI agents.",
+  "description": "LainOS \u2014 a small, hackable framework for autonomous AI agents.",
   "license": "BUSL-1.1",
   "engines": {
     "node": ">=20"
@@ -24,8 +24,9 @@
     "portfolio:pnl": "tsx scripts/portfolio-pnl.ts",
     "analyze:transcripts": "tsx scripts/analyze-transcripts.ts",
     "smoke": "tsx scripts/smoke.ts",
+    "web-memory:smoke": "tsx scripts/web-memory-smoke.ts",
     "wired:smoke": "tsx scripts/wired-smoke.ts",
-    "test": "npm run typecheck && npm run providers:smoke && npm run market:smoke && npm run keys:smoke && npm run markdown:smoke && npm run tasks:smoke && npm run limits:smoke && npm run usage:smoke && npm run press:smoke && npm run content:smoke && npm run content:trends:smoke && npm run crm:smoke && npm run sentinel:smoke && npm run scout:smoke && npm run skills:smoke && npm run mcp:smoke && npm run image:smoke && npm run wallets:smoke && npm run telegram:smoke && npm run telethon:smoke && npm run digest:smoke && npm run metamask:smoke && npm run fomoscan:smoke && npm run trench:smoke && npm run stocks:smoke && npm run backtest:smoke && npm run desk:smoke && npm run acp:smoke && npm run http:smoke && npm run journal:smoke && npm run tui:smoke",
+    "test": "npm run typecheck && npm run web-memory:smoke && npm run providers:smoke && npm run market:smoke && npm run keys:smoke && npm run markdown:smoke && npm run tasks:smoke && npm run limits:smoke && npm run usage:smoke && npm run press:smoke && npm run buffer:smoke && npm run content:smoke && npm run content:trends:smoke && npm run crm:smoke && npm run sentinel:smoke && npm run scout:smoke && npm run skills:smoke && npm run mcp:smoke && npm run image:smoke && npm run wallets:smoke && npm run telegram:smoke && npm run telethon:smoke && npm run digest:smoke && npm run metamask:smoke && npm run fomoscan:smoke && npm run trench:smoke && npm run stocks:smoke && npm run backtest:smoke && npm run desk:smoke && npm run acp:smoke && npm run http:smoke && npm run journal:smoke && npm run tui:smoke",
     "dev": "tsx watch scripts/chat.ts",
     "tui:smoke": "FORCE_COLOR=3 tsx scripts/tui-smoke.tsx",
     "keys:smoke": "tsx scripts/keys-smoke.ts",
@@ -49,7 +50,7 @@
     "tasks": "tsx scripts/tasks.ts",
     "wallets": "tsx scripts/wallets.ts",
     "wallets:smoke": "tsx scripts/wallets-smoke.ts",
-    "telegram:smoke": "tsx scripts/telegram-smoke.ts",
+    "telegram:smoke": "tsx scripts/telegram-smoke.ts && tsx scripts/node-relay-smoke.ts",
     "telethon:smoke": "tsx scripts/telethon-smoke.ts",
     "telethon": "python3 telethon/lain_telethon.py",
     "digest:smoke": "tsx scripts/digest-smoke.ts",
@@ -62,7 +63,8 @@
     "desk:smoke": "tsx scripts/desk-smoke.ts",
     "sandbox": "bash scripts/sandbox/run.sh",
     "http:smoke": "tsx scripts/http-smoke.ts",
-    "acp:smoke": "tsx scripts/acp-smoke.ts"
+    "acp:smoke": "tsx scripts/acp-smoke.ts",
+    "buffer:smoke": "tsx scripts/buffer-smoke.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",

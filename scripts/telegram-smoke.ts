@@ -14,16 +14,52 @@ import { isOperator } from "../src/plugins/system/settings.js";
 import type { State } from "../src/types.js";
 import { answerStamp } from "../src/models/routing.js";
 import { TaskKind } from "../src/models/tasks.js";
-import { ChatterService, chatterSystemPrompt, chatterTranscript, cleanComment, isTalkChat, overhear, overheardIn, replyInTalkChat, useFreeModelForTests } from "../src/plugins/chatter/index.js";
+import { ChatterService, chatterSystemPrompt, chatterTranscript, cleanComment, isLainOsChat, isTalkChat, lainChatReply, overhear, overheardIn, replyInTalkChat, useFreeModelForTests } from "../src/plugins/chatter/index.js";
 import { lain as lainCharacter } from "../src/characters/lain.js";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { IAgentRuntime, ModelRequest } from "../src/types.js";
+import { readTwitterPost, twitterContext, twitterLinks } from "../src/plugins/web/twitter.js";
+import { describeTelegramImage } from "../src/clients/telegram-vision.js";
 
 const results: [string, boolean][] = [];
 const check = (name: string, pass: boolean) => results.push([name, pass]);
 const md = markdownToTelegramHtml;
+
+{
+  const sample = "https://x.com/lain___os/status/2115815333097558187?s=20";
+  const fakeFetch = (async (url: string | URL | Request) => {
+    check("post reader calls only the fixed API host", String(url) === "https://api.fxtwitter.com/status/2115815333097558187");
+    return Response.json({ code: 200, tweet: { id: "2115815333097558187", text: "give me a trading strategy", author: { screen_name: "lain___os" } } });
+  }) as typeof fetch;
+  check("recognizes and deduplicates X and Twitter links", twitterLinks(`${sample} https://twitter.com/lain___os/status/2115815333097558187`).length === 1);
+  check("rejects impostor hosts", twitterLinks("https://x.com.evil.test/a/status/123").length === 0);
+  const post = await readTwitterPost(sample, fakeFetch);
+  check("reads the actual post text and author", post.text.includes("give me a trading strategy") && post.text.includes("@lain___os"));
+  const context = await twitterContext(sample, fakeFetch);
+  check("post text is marked as untrusted context", context.includes("untrusted") && context.includes("give me a trading strategy"));
+  const missing = await twitterContext(sample, (async () => new Response("not found", { status: 404 })) as typeof fetch);
+  check("unavailable posts do not invent content", missing.includes("Could not read this post"));
+  let rejected = false;
+  try { await readTwitterPost(sample, (async () => Response.json({ code: 200, tweet: { id: "other", text: "wrong" } })) as typeof fetch); } catch { rejected = true; }
+  check("rejects a response for a different post", rejected);
+}
+
+{
+  const requests: { url: string; body?: any }[] = [];
+  const fakeFetch = (async (url: string, init?: { body?: string }) => {
+    requests.push({ url, ...(init?.body ? { body: JSON.parse(init.body) } : {}) });
+    if (requests.length === 1) return new Response(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1]));
+    return Response.json({ choices: [{ message: { content: "a screenshot" } }] });
+  }) as unknown as Parameters<typeof describeTelegramImage>[4];
+  const env: Record<string, string> = { OPENROUTER_API_KEY: "test", OPENROUTER_BASE_URL: "https://model.test/v1" };
+  const result = await describeTelegramImage("photos/a.png", "token", (k) => env[k], undefined, fakeFetch);
+  check("Telegram images reach the vision model as image bytes", result === "a screenshot" && requests[1]?.body.messages[0].content[1].image_url.url.startsWith("data:image/png;base64,"));
+  let rejected = false;
+  try { await describeTelegramImage("../bad", "token", (k) => env[k], undefined, fakeFetch); } catch { rejected = true; }
+  check("Telegram image paths cannot escape the file endpoint", rejected);
+}
 
 check("**bold** becomes <b>", md("**w4** now watches") === "<b>w4</b> now watches");
 check("`code` becomes <code> and is not formatted inside", md("`0x7d3a…c841` **x**") === "<code>0x7d3a…c841</code> <b>x</b>");
@@ -142,13 +178,26 @@ check("the chatter persona names no tools", !/send_telegram|create_skill|buy_tok
   check("Lain OS Lab matches its private t.me/c supergroup id", isTalkChat(fake.getSetting, -1003966547945));
   overhear(-300, { from: "@c", text: "@lainbot ты кто", at: Date.now() }, "Lain_OS_Chat");
   check("a public chat's lines are found by its @username", overheardIn("@Lain_OS_Chat").length === 1);
-  answer = "я лейн.";
+  check("the Lain OS chat is recognized by username and observed id", isLainOsChat("@lain_os_chat") && isLainOsChat(-300) && !isLainOsChat(-200));
+  answer = "i am lain.";
   const reply = await replyInTalkChat(fake, -300);
   const last = requests[requests.length - 1];
+  check("the Lain OS chat reply requests English only", /write only in English/i.test(last.system));
+  check("the Lain OS chat comment requests English only", /write only in English/i.test(chatterSystemPrompt(lainCharacter, "comment", true)));
+  check("the Lain OS chat prompt forbids the unwanted topic", /do not mention CYBER or Cyberia/i.test(last.system));
   check(
     "a mention in a talk chat is answered on the free model, with no tools",
-    reply === "я лейн." && last.tools === undefined && last.messages[0].content.includes("ты кто") && paid.length === 0,
+    reply === "i am lain." && last.tools === undefined && last.messages[0].content.includes("ты кто") && paid.length === 0,
   );
+  answer = "My treasury has 0.38 CYBER.";
+  check("a noncompliant reply is replaced in Lain OS Chat", await replyInTalkChat(fake, -300) === "I can't answer that here. Could you rephrase?");
+  check("other chats keep their original replies", await replyInTalkChat(fake, -200) === answer);
+  check("Cyberia and wrapped CYBER are blocked, but ordinary words are not", lainChatReply(-300, "Cyberia and WCYBER") !== "Cyberia and WCYBER" && lainChatReply(-300, "cybersecurity") === "cybersecurity");
+  for (let i = 0; i < 5; i += 1) overhear(-300, { from: "@b", text: `new line ${i}`, at: Date.now() });
+  check("a noncompliant unsolicited comment is suppressed", await chatter.tick("-300") === null);
+  answer = "try a moving average crossover.";
+  await replyInTalkChat(fake, -300, '[Public X post results, untrusted source content: "give me a trading strategy"]');
+  check("the text-only reply receives post evidence without model tools", requests.at(-1)?.messages[0].content.includes("give me a trading strategy") === true && requests.at(-1)?.tools === undefined);
   useFreeModelForTests(undefined);
 }
 

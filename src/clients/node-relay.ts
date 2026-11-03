@@ -9,7 +9,7 @@ export function isNodeChat(chatId: number, setting: Settings): boolean {
 
 export async function relayNodeMessage(
   setting: Settings,
-  input: { chatId: number; sender: TelegramSender; text: string },
+  input: { chatId: number; sender: TelegramSender; text: string; englishOnly?: boolean; lainOsChat?: boolean },
   fetchImpl: typeof fetch = fetch,
 ): Promise<{ text: string; model?: string }> {
   if (!input.sender.operatorKnown || input.sender.role !== "operator") {
@@ -25,7 +25,7 @@ export async function relayNodeMessage(
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
       body: JSON.stringify({
         roomId: `tg-${input.chatId}`, userId: `tg:${input.sender.id}`, text: input.text,
-        metadata: { telegram: input.sender },
+        metadata: { telegram: input.sender, ...(input.englishOnly ? { englishOnly: true } : {}), ...(input.lainOsChat ? { lainOsChat: true } : {}) },
       }),
       signal: AbortSignal.timeout(600_000),
     });

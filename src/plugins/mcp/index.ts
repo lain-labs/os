@@ -10,6 +10,7 @@ import type { Action, ActionResult, IAgentRuntime, Plugin, Service } from "../..
 
 const SERVER_NAME = /^[a-z][a-z0-9_]{0,23}$/;
 const TIMEOUT = 30_000;
+const PRIORS_ENDPOINT = "https://mcp.priors.trade/mcp";
 class SafeError extends Error {}
 
 interface Connection {
@@ -183,9 +184,19 @@ export class RemoteMcpService implements Service {
     }
   }
 
-  async connect(rawName: unknown, file?: unknown): Promise<ActionResult> {
+  /** Connect the public, keyless Priors server without replacing an operator's server. */
+  async connectPriors(): Promise<ActionResult> {
+    const saved = this.saved.get("priors");
+    if (saved && saved !== PRIORS_ENDPOINT) {
+      throw new SafeError("The priors namespace already belongs to a different MCP server. Disconnect it before connecting the public Priors server.");
+    }
+    return this.connect("priors", undefined, PRIORS_ENDPOINT);
+  }
+
+  async connect(rawName: unknown, file?: unknown, publicEndpoint?: string): Promise<ActionResult> {
     const name = serverName(rawName);
     const endpoint = file === undefined && this.saved.has(name) ? this.saved.get(name)!
+      : publicEndpoint !== undefined ? endpointUrl(publicEndpoint)
       : endpointUrl(await readPrivate(file === undefined ? join(this.dir, `${name}.endpoint`) : this.endpointFile(file)));
     const client = new Client({ name: "lainos", version: "0.1.0" });
     const transport = new StreamableHTTPClientTransport(new URL(endpoint), {
@@ -287,7 +298,10 @@ export class RemoteMcpService implements Service {
       const remote = connection.tools.find((item, index) => item.name === tool || connection!.actions[index].name === tool);
       if (!remote) throw new SafeError("Unknown MCP tool. Use list_remote_mcp_tools for discovery.");
       if (!args || typeof args !== "object" || Array.isArray(args)) throw new SafeError("MCP arguments must be an object.");
-      const result = this.scrub(CallToolResultSchema.parse(await connection.client.callTool({ name: remote.name, arguments: args as Record<string, unknown> }, undefined, { timeout: TIMEOUT })));
+      // Uploading a demo can involve tens of megabytes; expiring the call early
+      // would leave an ambiguous write even though the server accepted it.
+      const timeout = name === "chaos" && remote.name === "press_video" ? 180_000 : TIMEOUT;
+      const result = this.scrub(CallToolResultSchema.parse(await connection.client.callTool({ name: remote.name, arguments: args as Record<string, unknown> }, undefined, { timeout })));
       return {
         ok: result.isError !== true,
         text: result.content.filter((item) => item.type === "text").map((item) => item.text).join("\n") || "MCP tool returned content.",
@@ -352,6 +366,7 @@ export const mcpPlugin: Plugin = {
   name: "mcp", description: "Persistent remote MCP connections over Streamable HTTP, with private endpoints and namespaced tools.",
   services: [new RemoteMcpService()],
   actions: [
+    action("connect_priors", "Connect Priors' public, keyless MCP on Robinhood Chain and discover its tools. Use for Priors agent records, credit lines, scores, pool data, x402 service discovery, and requests to borrow or repay. The public server prepares links or unsigned calls; it does not sign, borrow, repay, or pay. Connections persist and reconnect at startup. This does not create or fund a Priors agent.", {}, [], (service) => service.manage(() => service.connectPriors())),
     action("connect_remote_mcp", "Connect or reconnect a remote MCP server and discover tools/list. Read the HTTPS endpoint from an owner-only local file; never put URLs or credentials in tool arguments, messages, wishes or logs. endpoint_file defaults to <LAINOS_DATA_DIR>/mcp/<server>.endpoint for a new server; omit it to reuse a saved connection. A successful connection returns the actual discovered tools. Creating this capability alone does not connect a server.", {
       server: serverParam, endpoint_file: { type: "string", description: "Path to a local mode-0600 file containing only the HTTPS endpoint. Pass its path, never its contents." },
     }, ["server"], (service, p) => service.manage(() => service.connect(p.server, p.endpoint_file))),

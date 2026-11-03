@@ -487,6 +487,18 @@ and secret values loaded from the environment.
   memory skills:
   - `remember` — persist a durable fact (survives restarts, across rooms)
   - `recall` — search durable facts + this room's history
+  - `manage_rules` — list, add, replace or remove explicitly saved conversation
+    rules. Rules persist across restarts; local CLI and TUI sessions share them,
+    while Telegram rules are scoped to the sender's numeric ID and chat.
+    `read_own_history` pages through the current speaker's earlier messages
+    when rules need to be collected from an existing conversation. History is
+    bounded and old messages may no longer be available.
+  - `search_web` and `read_web_page` — search the web and read public pages.
+    DuckDuckGo search needs no key; set `BRAVE_SEARCH_API_KEY` for Brave Search
+    with DuckDuckGo as a fallback. If general search is blocked, a clearly
+    labelled Wikipedia-only search is attempted. External services can fail or
+    request a CAPTCHA. Page reading accepts public HTTP(S) addresses only,
+    checks redirects, and treats the contents as untrusted source material.
   - `set_chat_provider` / `chat_provider_status` — switch which model writes
     the live replies (claude | codex | opencode; persisted) and report the
     active one
@@ -793,6 +805,19 @@ and secret values loaded from the environment.
   [Streamable HTTP transport](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports),
   including JSON and SSE responses, session/version negotiation and paginated
   `tools/list`. Enabled for Lain by default.
+  - **Priors:** ask Lain to connect Priors or call `connect_priors({})`. This
+    connects the public, keyless `https://mcp.priors.trade/mcp`, discovers its
+    current tools and saves the connection for future starts. The discovered
+    `mcp_priors__*` tools can read agent credit records, scores, lines, pools
+    and x402 services, and prepare requests to borrow or repay. The public
+    server does not sign transactions, borrow, repay or pay; follow the returned
+    links to confirm requests yourself. Its data may lag the chain. Connecting
+    does not create or fund an agent. Create one through
+    [Priors](https://go.priors.trade/start#build) if needed. For autonomous
+    payments or borrowing, Priors documents a separate local, key-bearing MCP;
+    that runtime is not connected by this integration. If the `priors` namespace
+    already has a different saved endpoint, disconnect it before using the
+    preset. `disconnect_remote_mcp({server: "priors"})` removes the connection.
   - Put the HTTPS endpoint into an owner-only local file using a local editor,
     outside chat, tool arguments, wishboard, source code and shell history.
     For chaos.fm, use `<LAINOS_DATA_DIR>/mcp/chaos.endpoint` (default data
@@ -960,10 +985,13 @@ and secret values loaded from the environment.
 - **chatter** — she speaks up in configured Telegram groups: every ~90 min
   (`LAINOS_CHATTER_INTERVAL_MS`) she reads the last lines the bot overheard in
   each chat named in `LAINOS_CHATTER_CHATS` (numeric ids or a public
-  `@username`, comma-separated). For Lain OS Lab, the private link
-  `t.me/c/3966547945/739` means chat id `-1003966547945`. She either drops
-  one short comment or stays silent. A mention or a reply to her in those chats is
-  answered the same way, and commands there are ignored. Every one of these is
+  `@username`, comma-separated, e.g. `@Lain_OS_Chat`). For Lain OS Lab, the
+  private link `t.me/c/3966547945/739` means chat id `-1003966547945`. She
+  either drops one short comment or stays silent. A mention or a reply to her
+  in those chats is answered the same way, and commands there are ignored. In
+  `@Lain_OS_Chat`, comments and replies are instructed to be in English
+  regardless of the conversation language, including full agent replies to the
+  operator. Every one of these is
   a single text-only model call — no tools, no MCP, no memory, no providers —
   so nothing anyone writes in that chat can make her do anything but say a
   sentence, and it always goes to OpenRouter's free router
@@ -1284,15 +1312,31 @@ spoken over `fetch` with long polling:
 
 - private chats: every message goes to the agent; each chat is its own memory
   room, durable facts are shared;
-- groups: the bot answers only when @mentioned or replied to;
+- groups: the bot answers the configured operator's ordinary messages and
+  others when @mentioned or replied to. It includes up to 20
+  recent delivered group messages as untrusted context on each agent turn;
+  these are held in memory, so history before startup is not available. Other
+  bots' messages are context only and do not trigger an automatic response;
+- photos and image documents (including captions and replies to images) are
+  described by a vision model before the description reaches the local or
+  remote agent. This requires `OPENROUTER_API_KEY` or `LAINOS_VISION_API_KEY`;
+  `LAINOS_VISION_MODEL` defaults to `google/gemini-2.5-flash` and
+  `LAINOS_VISION_BASE_URL` can override the OpenRouter-compatible endpoint.
+  Image descriptions are untrusted and can miss details. Images up to 10 MB
+  are accepted. Restricted public talk chats use the free router for guests;
+  if it cannot process the image, the bot reports the failure;
+- groups named in `LAINOS_NODE_TELEGRAM_CHATS` also answer ordinary messages
+  from the configured operator. Known `TELEGRAM_GUESTS` can converse through
+  the text-only chatter model; they cannot invoke the remote agent's tools;
 - `/start`, `/help` are answered locally without a model call;
 - sentinel alerts are **pushed** to every chat the bot has spoken in — Lain
   writes first when a watch fires;
 - `TELEGRAM_ALLOWED_CHATS` (comma-separated chat ids) and
   `TELEGRAM_ALLOWED_USERS` (usernames or user ids) restrict full agent access.
-  Unlisted chats/senders are ignored, except an explicitly configured
+  Unlisted chats/senders cannot start turns, except an explicitly configured
   `LAINOS_CHATTER_CHATS` group, which is read for text-only conversation
-  without granting tools. Use at least one allowlist when
+  without granting tools. Messages from other senders in an allowed group are
+  still included as context. Use at least one allowlist when
   `CHAIN_AGENT_PK` is configured, since the agent can send funds;
 - `TELEGRAM_PROXY` routes *only* Telegram API traffic through an HTTP(S) proxy
   (falls back to `HTTPS_PROXY`) for hosts where api.telegram.org is blocked.
@@ -1302,6 +1346,49 @@ spoken over `fetch` with long polling:
 One daemon, one mind: the same process serves HTTP (the Wired game), Telegram,
 and the sentinel. Run only one instance per bot token (Telegram rejects
 parallel `getUpdates` pollers with a 409).
+
+To receive ordinary group messages, disable Group Privacy Mode for each bot in
+@BotFather (or make it a group admin). To receive other bots' ordinary group
+messages, also enable Bot-to-Bot Communication Mode on the receiving bot. See
+Telegram's [bot communication documentation](https://core.telegram.org/api/bots/bot-to-bot).
+Telegram only delivers messages after the relevant settings take effect; the
+Bot API does not supply the group's earlier history. The relay requires a
+reachable `LAINOS_NODE_URL` and matching `LAINOS_NODE_KEY`/server HTTP key.
+
+## Chrome side panel
+
+The unpacked extension in `extensions/chrome` puts Lain's chat beside the page
+in Chrome 116 or newer. It connects to the same running daemon as Telegram and
+Wired; it does not start another agent process.
+
+1. Start the daemon with `npm run serve` (or `lain-serve`). If it is already
+   running, use that instance rather than starting a second one.
+2. Open `chrome://extensions`, enable **Developer mode**, select **Load unpacked**,
+   and choose this checkout's `extensions/chrome` directory. Pin the LainOS
+   extension if you want its button in the toolbar.
+3. Click the extension button to open the side panel, then open its connection
+   settings. Copy the displayed `chrome-extension://…` origin and add it to
+   `LAINOS_HTTP_ORIGINS` in the daemon's environment file. This is `.env` by
+   default; the supplied systemd user service uses
+   `~/.config/lainos/daemon.env` instead. If the setting already has origins,
+   append this one separated by a comma. Restart the daemon to load the change.
+   Unpacked extension IDs can differ between installations.
+4. The default server is `http://127.0.0.1:7777`; change the port in the panel
+   if necessary. Send a message to check the connection.
+
+The panel uses a separate `chrome-…` session, and keeps its displayed
+conversation in Chrome's local extension storage. **New conversation** starts
+another session; the daemon retains its own session history. Use **Selection**
+to add selected text, the page title and URL to the draft; review it before
+sending. The extension reads the page only when you press that button.
+**Web** opens the full hosted chat in a browser tab, using its own sign-in and
+history. It does not transfer the panel's local-daemon conversation or key.
+
+By default the panel chats as an unprivileged HTTP caller. To enable operator-only
+capabilities, set a strong `LAINOS_HTTP_KEY` in the daemon's environment file, restart the
+daemon, and enter the same key in the panel settings. The key is stored in
+Chrome's local extension storage and grants operator access; leave it empty if
+that access is not needed. The panel accepts only loopback HTTP addresses.
 
 ## HTTP API (for game NPCs)
 
@@ -1416,3 +1503,63 @@ commit.
 [Business Source License 1.1](LICENSE). Free for non-production use and for
 production use that doesn't compete with Lain Labs's own hosted offering;
 converts to Apache License 2.0 on 2030-09-26.
+
+### Buffer publishing and post metrics
+
+Press can queue planned posts automatically through Buffer. Configure `BUFFER_API_KEY`,
+`LAINOS_BUFFER_ENABLED=1`, `LAINOS_BUFFER_AUTO_POST=1`, `LAINOS_BUFFER_ORGANIZATION_ID`, and a comma-separated
+`LAINOS_BUFFER_CHANNEL_IDS` in `.env`; restart the daemon. The key is server-side only.
+Press continues to honor its configured writing hour, backlog limit, spacing, and
+content plan. Buffer chooses the publication time from each channel's queue schedule.
+A queue entry is not proof of publication; the daily metrics sweep finds sent posts.
+Use `buffer_channels`, `buffer_queue_post`, and `buffer_analytics` through the agent.
+
+The daemon collects paginated sent-post metrics on startup and once daily by default;
+`LAINOS_BUFFER_ANALYTICS_INTERVAL_MS` adjusts the interval (minimum one hour).
+Daily snapshots and submission state live in `data/buffer.json` (or `LAINOS_DATA_DIR`).
+Missing metrics are unknown, not zero. Buffer's post metrics API is experimental,
+requires a personal key, and does not provide the complete Insights analytics product.
+
+A failed or interrupted request may have reached Buffer even if Lain received no
+response. Such submissions remain in `sending` and are not retried automatically.
+Inspect the Buffer queue and `data/buffer.json` before resolving that entry manually;
+if Buffer accepted it, record its post ID and change its state to `queued`. If it did
+not, change the entry to `rejected` so the next Press sweep can retry. Stop the daemon
+before editing its state. A successful entry is never automatically sent twice.
+
+### LainOS multimedia press desk
+
+`LAINOS_PRESS_DELIVERY=chaos` sends each planned post to the connected Chaos MCP
+press desk with an actual image attached. With `LAINOS_PRESS_CHAOS_AUTO=1`
+and owner-only server opt-in, Chaos schedules that draft through Buffer; without
+those settings the post remains a draft for approval. The
+writer checks the visible portion of the Chaos queue; the server may truncate
+it, so cross-agent duplicate detection is incomplete. Its own draft state is
+persisted and an uncertain request is never replayed automatically. If a
+request is left in `sending`, inspect the Chaos desk before changing state.
+
+The plan can request original art (`art:`), an approved public-site screenshot
+(`screenshot: https://lain-os.com`), or a simple non-financial diagram
+(`diagram:`). Generated art uses the configured image model and daily cap;
+screenshots need Chromium and diagrams need ImageMagick. A failed image stops
+the post rather than silently sending text alone.
+
+With `LAINOS_PRESS_EDITORIAL=1`, the daemon drafts an X Article, a real-UI demo brief and Gemini video
+ideas each Monday under `LAINOS_DATA_DIR/editorial/YYYY-MM-DD/`. Ask Lain for
+`press_editorial` with that date and kind `article`, `demo` or `video`. These are local
+unpublished drafts. Buffer's API does not document publishing X Articles;
+publishing an Article needs a separate supported X workflow and an eligible X
+account. Product demonstrations must use genuine recorded UI and the brag or
+HyperFrames workflow; Gemini clips are labeled as conceptual illustrations.
+
+`LAINOS_PRESS_DEMO=1` also records the public early-access Lain website and
+renders an 18-second real-interface demo on Mondays with HyperFrames. The local
+media runtime contains Chromium-compatible Playwright, HyperFrames, FFmpeg and
+the selected music; configure its path with `LAINOS_PRESS_MEDIA_RUNTIME`. Files
+land under `editorial/YYYY-MM-DD/demo/`. A failed run is recorded in
+`demo-attempt.json` and is not replayed automatically. Inspect Chaos and Buffer
+before removing that marker to retry; a timed-out request may have succeeded.
+Recorded live data is historical. With Chaos auto scheduling enabled,
+the poster and video are uploaded through MCP and scheduled in Buffer. The
+automated demo alternates between two public-interface flows; new scenarios need
+new recording instructions.

@@ -26,14 +26,14 @@ import type { IAgentRuntime, State } from "../src/types.js";
 const results: [string, boolean][] = [];
 const check = (name: string, pass: boolean) => results.push([name, pass]);
 
-const handled: { userId: string; operator: boolean }[] = [];
+const handled: { userId: string; operator: boolean; metadata?: Record<string, unknown> }[] = [];
 const ALLOWED = "https://wired.example";
 const runtime = {
   character: { name: "Lain" },
   getSetting: (k: string) => ({ LAINOS_HTTP_ORIGINS: ALLOWED, LAINOS_HTTP_KEY: "gw-key", TELEGRAM_ALLOWED_USERS: "lev" })[k],
-  async handleMessage(m: { userId: string; text: string }) {
+  async handleMessage(m: { userId: string; text: string; metadata?: Record<string, unknown> }) {
     const operator = isOperator({ message: m } as unknown as State, "lev");
-    handled.push({ userId: m.userId, operator });
+    handled.push({ userId: m.userId, operator, metadata: m.metadata });
     return { text: "ok", actions: [] };
   },
 } as unknown as IAgentRuntime;
@@ -74,6 +74,10 @@ check("…and gets its own origin back", listed.headers.get("access-control-allo
 check("a wrong bearer does not unlock tg: ids", (await chat("tg:lev", { Authorization: "Bearer nope" })).status === 403);
 const gateway = await chat("tg:lev", { Authorization: "Bearer gw-key" });
 check("a gateway holding LAINOS_HTTP_KEY may relay a Telegram sender", gateway.status === 200 && handled.at(-1)?.userId === "tg:lev");
+for (const [authorization, expected] of [["Bearer gw-key", true], ["Bearer nope", false]] as const) {
+  await fetch(`${base}/chat`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: authorization }, body: JSON.stringify({ userId: "console:1", text: "hello", metadata: { englishOnly: true } }) });
+  check(`only a trusted gateway forwards metadata (${authorization === "Bearer gw-key" ? "trusted" : "untrusted"})`, (handled.at(-1)?.metadata?.englishOnly === true) === expected);
+}
 check("/health stays open to anyone", (await fetch(`${base}/health`, { headers: { Origin: "https://evil.example" } })).status === 200);
 
 await new Promise<void>((r) => server.close(() => r()));
