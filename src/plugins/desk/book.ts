@@ -51,12 +51,19 @@ export interface Sleeve {
   error: string;
 }
 
+/** Kept only to retire an existing CYBER.sol sleeve without losing its history. */
+export interface LegacyCyberSleeve extends Omit<Sleeve, "market"> {
+  market: "CYBER";
+}
+
 export interface DeskState {
   version: 1;
   mode: typeof MODE;
   openedAt: number;
   capitalUsd: number;
-  sleeves: Partial<Record<MarketId, Sleeve>>;
+  sleeves: Partial<Record<MarketId, Sleeve>> & { CYBER?: LegacyCyberSleeve };
+  /** Historical CYBER book, retained after transferring its marked value to XMR. */
+  retired?: { CYBER?: LegacyCyberSleeve };
   announced: string[];
   lastCheckAt: number | null;
   lastReportAt: number | null;

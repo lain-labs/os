@@ -1,6 +1,6 @@
 #!/usr/bin/env -S npx tsx
 /**
- * Paper desk smoke test (offline — a stand-in GeckoTerminal, a clock that
+ * Paper desk smoke test (offline — stand-in GeckoTerminal/Kraken, a clock that
  * moves on demand, no network).
  *
  * Pinned here:
@@ -14,15 +14,17 @@
  *   4. a signal on the last closed bar fills at once, at that bar's close;
  *   5. a strategy change sells at the last close and carries the dollars over;
  *   6. the report and Lain's line say what the books say;
- *   7. nothing in the desk can reach a wallet, a signer or an order.
+ *   7. existing CYBER.sol sleeves are retired and their value transferred;
+ *   8. nothing in the desk can reach a wallet, a signer or an order.
  *
  * Run: npm run desk:smoke
  */
-import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { compileStrategies, simulate } from "../src/plugins/backtest/engine.js";
 import { PaperDeskService, type DeskEvent } from "../src/plugins/desk/index.js";
+import { handover, newState, replaySleeve, saveState, type Sleeve } from "../src/plugins/desk/book.js";
 import { HOUR, loadBars, MARKET_IDS, MARKETS, SETTLE_MS, toSeries, type MarketEnv } from "../src/plugins/desk/markets.js";
 
 let checks = 0;
@@ -33,7 +35,7 @@ const check = (name: string, ok: boolean, detail = "") => {
   console.log(`${ok ? "✓" : "✗"} ${name}${ok || !detail ? "" : `\n    ${detail.slice(0, 400)}`}`);
 };
 
-// A stand-in GeckoTerminal: per pool, hourly [sec, o, h, l, c, v] for the hours someone traded.
+// Stand-in market APIs: hourly [sec, o, h, l, c, v] for each pool or spot pair.
 const T0 = Date.UTC(2026, 6, 1);
 let clock = T0 + 400 * HOUR + 15 * 60_000;
 const quiet = new Set<number>();
@@ -42,8 +44,8 @@ for (const id of MARKET_IDS) {
   const k = MARKET_IDS.indexOf(id);
   pools.set(MARKETS[id].pool, (t) => {
     const h = (t - T0) / HOUR;
-    // LAIN and CYBER skip every fifth hour: nobody traded.
-    if (k < 2 && h % 5 === 4) return null;
+    // The LAIN pool skips every fifth hour; Kraken's XMR spot pair does not.
+    if (id === "LAIN" && h % 5 === 4) return null;
     if (quiet.has(t)) return null;
     return 100 * (k + 1) * (1 + 0.2 * Math.sin(h / (9 + k)) + 0.0004 * h);
   });
@@ -52,15 +54,24 @@ let requests = 0;
 const fakeFetch: MarketEnv["fetch"] = async (url) => {
   requests += 1;
   const u = new URL(url);
-  const pool = u.pathname.split("/pools/")[1]!.split("/")[0]!;
+  const kraken = u.hostname === "api.kraken.com";
+  const pool = kraken ? u.searchParams.get("pair")! : u.pathname.split("/pools/")[1]!.split("/")[0]!;
   const price = pools.get(pool)!;
   const before = u.searchParams.get("before_timestamp");
   const end = before ? Number(before) * 1000 - HOUR : Math.floor(clock / HOUR) * HOUR;
   const list: number[][] = [];
-  // A page holds at most 300 hours here (GeckoTerminal's window is ~56 days), newest first.
-  for (let t = end; t >= T0 && t > end - 300 * HOUR; t -= HOUR) {
+  // Kraken returns at most 720 hours and the current, unfinished hour.
+  // GeckoTerminal is paged here in windows of 300 hours.
+  const limit = kraken ? 720 : 300;
+  for (let t = end; t >= T0 && t > end - limit * HOUR; t -= HOUR) {
     const c = price(t);
     if (c !== null) list.push([t / 1000, c * 0.999, c * 1.01, c * 0.99, c, 1000]);
+  }
+  if (kraken) {
+    return new Response(JSON.stringify({
+      error: [],
+      result: { XXMRZUSD: list.reverse().map(([t, o, h, l, c, v]) => [t, String(o), String(h), String(l), String(c), String(c), String((v ?? 0) / (c ?? 1)), 10]), last: end / 1000 },
+    }), { status: 200 });
   }
   return new Response(JSON.stringify({ data: { attributes: { ohlcv_list: list } } }), { status: 200 });
 };
@@ -94,6 +105,18 @@ const eth1 = await loadBars(MARKETS.ETH, env(ethDir));
 check("a liquid pool gone silent waits for its indexer", eth1.length === eth0.length);
 quiet.clear();
 clock -= 3 * HOUR;
+
+const xmrDir = mkdtempSync(join(tmpdir(), "lainos-desk-xmr-"));
+const xmr = await loadBars(MARKETS.XMR, env(xmrDir));
+check("Monero uses Kraken spot XMR/USD, not a wrapped token", xmr.length >= 60 && toSeries(MARKETS.XMR, xmr).stretches[0]?.source === "kraken");
+check("Kraken's unfinished hour is excluded", xmr.at(-1)![0] === Math.floor((clock - SETTLE_MS) / HOUR) * HOUR - HOUR);
+const beforeXmrCache = requests;
+await loadBars(MARKETS.XMR, env(xmrDir));
+check("settled XMR history is cached", requests === beforeXmrCache);
+clock += 800 * HOUR;
+const gapRejected = await loadBars(MARKETS.XMR, env(xmrDir)).then(() => false, (e: Error) => /720-bar window/.test(e.message));
+check("a >30-day Kraken gap is refused, never invented as flat bars", gapRejected);
+clock -= 800 * HOUR;
 
 // 2–3. the desk opens, fills are the engine's, announced once
 const deskDir = mkdtempSync(join(tmpdir(), "lainos-desk-"));
@@ -156,7 +179,30 @@ check("the report says it is paper", /no orders sent/.test(report));
 const line = restarted.summaryLine();
 check("Lain's line names the desk and sends her to paper_desk", /paper desk/.test(line) && /paper_desk/.test(line) && /\$\d+\.\d\d/.test(line), line);
 
-// 7. no order path
+// 7. old CYBER.sol state transfers its marked value to XMR, without new dollars.
+const legacyDir = mkdtempSync(join(tmpdir(), "lainos-desk-legacy-"));
+mkdirSync(join(legacyDir, "market"), { recursive: true });
+writeFileSync(join(legacyDir, "market", "cyber.json"), JSON.stringify({ bars: more }));
+const old = newState(clock);
+old.sleeves.CYBER = {
+  market: "CYBER",
+  budgetUsd: 20,
+  startPx: more[0]![4],
+  segments: [{ spec: { name: "hold", entry: "close > 0" }, from: more[1]![0], startUsd: 20, why: "legacy" }],
+  error: "",
+};
+const prior = replaySleeve(old.sleeves.CYBER as unknown as Sleeve, toSeries(MARKETS.XMR, more, true), { feePct: 0.3, slippagePct: 0.25 });
+const proceeds = handover(prior, { feePct: 0.3, slippagePct: 0.25 }).endUsd;
+await saveState(legacyDir, old);
+const migrated = new PaperDeskService({ fetch: fakeFetch, now: () => clock, sleep: async () => {} });
+await migrated.open(legacyDir);
+await migrated.check();
+const migratedState = JSON.parse(readFileSync(join(legacyDir, "state.json"), "utf8"));
+check("CYBER is retired, and XMR starts with its marked proceeds", !migratedState.sleeves.CYBER && !!migratedState.retired?.CYBER && Math.abs(migratedState.sleeves.XMR.segments[0].startUsd - proceeds) < 1e-8);
+await migrated.check();
+check("migrating twice never creates more virtual dollars", !migratedState.sleeves.CYBER && migratedState.sleeves.XMR.segments[0].startUsd === JSON.parse(readFileSync(join(legacyDir, "state.json"), "utf8")).sleeves.XMR.segments[0].startUsd);
+
+// 8. no order path
 const src = readdirSync(join(import.meta.dirname, "../src/plugins/desk")).map((f) => readFileSync(join(import.meta.dirname, "../src/plugins/desk", f), "utf8")).join("\n");
 const imports = [...src.matchAll(/from "([^"]+)"/g)].map((m) => m[1]!);
 check("the desk imports no chain, wallet or signer", imports.every((m) => !/chain|wallet|metamask|viem|trader|stocks|signer/.test(m)), imports.join(", "));

@@ -30,7 +30,7 @@ export type Bar = [number, number, number, number, number, number];
 
 /** Where a stretch of the history came from — the report names every stitch. */
 export interface Stretch {
-  source: "binance" | "bitstamp" | "dex";
+  source: "binance" | "bitstamp" | "dex" | "kraken";
   pair: string;
   from: number;
   to: number;
