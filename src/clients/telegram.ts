@@ -36,7 +36,8 @@ const log = createLogger("telegram");
  * Behaviour:
  *   - private chats: every text message goes to the agent;
  *   - groups: only messages that @mention the bot or reply to it (so Lain
- *     doesn't answer everything);
+ *     doesn't answer everything); configured talk chats also feed a rolling
+ *     transcript for occasional unsolicited, text-only comments;
  *   - `/start` and `/help` are answered locally without a model call;
  *   - chats the bot has spoken in are persisted to `data/telegram.json`, and
  *     {@link TelegramClient.broadcast} pushes sentinel alerts to all of them;
@@ -93,6 +94,7 @@ interface TgMessage {
   from?: TgUser;
   chat: TgChat;
   text?: string;
+  caption?: string;
   reply_to_message?: { from?: TgUser; text?: string };
 }
 
@@ -139,6 +141,15 @@ const HELP_TEXT = [
   "",
   "try: \"watch 0x… and warn me below 5\"",
 ].join("\n");
+
+/**
+ * Talk chats are a separate, text-only opt-in. Their conversation must remain
+ * readable even when TELEGRAM_ALLOWED_CHATS / _USERS restrict full agent turns
+ * to the operator. This never grants access to tools or commands.
+ */
+export function canObserveTelegramMessage(chatAllowed: boolean, userAllowed: boolean, talkChat: boolean): boolean {
+  return talkChat || (chatAllowed && userAllowed);
+}
 
 export class TelegramClient {
   private readonly runtime: IAgentRuntime;
@@ -331,19 +342,19 @@ export class TelegramClient {
   }
 
   private async handleMessage(msg: TgMessage): Promise<void> {
-    const text = msg.text?.trim();
+    const text = (msg.text ?? msg.caption)?.trim();
     if (!text || !msg.from || msg.from.id === this.me?.id) return;
 
     const chatId = msg.chat.id;
-    if (!this.isAllowed(chatId)) {
-      if (!this.warnedChats.has(chatId)) {
+    const isGroup = msg.chat.type === "group" || msg.chat.type === "supergroup";
+    const talkChat = isGroup && isTalkChat((k) => this.runtime.getSetting(k), chatId, msg.chat.username);
+    const chatAllowed = this.isAllowed(chatId);
+    const userAllowed = this.isUserAllowed(msg.from);
+    if (!canObserveTelegramMessage(chatAllowed, userAllowed, talkChat)) {
+      if (!chatAllowed && !this.warnedChats.has(chatId)) {
         this.warnedChats.add(chatId);
         log.warn(`ignoring chat ${chatId} (not in TELEGRAM_ALLOWED_CHATS)`);
-      }
-      return;
-    }
-    if (!this.isUserAllowed(msg.from)) {
-      if (!this.warnedChats.has(msg.from.id)) {
+      } else if (chatAllowed && !userAllowed && !this.warnedChats.has(msg.from.id)) {
         this.warnedChats.add(msg.from.id);
         log.warn(
           `ignoring user @${msg.from.username ?? msg.from.id} (not in TELEGRAM_ALLOWED_USERS)`,
@@ -352,37 +363,38 @@ export class TelegramClient {
       return;
     }
 
-    // In groups, only react when addressed.
-    const isGroup = msg.chat.type === "group" || msg.chat.type === "supergroup";
+    // In groups, only reply when addressed; talk chats also listen silently.
     let content = text;
     if (isGroup) {
-      // Every group line is overheard (memory only) so chatter can comment on
-      // the conversation; only an addressed one starts an agent turn.
-      overhear(
-        chatId,
-        { from: msg.from.username ? `@${msg.from.username}` : (msg.from.first_name ?? String(msg.from.id)), text, at: Date.now() },
-        msg.chat.username,
-      );
+      // Overhear only explicitly configured talk chats. The rolling transcript
+      // contains other people's words, never tool instructions.
+      if (talkChat) {
+        overhear(
+          chatId,
+          { from: msg.from.username ? `@${msg.from.username}` : (msg.from.first_name ?? String(msg.from.id)), text, at: Date.now() },
+          msg.chat.username,
+        );
+      }
       const mention = this.me?.username ? `@${this.me.username}` : null;
-      const mentioned = mention ? content.includes(mention) : false;
+      const mentioned = mention ? content.toLowerCase().includes(mention.toLowerCase()) : false;
       const repliedToMe = msg.reply_to_message?.from?.id === this.me?.id;
       if (!mentioned && !repliedToMe) return;
-      // A talk chat (the token's public chat) gets words and nothing else:
+      // A configured talk chat gets words and nothing else:
       // no agent turn, no tools, no commands, free models only. The one
-      // exception is the configured operator: their plain messages there get
-      // a full turn, so tools can be shown working in public, and nobody
-      // else's words can reach a tool.
+      // exception is the configured operator, and only when the ordinary
+      // chat and user allowlists also allow them. Otherwise even operator
+      // messages stay text-only: talk-chat opt-in never bypasses tool gates.
       const fromOperator = (() => {
         const s = resolveTelegramSender(msg.from!, (k) => this.runtime.getSetting(k));
         return s.operatorKnown && s.role === "operator";
       })();
-      if (isTalkChat((k) => this.runtime.getSetting(k), chatId, msg.chat.username) && (!fromOperator || content.startsWith("/"))) {
+      if (talkChat && (!fromOperator || !chatAllowed || !userAllowed || content.startsWith("/"))) {
         if (content.startsWith("/")) return;
         const reply = await replyInTalkChat(this.runtime, chatId);
         if (reply) await this.send("sendMessage", { chat_id: chatId, text: reply, reply_parameters: { message_id: msg.message_id, allow_sending_without_reply: true } });
         return;
       }
-      if (mention) content = content.split(mention).join("").trim() || "hi";
+      if (mention) content = content.replace(new RegExp(mention, "ig"), "").trim() || "hi";
     }
 
     await this.rememberChat(chatId);

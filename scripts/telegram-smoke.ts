@@ -7,6 +7,7 @@
  * Run: npm run telegram:smoke
  */
 import { markdownToTelegramHtml } from "../src/clients/telegram-format.js";
+import { canObserveTelegramMessage } from "../src/clients/telegram.js";
 import { htmlToText } from "../src/plugins/telegram/index.js";
 import { defang, resolveTelegramSender, roleBrief, senderHeader } from "../src/plugins/telegram/identity.js";
 import { isOperator } from "../src/plugins/system/settings.js";
@@ -89,7 +90,12 @@ check("the operator can", isOperator(turn("tg:op", op), "op,ch4rnel_exe"));
 check("nothing configured: the allowlist still decides", isOperator(turn("tg:ch4rnel_exe", { ...orpheus, operatorKnown: false }), "ch4rnel_exe"));
 check("the local terminal is the operator", isOperator(turn("user"), ""));
 
-// Chatter: Lain comments on the token chat with nothing but text.
+// Chatter: configured groups bypass allowlists only for text-only listening.
+check("a configured chatter group is readable despite chat/user allowlists", canObserveTelegramMessage(false, false, true));
+check("ordinary groups still obey both allowlists", !canObserveTelegramMessage(false, true, false) && !canObserveTelegramMessage(true, false, false));
+check("ordinary allowed chats remain readable", canObserveTelegramMessage(true, true, false));
+
+// Chatter: Lain comments on configured chats with nothing but text.
 for (let i = 0; i < 50; i += 1) overhear(-100, { from: `@u${i}`, text: `line ${i}`, at: i });
 check("the overheard buffer keeps the last 40 lines", overheardIn("-100").length === 40 && overheardIn("-100")[0].text === "line 10");
 check(
@@ -132,6 +138,8 @@ check("the chatter persona names no tools", !/send_telegram|create_skill|buy_tok
   check("a talk chat matches by id", isTalkChat(fake.getSetting, -200));
   check("a talk chat matches by @username, any case", isTalkChat(fake.getSetting, -300, "lain_os_chat"));
   check("other groups are not talk chats", !isTalkChat(fake.getSetting, -400, "other"));
+  env.LAINOS_CHATTER_CHATS += ", -1003966547945";
+  check("Lain OS Lab matches its private t.me/c supergroup id", isTalkChat(fake.getSetting, -1003966547945));
   overhear(-300, { from: "@c", text: "@lainbot ты кто", at: Date.now() }, "Lain_OS_Chat");
   check("a public chat's lines are found by its @username", overheardIn("@Lain_OS_Chat").length === 1);
   answer = "я лейн.";
