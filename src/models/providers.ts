@@ -32,9 +32,10 @@ export const OPENAI_COMPATIBLE_PROVIDERS: Record<string, OpenAiCompatibleSpec> =
     id: "groq",
     label: "Groq API · fast open models, free tier",
     baseUrl: "https://api.groq.com/openai/v1",
+    // The free plan's models (each with its own quota, see budget.ts).
     models: {
-      [ModelTier.SMALL]: "llama-3.1-8b-instant",
-      [ModelTier.MEDIUM]: "llama-3.3-70b-versatile",
+      [ModelTier.SMALL]: "openai/gpt-oss-20b",
+      [ModelTier.MEDIUM]: "openai/gpt-oss-120b",
       [ModelTier.LARGE]: "openai/gpt-oss-120b",
     },
     free: true,

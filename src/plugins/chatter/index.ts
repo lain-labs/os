@@ -118,13 +118,17 @@ function freeRoute(getSetting: GetSetting): { apiKey: string; baseUrl?: string; 
   if (compatible) {
     return { apiKey: compatible.apiKey, baseUrl: compatible.baseUrl, model: pinned!.slice(colon + 1) || compatible.models[ModelTier.SMALL] };
   }
+  // Talk is many short turns: unpinned, the free tier with the larger daily
+  // allowance (Groq) goes first and OpenRouter's free router after it. A bare
+  // LAINOS_CHATTER_MODEL keeps meaning an OpenRouter id, as it always did.
+  const free = pinned ? undefined : configuredOpenAiCompatible(getSetting).find((p) => p.free);
+  if (free) return { apiKey: free.apiKey, baseUrl: free.baseUrl, model: free.models[ModelTier.SMALL] };
   const openrouterKey = getSetting("OPENROUTER_API_KEY");
   if (openrouterKey) {
     const model = pinnedProvider === "openrouter" ? pinned!.slice(colon + 1) : pinned;
     return { apiKey: openrouterKey, baseUrl: getSetting("OPENROUTER_BASE_URL"), model: model || "openrouter/free" };
   }
-  const free = configuredOpenAiCompatible(getSetting).find((p) => p.free);
-  return free ? { apiKey: free.apiKey, baseUrl: free.baseUrl, model: free.models[ModelTier.SMALL] } : undefined;
+  return undefined;
 }
 
 /**
