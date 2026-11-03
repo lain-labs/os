@@ -37,16 +37,29 @@ and repeat-protected.
 
 ### Model providers
 
-LainOS speaks to six backends through one `ModelProvider` interface, selected
+LainOS speaks to many backends through one `ModelProvider` interface, selected
 from the environment:
 
-1. `LAINOS_MODEL_PROVIDER` if set (`codex` | `claude` | `opencode` |
-   `openrouter` | `anthropic` | `mock`)
+1. `LAINOS_MODEL_PROVIDER` if set (`codex` | `claude` | `opencode` | `grok` |
+   `openrouter` | `anthropic` | `groq` | `cerebras` | `together` | `deepseek` |
+   `mistral` | an id from `LAINOS_PROVIDERS` | `mock`)
 2. else `OPENROUTER_API_KEY` present → **OpenRouter**
-3. else `ANTHROPIC_API_KEY` present → **Anthropic** (direct)
-4. else a `claude` CLI on the machine → **Claude CLI** (subscription)
-5. else → **offline mock** (deterministic; the whole pipeline still runs — this
+3. else `GROQ_API_KEY` (or another OpenAI-compatible key) present → **that provider**
+4. else `ANTHROPIC_API_KEY` present → **Anthropic** (direct)
+5. else a `claude` CLI on the machine → **Claude CLI** (subscription)
+6. else → **offline mock** (deterministic; the whole pipeline still runs — this
    is what the smoke test exercises)
+
+**Groq and other OpenAI-compatible APIs** (`src/models/providers.ts`) are data,
+not code: an id, a base URL, a default model per tier and whether the key has a
+free tier. A key switches one on — `GROQ_API_KEY=…` makes `groq` a chat
+provider (`/agent groq`), a standby when the main agent is out of quota, and a
+task route (`LAINOS_TASK_DIGEST=groq:llama-3.1-8b-instant`); without an
+OpenRouter key, cheap tasks go to the first free-tier provider. Groq, Cerebras,
+Together, DeepSeek and Mistral are built in; any other host is
+`LAINOS_PROVIDERS=myhost` plus `MYHOST_API_KEY`, `MYHOST_BASE_URL` and
+`MYHOST_MODEL` in `.env`. Through the Lain OS API (`OPENROUTER_BASE_URL=https://lain-os.com/v1`)
+Groq's models are also listed as `groq/<id>`, next to OpenRouter's.
 
 **Codex CLI** (`codex`), **Claude CLI** (`claude`) and **OpenCode CLI**
 (`opencode`) run each completion through one non-interactive CLI run —
@@ -944,11 +957,12 @@ and secret values loaded from the environment.
   asks for what **changed** — restating an unchanged portfolio is named as
   forbidden, because "same positions" four times a day is how a heartbeat stops
   being read at all.
-- **chatter** — she speaks up in her token's Telegram chat: every ~90 min
+- **chatter** — she speaks up in configured Telegram groups: every ~90 min
   (`LAINOS_CHATTER_INTERVAL_MS`) she reads the last lines the bot overheard in
   each chat named in `LAINOS_CHATTER_CHATS` (numeric ids or a public
-  `@username`, comma-separated, e.g. `@Lain_OS_Chat`) and either drops one
-  short comment or stays silent. A mention or a reply to her in those chats is
+  `@username`, comma-separated). For Lain OS Lab, the private link
+  `t.me/c/3966547945/739` means chat id `-1003966547945`. She either drops
+  one short comment or stays silent. A mention or a reply to her in those chats is
   answered the same way, and commands there are ignored. Every one of these is
   a single text-only model call — no tools, no MCP, no memory, no providers —
   so nothing anyone writes in that chat can make her do anything but say a
@@ -956,8 +970,10 @@ and secret values loaded from the environment.
   (`LAINOS_CHATTER_MODEL`, default `openrouter/free`), never the paid chat
   provider; without `OPENROUTER_API_KEY` she stays silent there. Off unless
   the variable is set. The bot overhears a group only with privacy mode
-  **off** in @BotFather (`/setprivacy` → Disable) or as a group admin, and the
-  chat must be in `TELEGRAM_ALLOWED_CHATS` if that list is set. Guard rails:
+  **off** in @BotFather (`/setprivacy` → Disable; re-add the bot after changing
+  privacy), or as a group admin. A configured chatter group is readable even
+  when `TELEGRAM_ALLOWED_CHATS` or `TELEGRAM_ALLOWED_USERS` limits full agent
+  access: outsiders can cause text-only model replies, never tool calls. Guard rails:
   at least `LAINOS_CHATTER_MIN_LINES` (5) new lines from other people since her
   last look, `LAINOS_CHATTER_MAX_PER_DAY` (4) comments a chat, quiet hours
   `LAINOS_CHATTER_QUIET` (2–9). The transcript lives in memory only.
@@ -1273,8 +1289,10 @@ spoken over `fetch` with long polling:
 - sentinel alerts are **pushed** to every chat the bot has spoken in — Lain
   writes first when a watch fires;
 - `TELEGRAM_ALLOWED_CHATS` (comma-separated chat ids) and
-  `TELEGRAM_ALLOWED_USERS` (usernames or user ids) restrict access — unlisted
-  chats/senders are silently ignored. Use at least one whenever
+  `TELEGRAM_ALLOWED_USERS` (usernames or user ids) restrict full agent access.
+  Unlisted chats/senders are ignored, except an explicitly configured
+  `LAINOS_CHATTER_CHATS` group, which is read for text-only conversation
+  without granting tools. Use at least one allowlist when
   `CHAIN_AGENT_PK` is configured, since the agent can send funds;
 - `TELEGRAM_PROXY` routes *only* Telegram API traffic through an HTTP(S) proxy
   (falls back to `HTTPS_PROXY`) for hosts where api.telegram.org is blocked.

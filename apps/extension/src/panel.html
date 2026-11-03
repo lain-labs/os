@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Lain</title>
+    <link rel="stylesheet" href="panel.css" />
+</head>
+<body>
+    <header class="top">
+        <img src="icons/icon-32.png" alt="" width="24" height="24" />
+        <strong>Lain</strong>
+        <select id="model" aria-label="Model"></select>
+        <button id="settings-toggle" class="icon" type="button" title="Settings" aria-label="Settings">⚙</button>
+        <button id="clear" class="icon" type="button" title="New chat" aria-label="New chat">＋</button>
+    </header>
+
+    <section id="settings" class="settings" hidden>
+        <label for="key">Lain OS API key</label>
+        <input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="lain_…" />
+        <p class="hint">Free at <a href="https://lain-os.com/dashboard/api-keys" target="_blank" rel="noopener">lain-os.com → API keys</a>. Kept in this browser only and sent only to lain-os.com.</p>
+        <button id="save" type="button">Save</button>
+    </section>
+
+    <main id="log" class="log" aria-live="polite">
+        <p class="empty">Ask Lain anything, or select text on a page → right click → <em>Ask Lain</em>.</p>
+    </main>
+
+    <form id="form" class="composer">
+        <textarea id="input" rows="3" placeholder="Message Lain…" aria-label="Message"></textarea>
+        <button id="send" type="submit">Send</button>
+    </form>
+
+    <script type="module" src="panel.js"></script>
+</body>
+</html>

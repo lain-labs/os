@@ -30,6 +30,7 @@ import { alertLine, type SentinelService } from "../src/plugins/sentinel/index.j
 import { sendToOperator } from "../src/plugins/telegram/index.js";
 import type { PaperDeskService } from "../src/plugins/desk/index.js";
 import type { TraderService } from "../src/plugins/trader/index.js";
+import type { SwingService } from "../src/plugins/trader/swing.js";
 
 // The daemon must never die because something somewhere threw: a failed watch,
 // a bad skill, a flaky RPC. Log, keep breathing. Deliberate exits (shutdown,
@@ -104,6 +105,17 @@ async function main() {
   const trader = agent.getService<TraderService>("trader");
   if (trader && telegramUp) {
     trader.onEvent((ev) => void telegram.broadcast(ev.text));
+  }
+
+  // The hourly swing desk's note goes to its own chat (LAINOS_SWING_CHAT_ID), else to the operator.
+  const swing = agent.getService<SwingService>("swing");
+  if (swing && telegramUp) {
+    swing.onEvent((ev) => {
+      if (ev.chatId !== undefined) void telegram.sendTo(ev.chatId, ev.text);
+      else void sendToOperator((key) => agent.getSetting(key), ev.text, { plain: true }).catch((err) => {
+        console.error(`[lainos] swing ${ev.kind} not delivered:`, err);
+      });
+    });
   }
 
   // The paper desk's fills, strategy changes and morning report are for the operator alone — never broadcast.

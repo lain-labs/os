@@ -11,6 +11,19 @@ import { MockModelProvider } from "./mock.js";
 import { fetchFreeModels, OpenRouterModelProvider } from "./openrouter.js";
 import { listOpencodeModels, OpencodeModelProvider, opencodeFreeModels, resolveOpenCodeBin } from "./opencode.js";
 import {
+  budgetFiles,
+  GROQ_FREE_MODELS,
+  GroqPool,
+  MeteredModelProvider,
+  QuotaBook,
+  UsageLedger,
+} from "./budget.js";
+import {
+  configuredOpenAiCompatible,
+  listOpenAiCompatibleModels,
+  resolveOpenAiCompatible,
+} from "./providers.js";
+import {
   CHAT_PROVIDER_CHOICES,
   FallbackModelProvider,
   SwitchableModelProvider,
@@ -35,6 +48,21 @@ export { ClaudeCliModelProvider, resolveClaudeBin } from "./claude-cli.js";
 export { CodexModelProvider, resolveCodexBin } from "./codex.js";
 export { GrokModelProvider, resolveGrokBin } from "./grok.js";
 export { OpencodeModelProvider, resolveOpenCodeBin } from "./opencode.js";
+export {
+  estimateRequest,
+  estimateTokens,
+  GROQ_FREE_MODELS,
+  summarizeUsage,
+  UsageLedger,
+  QuotaBook,
+  budgetFiles,
+} from "./budget.js";
+export {
+  configuredOpenAiCompatible,
+  OPENAI_COMPATIBLE_PROVIDERS,
+  openAiCompatibleIds,
+  resolveOpenAiCompatible,
+} from "./providers.js";
 export {
   CHAT_PROVIDER_CHOICES,
   chatProviderLabel,
@@ -82,11 +110,13 @@ function splitArgs(raw?: string): string[] {
  * Pick a model provider from the environment.
  *
  * Base selection order:
- *   1. LAINOS_MODEL_PROVIDER, if set (codex | claude | opencode | grok | openrouter | anthropic | mock)
+ *   1. LAINOS_MODEL_PROVIDER, if set (codex | claude | opencode | grok | openrouter | anthropic |
+ *      groq | cerebras | together | deepseek | mistral | an id from LAINOS_PROVIDERS | mock)
  *   2. OPENROUTER_API_KEY present  -> openrouter
- *   3. ANTHROPIC_API_KEY present   -> anthropic
- *   4. claude CLI on the machine   -> claude
- *   5. otherwise                   -> offline mock
+ *   3. GROQ_API_KEY (or another OpenAI-compatible key, see providers.ts) -> that provider
+ *   4. ANTHROPIC_API_KEY present   -> anthropic
+ *   5. claude CLI on the machine   -> claude
+ *   6. otherwise                   -> offline mock
  *
  * `codex`, `claude`, `opencode` and `grok` run completions through a coding-agent
  * CLI on the machine (ChatGPT / Claude subscription / OpenCode config / xAI
@@ -136,14 +166,21 @@ export function createModelProvider(
     return claudeBinCache;
   };
 
+  // Every call of every provider is written to data/usage-ledger.jsonl (task,
+  // provider, estimate, output, time); free-tier quotas live in data/quotas.json.
+  const files = budgetFiles(getSetting("LAINOS_DATA_DIR") ?? "./data");
+  const ledger = new UsageLedger(getSetting("LAINOS_USAGE_LEDGER") === "0" ? undefined : files.ledger);
+  const quotas = new QuotaBook(files.quotas);
+
   const cache = new Map<string, ModelProvider>();
   const make = (kind: string, pinned?: string): ModelProvider | undefined => {
     const key = pinned ? `${kind}|${pinned}` : kind;
     const cached = cache.get(key);
     if (cached) return cached;
     const built = build(kind, pinned);
-    if (built) cache.set(key, built);
-    return built;
+    const metered = built ? new MeteredModelProvider(built, ledger) : undefined;
+    if (metered) cache.set(key, metered);
+    return metered;
   };
 
   /**
@@ -283,9 +320,41 @@ export function createModelProvider(
           proxy,
         });
       }
-      default:
-        log.warn(`unknown model provider "${kind}".`);
+      default: {
+        // Groq, Cerebras, … and anything declared in LAINOS_PROVIDERS: the
+        // same OpenAI-compatible client against another base URL.
+        const compatible = resolveOpenAiCompatible(kind, getSetting);
+        // Groq's free plan as a pool: each model has its own quota, so a route
+        // that is not pinned to one model spreads over all of them.
+        if (compatible && compatible.id === "groq" && compatible.free && !pinned) {
+          const member = (model: string) => ({
+            model,
+            provider: new OpenRouterModelProvider({
+              name: "groq",
+              apiKey: compatible.apiKey,
+              baseUrl: compatible.baseUrl,
+              models: { [ModelTier.SMALL]: model, [ModelTier.MEDIUM]: model, [ModelTier.LARGE]: model },
+              title: getSetting("OPENROUTER_TITLE"),
+              proxy,
+            }),
+          });
+          const tierModels = Object.values(compatible.models);
+          const all = [...new Set([...tierModels, ...GROQ_FREE_MODELS])];
+          return new GroqPool(all.map(member), quotas, (tier) => [compatible.models[tier], ...all.filter((m) => m !== compatible.models[tier])]);
+        }
+        if (compatible) {
+          return new OpenRouterModelProvider({
+            name: compatible.id,
+            apiKey: compatible.apiKey,
+            baseUrl: compatible.baseUrl,
+            models: pin(pinned, compatible.models),
+            title: getSetting("OPENROUTER_TITLE"),
+            proxy,
+          });
+        }
+        log.warn(`unknown model provider "${kind}" (or its ${kind.toUpperCase()}_API_KEY is missing).`);
         return undefined;
+      }
     }
   };
 
@@ -350,6 +419,12 @@ export function createModelProvider(
     } else if (kind === "grok") {
       const bin = resolveGrokBin(getSetting("LAINOS_GROK_BIN"));
       models = bin ? (await listGrokModels(bin)).map((id) => ({ id, free: false })) : [];
+    } else if (resolveOpenAiCompatible(kind, getSetting)) {
+      const compatible = resolveOpenAiCompatible(kind, getSetting)!;
+      models = await listOpenAiCompatibleModels(compatible, proxy).catch((err) => {
+        log.warn(`${kind} model list unavailable: ${String(err)}`);
+        return Object.values(compatible.models).map((id) => ({ id, free: compatible.free }));
+      });
     } else if (kind === "openrouter" && openrouterKey) {
       const free = await fetchFreeModels({
         apiKey: openrouterKey,
@@ -365,15 +440,18 @@ export function createModelProvider(
     return models;
   };
 
+  const firstCompatible = configuredOpenAiCompatible(getSetting)[0]?.id;
   const envKind =
     explicit ||
     (openrouterKey
       ? "openrouter"
-      : anthropicKey
-        ? "anthropic"
-        : claudeBin()
-          ? "claude"
-          : "mock");
+      : firstCompatible
+        ? firstCompatible
+        : anthropicKey
+          ? "anthropic"
+          : claudeBin()
+            ? "claude"
+            : "mock");
   const overrideFile = chatProviderFile(getSetting);
   const { kind: stored, models: pins } = loadStoredChatProvider(overrideFile);
   if (stored && stored !== envKind) {
@@ -427,7 +505,10 @@ export function createModelProvider(
     buildRoute: (route) => make(route.provider, route.model),
     persistRoutes: (routes) => storeTaskRoutes(routesFile, routes),
     limits: usageLimits(getSetting("LAINOS_DATA_DIR") ?? "./data"),
-    standbys: standbyKinds(getSetting("LAINOS_MODEL_STANDBY")),
+    standbys: standbyKinds(
+      getSetting("LAINOS_MODEL_STANDBY"),
+      configuredOpenAiCompatible(getSetting).map((p) => p.id),
+    ),
   });
   log.info(`using model provider: ${provider.name}`);
 
@@ -446,11 +527,11 @@ export function createModelProvider(
  * Who answers when the chosen agent is out of quota, in order. One that this
  * machine cannot build (no key, no CLI) is skipped when it is reached.
  */
-function standbyKinds(raw?: string): string[] {
+function standbyKinds(raw?: string, compatible: string[] = []): string[] {
   const value = raw?.trim().toLowerCase();
   if (value === "none" || value === "0") return [];
   if (value) return value.split(/[\s,]+/).filter((kind) => kind && kind !== "mock");
-  return [...new Set([...CHAT_PROVIDER_CHOICES.map((choice) => choice.kind), "openrouter"])];
+  return [...new Set([...CHAT_PROVIDER_CHOICES.map((choice) => choice.kind), "openrouter", ...compatible])];
 }
 
 /**
@@ -462,9 +543,10 @@ function standbyKinds(raw?: string): string[] {
  *                         analysis, recaps) goes there unless named above
  *
  * With neither set, cheap work still moves off a paid base when the machine
- * already holds a free key — OpenRouter's free router — because that is free
- * by construction and the alternative is paying Opus rates to summarise an
- * RSS feed. Set LAINOS_TASK_CHEAP=none to keep everything on one provider.
+ * already holds a free key — Groq's free plan first (its pool spreads over
+ * every free model's quota), else OpenRouter's free router — because the
+ * alternative is paying Opus rates to summarise an RSS feed. Set
+ * LAINOS_TASK_CHEAP=none to keep everything on one provider.
  *
  * `critical` kinds (money, code) are never swept up by the cheap knob: they
  * act on the world, and cheapening them takes naming them explicitly.
@@ -500,6 +582,12 @@ function autoCheapRoute(
   getSetting: (key: string) => string | undefined,
   baseKind: string,
 ): TaskRoute | undefined {
+  // A free-tier key of an OpenAI-compatible provider first: Groq's free plan is
+  // ~3000 requests and ~600k tokens a day across its models, OpenRouter's free
+  // router 50 requests a day (1000 after $10 bought). The Groq route is left
+  // unpinned so its pool spreads the work over every free model's quota.
+  const free = configuredOpenAiCompatible(getSetting).find((p) => p.free && p.id !== baseKind);
+  if (free) return free.id === "groq" ? { provider: "groq" } : { provider: free.id, model: free.models[ModelTier.SMALL] };
   if (getSetting("OPENROUTER_API_KEY") && baseKind !== "openrouter") {
     return {
       provider: "openrouter",

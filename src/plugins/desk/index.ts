@@ -349,6 +349,45 @@ export class PaperDeskService implements Service {
     return [`Paper desk fills (${fills.length}, last ${Math.min(limit, fills.length)}):`, ...fills.slice(-limit).map((f) => `  ${this.fillLine(f)}`)].join("\n");
   }
 
+  /**
+   * Is the desk good enough for real money? Explicit bars, each answered from
+   * the books: a month of paper, enough closed trades to mean something, beating
+   * simply holding the same five markets, a drawdown a person would sit through,
+   * and trades that win more than they lose. The verdict is the operator's
+   * decision to make; this says which bars are cleared and which are not.
+   */
+  readinessText(): string {
+    const state = this.state;
+    if (!state) return "No paper record yet: the desk opens on the daemon's first hourly check.";
+    const t = this.totals(this.currentViews());
+    const days = (this.now() - state.openedAt) / 86_400_000;
+    const pnl = t.closed.map((f) => f.pnlUsd ?? 0);
+    const wins = pnl.filter((p) => p > 0);
+    const losses = pnl.filter((p) => p < 0);
+    const grossWin = wins.reduce((a, p) => a + p, 0);
+    const grossLoss = -losses.reduce((a, p) => a + p, 0);
+    const profitFactor = grossLoss > 0 ? grossWin / grossLoss : wins.length ? Infinity : 0;
+    const winRate = pnl.length ? (wins.length / pnl.length) * 100 : 0;
+    const bars: [string, boolean, string][] = [
+      ["a month of paper trading", days >= 30, `${days.toFixed(1)} days`],
+      ["at least 20 closed trades", t.closed.length >= 20, `${t.closed.length} closed`],
+      ["beats holding the same five markets", t.retPct > t.holdPct, `${pct(t.retPct)} vs holding ${pct(t.holdPct)}`],
+      ["max drawdown under 20%", t.maxDdPct < 20, `${t.maxDdPct.toFixed(1)}%`],
+      ["wins pay for losses (profit factor ≥ 1.3)", profitFactor >= 1.3, `${Number.isFinite(profitFactor) ? profitFactor.toFixed(2) : "∞"}, win rate ${winRate.toFixed(0)}%`],
+    ];
+    const cleared = bars.filter(([, ok]) => ok).length;
+    const verdict =
+      cleared === bars.length
+        ? "Every bar is cleared. A next step that keeps the downside small: real money of $50-100 on the markets that beat holding, under the phase-3 limits ($25 a trade, $100 a day, approved tokens, slippage ≤ 1%), and the paper desk keeps running beside it as the control."
+        : `Not ready for real money: ${bars.length - cleared} of ${bars.length} bars are not cleared yet. Keep it on paper; a strategy that fails a bar can be retested against history with paper_desk_strategy.`;
+    return [
+      "Real-money readiness — from the paper desk's own record:",
+      ...bars.map(([name, ok, value]) => `${ok ? "✅" : "❌"} ${name}: ${value}`),
+      verdict,
+      "History says what a rule would have done; the paper record says what it does live with real fees and slippage. Both are needed, and neither promises a result.",
+    ].join("\n");
+  }
+
   /** One line for every conversation: what the books say right now. */
   summaryLine(): string {
     if (!this.state) return "";
@@ -501,6 +540,23 @@ export function choose(m: DeskMarket, bars: Bar[]): { spec: StrategySpec; why: s
 function getDesk(runtime: IAgentRuntime): PaperDeskService | undefined {
   return runtime.getService<PaperDeskService>("paper-desk");
 }
+
+const tradingReadinessAction: Action = {
+  name: "trading_readiness",
+  similes: ["ready_for_real_money", "should_i_fund_you", "real_money_readiness", "how_well_do_you_trade"],
+  description:
+    "Whether your trading is good enough for real money, from the paper desk's own record: days of paper, closed trades, return vs simply holding, max drawdown, profit factor and win rate — each bar cleared or not, and a verdict. Use it when the operator asks how well you trade or whether to give you money.",
+  parameters: { type: "object", properties: {} },
+  examples: [{ user: "are you ready to trade real money?", agent: "(trading_readiness) not yet: 2 of 5 bars cleared — …" }],
+  async validate(runtime) {
+    return Boolean(getDesk(runtime));
+  },
+  async handler(runtime) {
+    const desk = getDesk(runtime)!;
+    await desk.refresh();
+    return { ok: true, text: desk.readinessText() };
+  },
+};
 
 const paperDeskAction: Action = {
   name: "paper_desk",

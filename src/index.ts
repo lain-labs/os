@@ -21,6 +21,7 @@ import { createModelProvider } from "./models/index.js";
 import { bootstrapPlugin } from "./plugins/bootstrap/index.js";
 import { channelPlugin } from "./plugins/channel/index.js";
 import { chainPlugin } from "./plugins/chain/index.js";
+import { arenaPlugin } from "./plugins/arena/index.js";
 import { crmPlugin } from "./plugins/crm/index.js";
 import { forgePlugin } from "./plugins/forge/index.js";
 import { githubPlugin } from "./plugins/github/index.js";
@@ -30,6 +31,9 @@ import { chatterPlugin } from "./plugins/chatter/index.js";
 import { journalPlugin } from "./plugins/journal/index.js";
 import { metamaskPlugin } from "./plugins/metamask/index.js";
 import { fomoscanPlugin } from "./plugins/fomoscan/index.js";
+import { budgetPlugin } from "./plugins/budget/index.js";
+import { guidePlugin } from "./plugins/guide/index.js";
+import { trendsPlugin } from "./plugins/trends/index.js";
 import { mcpPlugin } from "./plugins/mcp/index.js";
 import { presencePlugin } from "./plugins/presence/index.js";
 import { pressPlugin } from "./plugins/press/index.js";
@@ -179,8 +183,12 @@ export { deskPlugin, PaperDeskService } from "./plugins/desk/index.js";
 export type { DeskEvent } from "./plugins/desk/index.js";
 export type { TraderEvent } from "./plugins/trader/index.js";
 export { crmPlugin, CrmService } from "./plugins/crm/index.js";
+export { arenaPlugin, ArenaService } from "./plugins/arena/index.js";
 export { walletsPlugin } from "./plugins/wallets/index.js";
 export { fomoscanPlugin, Fomoscan, wallsReport } from "./plugins/fomoscan/index.js";
+export { budgetPlugin, usageReport } from "./plugins/budget/index.js";
+export { guidePlugin, guideFor, impactPct } from "./plugins/guide/index.js";
+export { trendsPlugin, TrendsService } from "./plugins/trends/index.js";
 export { metamaskPlugin, MetaMaskService } from "./plugins/metamask/index.js";
 export { digestPlugin, DigestService } from "./plugins/digest/index.js";
 export type { CrmRecord, CrmStatus } from "./plugins/crm/index.js";
@@ -217,10 +225,14 @@ const BUILTIN_PLUGINS: Record<string, Plugin> = {
   press: pressPlugin,
   study: studyPlugin,
   crm: crmPlugin,
+  arena: arenaPlugin,
   wallets: walletsPlugin,
   digest: digestPlugin,
   metamask: metamaskPlugin,
   fomoscan: fomoscanPlugin,
+  budget: budgetPlugin,
+  guide: guidePlugin,
+  trends: trendsPlugin,
 };
 
 export interface CreateAgentOptions {

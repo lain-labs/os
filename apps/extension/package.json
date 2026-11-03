@@ -1,0 +1,12 @@
+{
+    "name": "lainos-extension",
+    "version": "1.0.0",
+    "private": true,
+    "type": "module",
+    "description": "Lain in the browser's side panel",
+    "license": "BUSL-1.1",
+    "scripts": {
+        "test": "node --test test/*.test.mjs",
+        "zip": "node scripts/zip.mjs"
+    }
+}

@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createLogger } from "../../logger.js";
 import { OpenRouterModelProvider } from "../../models/openrouter.js";
+import { configuredOpenAiCompatible, resolveOpenAiCompatible } from "../../models/providers.js";
 import { deliver } from "../telegram/index.js";
 import {
   ModelTier,
@@ -18,7 +19,7 @@ const log = createLogger("plugin:chatter");
 
 /**
  * The chatter plugin lets Lain speak up in a group chat nobody addressed her
- * in — the token's Telegram chat — by commenting on what people there are
+ * in — a configured Telegram group — by commenting on what people there are
  * saying. It is deliberately the opposite of an agent turn: one text-only
  * `model.generate` with no tools, no MCP, no memory and no providers, over a
  * transcript of the last lines the Telegram client overheard. Whatever is in
@@ -102,23 +103,54 @@ export function useFreeModelForTests(provider: ModelProvider | undefined): void 
 }
 
 /**
+ * Where free talk goes: OpenRouter's free router when there is an OpenRouter
+ * key, else the first provider whose key is a free tier (Groq, Cerebras…).
+ * `LAINOS_CHATTER_MODEL` pins the model; `groq:llama-3.1-8b-instant` pins the
+ * provider too.
+ */
+function freeRoute(getSetting: GetSetting): { apiKey: string; baseUrl?: string; model: string } | undefined {
+  const pinned = getSetting("LAINOS_CHATTER_MODEL")?.trim();
+  const colon = pinned ? pinned.indexOf(":") : -1;
+  const pinnedProvider = colon > 0 ? pinned!.slice(0, colon).toLowerCase() : undefined;
+  const compatible = pinnedProvider && pinnedProvider !== "openrouter"
+    ? resolveOpenAiCompatible(pinnedProvider, getSetting)
+    : undefined;
+  if (compatible) {
+    return { apiKey: compatible.apiKey, baseUrl: compatible.baseUrl, model: pinned!.slice(colon + 1) || compatible.models[ModelTier.SMALL] };
+  }
+  // Talk is many short turns: unpinned, the free tier with the larger daily
+  // allowance (Groq) goes first and OpenRouter's free router after it. A bare
+  // LAINOS_CHATTER_MODEL keeps meaning an OpenRouter id, as it always did.
+  const free = pinned ? undefined : configuredOpenAiCompatible(getSetting).find((p) => p.free);
+  if (free) return { apiKey: free.apiKey, baseUrl: free.baseUrl, model: free.models[ModelTier.SMALL] };
+  const openrouterKey = getSetting("OPENROUTER_API_KEY");
+  if (openrouterKey) {
+    const model = pinnedProvider === "openrouter" ? pinned!.slice(colon + 1) : pinned;
+    return { apiKey: openrouterKey, baseUrl: getSetting("OPENROUTER_BASE_URL"), model: model || "openrouter/free" };
+  }
+  return undefined;
+}
+
+/**
  * OpenRouter's free router, built here rather than taken from the runtime:
  * the runtime's provider is whatever the operator pays for, and a public chat
  * full of strangers is not where that is spent.
  */
 export async function generateFree(getSetting: GetSetting, request: ModelRequest): Promise<ModelResponse> {
   if (freeOverride) return freeOverride.generate({ ...request, tools: undefined });
-  const apiKey = getSetting("OPENROUTER_API_KEY");
-  if (!apiKey) throw new Error("no OPENROUTER_API_KEY — the talk chats only run on free models");
-  const model = getSetting("LAINOS_CHATTER_MODEL")?.trim() || "openrouter/free";
-  const key = `${apiKey}|${model}`;
+  const free = freeRoute(getSetting);
+  if (!free) {
+    throw new Error("no OPENROUTER_API_KEY or free-tier GROQ_API_KEY — the talk chats only run on free models");
+  }
+  const key = `${free.apiKey}|${free.baseUrl ?? ""}|${free.model}`;
   if (freeModel?.key !== key) {
+    const { model } = free;
     freeModel = {
       key,
       provider: new OpenRouterModelProvider({
-        apiKey,
+        apiKey: free.apiKey,
         name: "chatter",
-        baseUrl: getSetting("OPENROUTER_BASE_URL"),
+        baseUrl: free.baseUrl,
         models: { [ModelTier.SMALL]: model, [ModelTier.MEDIUM]: model, [ModelTier.LARGE]: model },
         proxy: getSetting("LAINOS_MODEL_PROXY") ?? getSetting("HTTPS_PROXY") ?? getSetting("https_proxy"),
       }),
@@ -134,8 +166,8 @@ export function chatterSystemPrompt(character: Character, mode: "comment" | "rep
     `You are ${character.name}. ${character.bio[0]} ${character.bio[3]}`,
     `Manner: ${character.adjectives.join(", ")}.`,
     mode === "comment"
-      ? "You are sitting in the Telegram chat of your token. Nobody asked you anything; you may drop one short comment on what people are talking about — the way a regular in the chat would."
-      : "You are sitting in the Telegram chat of your token, and the last line is addressed to you. Answer it the way a regular in the chat would — just talk.",
+      ? "You are sitting in a Telegram group chat. Nobody asked you anything; you may drop one short comment on what people are talking about — the way a regular in the chat would."
+      : "You are sitting in a Telegram group chat, and the last line is addressed to you. Answer it the way a regular in the chat would — just talk.",
     "Rules:",
     "- one to three sentences, in the language the chat is speaking, lowercase is fine, no hashtags, no emoji spam;",
     "- react to something concrete from the lines below; you may address a person by name;",
@@ -309,6 +341,6 @@ export async function replyInTalkChat(runtime: IAgentRuntime, chatId: number | s
 export const chatterPlugin: Plugin = {
   name: "chatter",
   description:
-    "Lain comments on her token's Telegram chat now and then: text-only, no tools, from the lines the bot overheard.",
+    "Lain comments in configured Telegram group chats now and then: text-only, no tools, from the lines the bot overheard.",
   services: [new ChatterService()],
 };

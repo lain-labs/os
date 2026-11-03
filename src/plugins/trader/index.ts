@@ -8,6 +8,7 @@ import type {
   Provider,
   Service,
 } from "../../types.js";
+import { SwingService, swingStatusAction } from "./swing.js";
 
 const log = createLogger("plugin:trader");
 
@@ -303,8 +304,8 @@ const traderProvider: Provider = {
 export const traderPlugin: Plugin = {
   name: "trader",
   description:
-    "Autonomous profit-taking: a background loop that sells journaled positions when they clear the take-profit threshold, within pool-impact limits.",
-  services: [new TraderService()],
+    "Autonomous trading: a take-profit loop over journaled positions, and an hourly swing desk that buys on momentum within risk limits and posts what looks good to buy or sell.",
+  services: [new TraderService(), new SwingService()],
   providers: [traderProvider],
-  actions: [traderStatusAction],
+  actions: [traderStatusAction, swingStatusAction],
 };
