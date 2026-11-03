@@ -52,6 +52,10 @@
             </intent-filter>
         </activity>
 
+        <!-- Notifications: Lain's channel, and the accent the status-bar icon is tinted with. -->
+        <meta-data android:name="com.google.firebase.messaging.default_notification_channel_id" android:value="lain" />
+        <meta-data android:name="com.google.firebase.messaging.default_notification_color" android:resource="@color/notification_accent" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -65,4 +69,5 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 </manifest>

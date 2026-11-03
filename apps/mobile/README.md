@@ -36,6 +36,22 @@ crypto and without LAIN staking: Google Play requires its own billing for
 digital goods sold inside an app. The APK on GitHub and the web keep
 everything.
 
+## Notifications
+
+The app rings for what happens in public on lain-os.com: a new quest, answers
+and votes on the Wired, stakers' votes and Lain's own trades, summed up in one
+notification at most every 30 minutes (`push:activity` in lain-labs/backend).
+The chat page registers (`librechat/branding/lain-push.js`) and only in a build
+that carries a Firebase config, which says so with `LainOSPush/1` in its user
+agent — asking Firebase for a token without one crashes the app.
+
+To turn it on: add an Android app `com.lainos.app` to the Firebase project,
+put its `google-services.json` base64-encoded into the repository secret
+`GOOGLE_SERVICES_JSON_BASE64` (the Apps workflow writes the file and sets
+`LAIN_PUSH=1`), and point the backend's `FCM_CREDENTIALS` at a service-account
+key of the same project. Locally: drop the file into `android/app/` and run
+`LAIN_PUSH=1 npm run sync:android`.
+
 ## Release
 
 `.github/workflows/apps.yml` builds the APK on a tag `app-v*` (and on a manual

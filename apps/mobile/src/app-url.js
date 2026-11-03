@@ -108,12 +108,24 @@ function resolveStoreEdition(env = process.env) {
     return STORE_EDITIONS.includes(candidate) ? candidate : null;
 }
 
-/** What the shell appends to the WebView's user agent. */
+/**
+ * What the shell appends to the WebView's user agent. `LainOSPush/1` is there
+ * only when the build carries a Firebase config (LAIN_PUSH=1, set by the
+ * workflow once google-services.json is in place): the chat page registers
+ * for notifications only then, because asking Firebase for a token in a build
+ * without its config crashes the app instead of failing.
+ */
 function resolveUserAgent(env = process.env, version = '1.0.0') {
     const edition = resolveStoreEdition(env);
-    const own = `LainOSMobile/${env.LAIN_VERSION_NAME || version}`;
+    const parts = [`LainOSMobile/${env.LAIN_VERSION_NAME || version}`];
+    if (edition) {
+        parts.push(`LainOSStore/${edition}`);
+    }
+    if (String(env.LAIN_PUSH ?? '') === '1') {
+        parts.push('LainOSPush/1');
+    }
 
-    return edition ? `${own} LainOSStore/${edition}` : own;
+    return parts.join(' ');
 }
 
 module.exports = {

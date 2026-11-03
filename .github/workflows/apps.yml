@@ -60,6 +60,20 @@ jobs:
       - name: Tests
         run: npm test
 
+      # Notifications need the Firebase project's google-services.json (for the
+      # com.lainos.app Android app). Without it the APK still builds and the
+      # chat page simply never asks for a push token (LainOSPush/1 is absent).
+      - name: Firebase config
+        env:
+          GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
+        run: |
+          if [ -n "$GOOGLE_SERVICES_JSON_BASE64" ]; then
+            printf '%s' "$GOOGLE_SERVICES_JSON_BASE64" | base64 -d > android/app/google-services.json
+            echo "LAIN_PUSH=1" >> "$GITHUB_ENV"
+          else
+            echo "::notice title=Push off::GOOGLE_SERVICES_JSON_BASE64 is not set; this APK will not register for notifications."
+          fi
+
       - name: Sync web assets
         run: npm run sync:android
 

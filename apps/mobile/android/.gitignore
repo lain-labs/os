@@ -99,3 +99,6 @@ app/src/main/assets/public
 app/src/main/assets/capacitor.config.json
 app/src/main/assets/capacitor.plugins.json
 app/src/main/res/xml/config.xml
+
+# Firebase config: written by the Apps workflow from GOOGLE_SERVICES_JSON_BASE64.
+app/google-services.json

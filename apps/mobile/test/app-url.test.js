@@ -103,4 +103,8 @@ test('the user agent carries the store token only in a store build', () => {
     );
     // The site matches exactly this token (resources/js/lib/storeEdition.ts).
     assert.match(resolveUserAgent({ LAIN_STORE: 'appstore' }), /\bLainOSStore\/(play|appstore)\b/);
+
+    // The chat registers for notifications only in a build that has a Firebase config.
+    assert.equal(resolveUserAgent({ LAIN_PUSH: '1' }, '1.2.3'), 'LainOSMobile/1.2.3 LainOSPush/1');
+    assert.doesNotMatch(resolveUserAgent({}, '1.2.3'), /LainOSPush/);
 });

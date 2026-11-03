@@ -50,6 +50,11 @@ const config = {
             androidSplashResourceName: 'splash',
             showSpinner: false,
         },
+        // Registration happens in the chat page (lain-labs/backend: librechat/branding/lain-push.js),
+        // and only in a build with a Firebase config (see resolveUserAgent).
+        PushNotifications: {
+            presentationOptions: ['badge', 'sound', 'alert'],
+        },
         StatusBar: {
             style: 'DARK',
             backgroundColor: '#03060f',
