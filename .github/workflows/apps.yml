@@ -50,6 +50,9 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        # The default list asks for 'tools', which cmdline-tools 16 no longer has.
+        with:
+          packages: platform-tools
 
       - name: Install dependencies
         run: npm ci
