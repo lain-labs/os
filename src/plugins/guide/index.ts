@@ -139,7 +139,7 @@ const howToBuy: Action = {
     "Explain how to buy a token and where it is cheapest: step-by-step for LAIN (your own token — say so), CYBER.sol, SOL and ETH (wallet, network, gas, the contract address, staking LAIN), plus the live pools for any token or contract ranked by depth with the price impact of a buy of the given size. Use it whenever someone asks how or where to buy, stake or start.",
   examples: [
     { user: "how do i buy lain?", agent: "it's my own token, so take this with that in mind: …" },
-    { user: "где дешевле купить сайбер?", agent: "через самый глубокий пул: …" },
+    { user: "where is cyber cheapest to buy?", agent: "through the deepest pool: …" },
   ],
   parameters: {
     type: "object",

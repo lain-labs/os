@@ -81,6 +81,14 @@ async function send(text) {
             const detail = await response.json().catch(() => ({}));
             throw new Error(detail?.error?.message ?? `HTTP ${response.status}`);
         }
+        // The API may answer a streamed request with one ordinary completion (as src/models/
+        // openrouter.ts knows): read that as JSON instead of finding no events in it.
+        if (!(response.headers.get('content-type') ?? '').includes('text/event-stream')) {
+            const completion = await response.json();
+            answer.content = completion?.choices?.[0]?.message?.content ?? '';
+            if (!answer.content) throw new Error('the answer was empty');
+            return;
+        }
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
