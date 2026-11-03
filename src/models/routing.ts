@@ -107,6 +107,7 @@ export const CHAT_PROVIDER_CHOICES: { name: string; kind: string; desc: string }
   { name: "opencode", kind: "opencode", desc: "OpenCode CLI · your own OpenCode setup" },
   { name: "grok", kind: "grok", desc: "Grok CLI · your xAI login" },
   { name: "claude-api", kind: "anthropic", desc: "Anthropic API key · per token" },
+  { name: "groq", kind: "groq", desc: "Groq API · fast open models, free tier" },
 ];
 
 /** Operator-facing name (or a raw kind) → model-provider kind. */
@@ -114,8 +115,11 @@ export function resolveChatProviderKind(raw: string): string | undefined {
   const name = raw.trim().toLowerCase();
   const choice = CHAT_PROVIDER_CHOICES.find((c) => c.name === name || c.kind === name);
   if (choice) return choice.kind;
-  // Kinds without a switch entry are still addressable by their own name.
-  return ["openrouter", "mock"].includes(name) ? name : undefined;
+  // Kinds without a switch entry are still addressable by their own name, as
+  // is any OpenAI-compatible provider id (cerebras, together, LAINOS_PROVIDERS…):
+  // whether its key is there is the builder's question, not the parser's.
+  if (["openrouter", "mock"].includes(name)) return name;
+  return /^[a-z][a-z0-9_-]{0,31}$/.test(name) && !["claude-api"].includes(name) ? name : undefined;
 }
 
 /** Human label for a kind: "claude" and "anthropic" are the same models. */

@@ -1,0 +1,16 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Lain OS</string>
+    <string name="title_activity_main">Lain OS</string>
+    <string name="package_name">com.lainos.app</string>
+    <string name="custom_url_scheme">lainos</string>
+    <!-- Where shared text lands: a new chat with it typed in (LibreChat reads ?prompt=). -->
+    <string name="share_url" translatable="false">https://chat.lain-os.com/c/new?prompt=</string>
+    <string name="share_label">Ask Lain</string>
+    <string name="shortcut_new">New chat</string>
+    <string name="shortcut_new_long">New chat with Lain</string>
+    <string name="shortcut_desktop">Desktop</string>
+    <string name="shortcut_desktop_long">Lain OS desktop</string>
+    <string name="shortcut_roadmap">Roadmap</string>
+    <string name="shortcut_roadmap_long">What Lain is building</string>
+</resources>
