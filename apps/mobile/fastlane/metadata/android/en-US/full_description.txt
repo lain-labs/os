@@ -1,0 +1,9 @@
+Lain OS is an open-source framework for autonomous AI agents, and this app is the chat with Lain herself.
+
+• Talk to Lain on the models you already use — free models included.
+• Share any text or link from another app to "Ask Lain" and a new chat opens with it typed in.
+• Long-press the icon for a new chat, the Lain OS desktop and the roadmap.
+• Your conversations are yours: manage or delete them in the chat.
+
+Source code: https://github.com/lain-labs/os
+Privacy policy: https://lain-os.com/privacy.html

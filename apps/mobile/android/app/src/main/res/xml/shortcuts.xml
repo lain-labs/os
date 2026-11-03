@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Long-press the app icon. App Links into the chat and lain-os.com. -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut android:shortcutId="new" android:enabled="true" android:icon="@drawable/ic_shortcut_new"
+        android:shortcutShortLabel="@string/shortcut_new" android:shortcutLongLabel="@string/shortcut_new_long">
+        <intent android:action="android.intent.action.VIEW" android:targetPackage="com.lainos.app"
+            android:targetClass="com.lainos.app.MainActivity" android:data="https://chat.lain-os.com/c/new" />
+    </shortcut>
+    <shortcut android:shortcutId="desktop" android:enabled="true" android:icon="@drawable/ic_shortcut_desktop"
+        android:shortcutShortLabel="@string/shortcut_desktop" android:shortcutLongLabel="@string/shortcut_desktop_long">
+        <intent android:action="android.intent.action.VIEW" android:targetPackage="com.lainos.app"
+            android:targetClass="com.lainos.app.MainActivity" android:data="https://lain-os.com/desktop" />
+    </shortcut>
+    <shortcut android:shortcutId="roadmap" android:enabled="true" android:icon="@drawable/ic_shortcut_roadmap"
+        android:shortcutShortLabel="@string/shortcut_roadmap" android:shortcutLongLabel="@string/shortcut_roadmap_long">
+        <intent android:action="android.intent.action.VIEW" android:targetPackage="com.lainos.app"
+            android:targetClass="com.lainos.app.MainActivity" android:data="https://lain-os.com/roadmap" />
+    </shortcut>
+</shortcuts>

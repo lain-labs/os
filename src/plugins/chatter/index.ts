@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createLogger } from "../../logger.js";
 import { OpenRouterModelProvider } from "../../models/openrouter.js";
+import { configuredOpenAiCompatible, resolveOpenAiCompatible } from "../../models/providers.js";
 import { deliver } from "../telegram/index.js";
 import {
   ModelTier,
@@ -102,23 +103,54 @@ export function useFreeModelForTests(provider: ModelProvider | undefined): void 
 }
 
 /**
+ * Where free talk goes: OpenRouter's free router when there is an OpenRouter
+ * key, else the first provider whose key is a free tier (Groq, Cerebras…).
+ * `LAINOS_CHATTER_MODEL` pins the model; `groq:llama-3.1-8b-instant` pins the
+ * provider too.
+ */
+function freeRoute(getSetting: GetSetting): { apiKey: string; baseUrl?: string; model: string } | undefined {
+  const pinned = getSetting("LAINOS_CHATTER_MODEL")?.trim();
+  const colon = pinned ? pinned.indexOf(":") : -1;
+  const pinnedProvider = colon > 0 ? pinned!.slice(0, colon).toLowerCase() : undefined;
+  const compatible = pinnedProvider && pinnedProvider !== "openrouter"
+    ? resolveOpenAiCompatible(pinnedProvider, getSetting)
+    : undefined;
+  if (compatible) {
+    return { apiKey: compatible.apiKey, baseUrl: compatible.baseUrl, model: pinned!.slice(colon + 1) || compatible.models[ModelTier.SMALL] };
+  }
+  // Talk is many short turns: unpinned, the free tier with the larger daily
+  // allowance (Groq) goes first and OpenRouter's free router after it. A bare
+  // LAINOS_CHATTER_MODEL keeps meaning an OpenRouter id, as it always did.
+  const free = pinned ? undefined : configuredOpenAiCompatible(getSetting).find((p) => p.free);
+  if (free) return { apiKey: free.apiKey, baseUrl: free.baseUrl, model: free.models[ModelTier.SMALL] };
+  const openrouterKey = getSetting("OPENROUTER_API_KEY");
+  if (openrouterKey) {
+    const model = pinnedProvider === "openrouter" ? pinned!.slice(colon + 1) : pinned;
+    return { apiKey: openrouterKey, baseUrl: getSetting("OPENROUTER_BASE_URL"), model: model || "openrouter/free" };
+  }
+  return undefined;
+}
+
+/**
  * OpenRouter's free router, built here rather than taken from the runtime:
  * the runtime's provider is whatever the operator pays for, and a public chat
  * full of strangers is not where that is spent.
  */
 export async function generateFree(getSetting: GetSetting, request: ModelRequest): Promise<ModelResponse> {
   if (freeOverride) return freeOverride.generate({ ...request, tools: undefined });
-  const apiKey = getSetting("OPENROUTER_API_KEY");
-  if (!apiKey) throw new Error("no OPENROUTER_API_KEY — the talk chats only run on free models");
-  const model = getSetting("LAINOS_CHATTER_MODEL")?.trim() || "openrouter/free";
-  const key = `${apiKey}|${model}`;
+  const free = freeRoute(getSetting);
+  if (!free) {
+    throw new Error("no OPENROUTER_API_KEY or free-tier GROQ_API_KEY — the talk chats only run on free models");
+  }
+  const key = `${free.apiKey}|${free.baseUrl ?? ""}|${free.model}`;
   if (freeModel?.key !== key) {
+    const { model } = free;
     freeModel = {
       key,
       provider: new OpenRouterModelProvider({
-        apiKey,
+        apiKey: free.apiKey,
         name: "chatter",
-        baseUrl: getSetting("OPENROUTER_BASE_URL"),
+        baseUrl: free.baseUrl,
         models: { [ModelTier.SMALL]: model, [ModelTier.MEDIUM]: model, [ModelTier.LARGE]: model },
         proxy: getSetting("LAINOS_MODEL_PROXY") ?? getSetting("HTTPS_PROXY") ?? getSetting("https_proxy"),
       }),

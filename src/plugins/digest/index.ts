@@ -45,6 +45,10 @@ export * from "./news.js";
 export * from "./onchain.js";
 export * from "./model.js";
 
+import { usageReport } from "../budget/index.js";
+import type { PaperDeskService } from "../desk/index.js";
+import type { TrendsService } from "../trends/index.js";
+
 const log = createLogger("plugin:digest");
 
 /** News older than this is yesterday's digest's business. */
@@ -79,6 +83,8 @@ export interface DigestInput {
   previous?: DigestSnapshot;
   news: AssetNews[];
   notes: string[];
+  /** Lain's own sections: the market sweep, the paper desk, the model budget. */
+  extras?: { title: string; body: string }[];
 }
 
 function pct(n: number | undefined): string {
@@ -163,8 +169,39 @@ export function digestMaterial(d: DigestInput): string {
       lines.push(`- n${++id}: ${i.title.slice(0, 160)}${i.at ? ` (${new Date(i.at).toISOString().slice(5, 16).replace("T", " ")})` : ""}`);
     }
   }
+  for (const extra of d.extras ?? []) {
+    if (extra.body.trim()) lines.push("", `## ${extra.title}`, extra.body.trim());
+  }
   if (d.notes.length) lines.push("", "## Gaps", ...d.notes.map((n) => `- ${n}`));
   return lines.join("\n");
+}
+
+/**
+ * What Lain herself did and saw since yesterday, beside the market: her own
+ * trend sweep and radar calls, her paper desk against simply holding, and what
+ * her thinking cost. Each is optional: a plugin that is off adds nothing.
+ */
+export function ownSections(runtime: IAgentRuntime): { title: string; body: string }[] {
+  const out: { title: string; body: string }[] = [];
+  const trends = runtime.getService<TrendsService>("trends")?.latest();
+  if (trends && Date.now() - Date.parse(trends.at) < 36 * 3_600_000) {
+    out.push({
+      title: "What the market is trading (Lain's own sweep)",
+      body: [trends.brief, ...trends.signals.map((s) => `radar: ${s.token}${s.chain ? ` (${s.chain})` : ""} — ${s.thesis}; wrong if ${s.invalidation}`)].join("\n"),
+    });
+  }
+  const desk = runtime.getService<PaperDeskService>("paper-desk");
+  if (desk) {
+    out.push({ title: "Paper desk (virtual money, scored against holding)", body: desk.statusText().split("\n").slice(0, 2).join("\n") });
+  }
+  try {
+    const dataDir = runtime.getSetting("LAINOS_DATA_DIR") ?? "./data";
+    const { summary, text } = usageReport(dataDir, 24);
+    if (summary.calls > 0) out.push({ title: "What Lain's thinking cost (last 24h)", body: text.split("\n").slice(0, 3).join("\n") });
+  } catch {
+    // No ledger yet.
+  }
+  return out;
 }
 
 export class DigestService implements Service {
@@ -302,6 +339,7 @@ export class DigestService implements Service {
       previous: this.state.snapshot,
       news,
       notes,
+      extras: ownSections(runtime),
     });
 
     // Kept on disk: what the digest was written from, so any line in it can
@@ -340,8 +378,10 @@ export class DigestService implements Service {
         `4. **News**: grouped by asset group; each bullet "**SYMBOL** — what happened, why it matters for the holding [source](nID)" — ` +
         `the source is the outlet named at the end of the item's title, nID is the item's id from the material. ` +
         `Only news that can move the asset or matters to holding it; drop noise, rehashed price chatter, ads, duplicates. At most 12 bullets.\n` +
+        `5. **From me** (only when the material has Lain's own sections): two lines on what the wider market is trading and why, your radar calls with what would prove them wrong, ` +
+        `your paper desk against simply holding (both numbers), and one line on what your thinking cost and what the free models carried. No price targets.\n` +
         `Rules: every number and every link must come from the material — never invent or round into something new. ` +
-        `Hard limit 3000 characters: cut the least important lines, never the links of the lines you keep. ` +
+        `Hard limit 3500 characters: cut the least important lines, never the links of the lines you keep. ` +
         `Output only the digest itself — no preamble, no notes about the task, no closing pleasantries.`,
       messages: [{ role: "user", content: material }],
       maxTokens: 4000,

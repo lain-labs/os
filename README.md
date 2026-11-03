@@ -37,16 +37,29 @@ and repeat-protected.
 
 ### Model providers
 
-LainOS speaks to six backends through one `ModelProvider` interface, selected
+LainOS speaks to many backends through one `ModelProvider` interface, selected
 from the environment:
 
-1. `LAINOS_MODEL_PROVIDER` if set (`codex` | `claude` | `opencode` |
-   `openrouter` | `anthropic` | `mock`)
+1. `LAINOS_MODEL_PROVIDER` if set (`codex` | `claude` | `opencode` | `grok` |
+   `openrouter` | `anthropic` | `groq` | `cerebras` | `together` | `deepseek` |
+   `mistral` | an id from `LAINOS_PROVIDERS` | `mock`)
 2. else `OPENROUTER_API_KEY` present → **OpenRouter**
-3. else `ANTHROPIC_API_KEY` present → **Anthropic** (direct)
-4. else a `claude` CLI on the machine → **Claude CLI** (subscription)
-5. else → **offline mock** (deterministic; the whole pipeline still runs — this
+3. else `GROQ_API_KEY` (or another OpenAI-compatible key) present → **that provider**
+4. else `ANTHROPIC_API_KEY` present → **Anthropic** (direct)
+5. else a `claude` CLI on the machine → **Claude CLI** (subscription)
+6. else → **offline mock** (deterministic; the whole pipeline still runs — this
    is what the smoke test exercises)
+
+**Groq and other OpenAI-compatible APIs** (`src/models/providers.ts`) are data,
+not code: an id, a base URL, a default model per tier and whether the key has a
+free tier. A key switches one on — `GROQ_API_KEY=…` makes `groq` a chat
+provider (`/agent groq`), a standby when the main agent is out of quota, and a
+task route (`LAINOS_TASK_DIGEST=groq:llama-3.1-8b-instant`); without an
+OpenRouter key, cheap tasks go to the first free-tier provider. Groq, Cerebras,
+Together, DeepSeek and Mistral are built in; any other host is
+`LAINOS_PROVIDERS=myhost` plus `MYHOST_API_KEY`, `MYHOST_BASE_URL` and
+`MYHOST_MODEL` in `.env`. Through the Lain OS API (`OPENROUTER_BASE_URL=https://lain-os.com/v1`)
+Groq's models are also listed as `groq/<id>`, next to OpenRouter's.
 
 **Codex CLI** (`codex`), **Claude CLI** (`claude`) and **OpenCode CLI**
 (`opencode`) run each completion through one non-interactive CLI run —
