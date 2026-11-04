@@ -131,11 +131,12 @@ function splitArgs(raw?: string): string[] {
  * failed calls on that provider. Off by default so the agent never silently
  * lands on a model the operator didn't choose.
  *
- * A turn whose agent fails outright — out of quota, a lapsed login, a
- * timeout — goes to the next agent that can answer (LAINOS_MODEL_STANDBY,
- * comma-separated kinds in order; default every chat agent this machine has;
- * `none` turns it off), and the reply's stamp names who answered. Who is
- * spent lives in data/limits.json, shared with the forge.
+ * A turn whose agent is out of quota does not move to another paid agent by
+ * itself. It goes to the next agent only when the operator named standbys
+ * (LAINOS_MODEL_STANDBY, comma-separated kinds in order; `none` or unset is
+ * off). Otherwise the turn says which agent is spent and asks the operator to
+ * switch with /agent. Who is spent lives in data/limits.json, shared with the
+ * forge.
  *
  * On top of the base, LAINOS_MODEL_TIER_SMALL / _MEDIUM / _LARGE may route a
  * single tier to a different provider.
@@ -526,14 +527,16 @@ export function createModelProvider(
 }
 
 /**
- * Who answers when the chosen agent is out of quota, in order. One that this
- * machine cannot build (no key, no CLI) is skipped when it is reached.
+ * Who answers when the chosen agent is out of quota, in order. Empty by
+ * default: a silent switch to another agent spends money the operator did not
+ * choose to spend, so an exhausted agent says so and the operator picks the
+ * next one with /agent. LAINOS_MODEL_STANDBY names standbys explicitly. One
+ * that this machine cannot build (no key, no CLI) is skipped when reached.
  */
-function standbyKinds(raw?: string, compatible: string[] = []): string[] {
+function standbyKinds(raw?: string, _compatible: string[] = []): string[] {
   const value = raw?.trim().toLowerCase();
-  if (value === "none" || value === "0") return [];
-  if (value) return value.split(/[\s,]+/).filter((kind) => kind && kind !== "mock");
-  return [...new Set([...CHAT_PROVIDER_CHOICES.map((choice) => choice.kind), "openrouter", ...compatible])];
+  if (!value || value === "none" || value === "0") return [];
+  return value.split(/[\s,]+/).filter((kind) => kind && kind !== "mock");
 }
 
 /**

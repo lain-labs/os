@@ -274,11 +274,10 @@ export class SwitchableModelProvider implements ModelProvider {
   /**
    * Ask whoever this kind of work is routed to. When that agent fails —
    * out of quota (it says so, or the shared book already knows), a lapsed
-   * login, a timeout, a crash — ask the next one: the live chat provider,
-   * then the standbys. Only text already shown can't move to another model.
-   * A Lain who stays silent because one CLI lost its key is worse than one
-   * who answers on a model the operator did not pick; the reply's stamp
-   * names who answered, and the log says why.
+   * login, a timeout, a crash — ask the live chat provider (the agent the
+   * operator picked), then only the standbys the operator named. Nothing
+   * else is tried: a paid agent does not answer for an exhausted one unless
+   * it was named. Only text already shown can't move to another model.
    */
   private async answer(
     request: ModelRequest,
@@ -313,7 +312,10 @@ export class SwitchableModelProvider implements ModelProvider {
     // The book can outlive a limit lifted early: with nobody else left, the
     // chosen agent gets one real try before the turn gives up.
     if (!calls) return call(chosen.provider);
-    throw new Error(`no model can answer right now — ${passed.join("; ")}`);
+    throw new Error(
+      `no model can answer right now — ${passed.join("; ")}. ` +
+        `Nothing else was asked: pick another agent with /agent (no standby is configured).`,
+    );
   }
 
   /** The agent this kind of work is routed to, by kind (the key of the limits book). */
