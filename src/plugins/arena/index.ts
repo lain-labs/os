@@ -6,6 +6,7 @@ import type { IAgentRuntime, Plugin, Provider, Service, State } from "../../type
 import type { ChainService } from "../chain/index.js";
 import type { TradeRecord } from "../chain/journal.js";
 import type { PaperDeskService } from "../desk/index.js";
+import { ArenaBook, type BoardToken } from "./book.js";
 
 const log = createLogger("plugin:arena");
 
@@ -103,6 +104,8 @@ export class ArenaService implements Service {
   private timer: ReturnType<typeof setInterval> | null = null;
   private running: Promise<void> | null = null;
   private lastError: string | null = null;
+  private book: ArenaBook | null = null;
+  private bookTimer: ReturnType<typeof setInterval> | null = null;
 
   async start(runtime: IAgentRuntime): Promise<void> {
     this.runtime = runtime;
@@ -127,11 +130,42 @@ export class ArenaService implements Service {
     this.timer = setInterval(() => void this.tick(), interval);
     this.timer.unref?.();
     void this.tick();
+
+    if (runtime.getSetting("LAINOS_ARENA_BOOK") === "1") {
+      this.book = new ArenaBook(runtime, this.url, () => this.board(), (trades) => this.reportNow(trades));
+      const minutes = Math.max(15, Number(runtime.getSetting("LAINOS_ARENA_BOOK_MINUTES") ?? 60) || 60);
+      const round = () => void this.book?.round().catch((err) => log.warn(`arena book round failed: ${err instanceof Error ? err.message : String(err)}`));
+      this.bookTimer = setInterval(round, minutes * 60_000);
+      this.bookTimer.unref?.();
+      setTimeout(round, 90_000).unref?.();
+      log.info(`arena book on: a paper bankroll traded on the arena board every ${minutes} min`);
+    }
   }
 
   async stop(): Promise<void> {
     if (this.timer) clearInterval(this.timer);
+    if (this.bookTimer) clearInterval(this.bookTimer);
     this.timer = null;
+    this.bookTimer = null;
+  }
+
+  /** The tokens in view on the arena's board, with their USD price, liquidity and 24h change. */
+  private async board(): Promise<BoardToken[]> {
+    if (!this.url) return [];
+    const res = await undiciFetch(`${this.url}/api/arena`, { headers: { accept: "application/json" }, dispatcher: this.dispatcher, signal: AbortSignal.timeout(20_000) });
+    if (!res.ok) throw new Error(`arena board answered ${res.status}`);
+    const body = (await res.json()) as { tokens?: BoardToken[] };
+    return (body.tokens ?? []).filter((t) => typeof t.key === "string" && typeof t.usd === "number");
+  }
+
+  /** Send trades to the league now (the book's fills), registering first if needed. */
+  private async reportNow(trades: Record<string, unknown>[]): Promise<void> {
+    if (!this.url || !trades.length) return;
+    if (!this.state.key) await this.register();
+    const response = await this.post("/api/arena/trades", { trades }, this.state.key);
+    if (!response.ok) log.warn(`arena refused book trades: ${response.status} ${(await response.text()).slice(0, 200)}`);
+    for (const trade of trades) this.sent.add(String(trade.id));
+    await this.persist();
   }
 
   get enabled(): boolean {
