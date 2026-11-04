@@ -42,7 +42,12 @@ export class BufferService {
     const interval = Number.isFinite(configured) ? Math.max(3600000, configured) : 86400000;
     this.timer = setInterval(() => void this.collect().catch(err => log.warn("analytics collection failed", err)), interval);
     this.timer.unref?.();
-    this.initial = setTimeout(() => void this.collect().catch(err => log.warn("analytics collection failed", err)), 30000);
+    // Buffer's free API allows 1,000 requests a month: a restart must not read again a snapshot
+    // that is fresh, so the first collection waits until the last one is a day old.
+    const last = this.latest()?.collectedAt;
+    const age = last ? Date.now() - Date.parse(last) : Infinity;
+    const firstIn = age >= interval ? 30000 : Math.max(30000, interval - age);
+    this.initial = setTimeout(() => void this.collect().catch(err => log.warn("analytics collection failed", err)), firstIn);
     this.initial.unref?.();
   }
   async stop(): Promise<void> { if (this.timer) clearInterval(this.timer); if (this.initial) clearTimeout(this.initial); await this.writes; }
