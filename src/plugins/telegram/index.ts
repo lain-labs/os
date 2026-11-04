@@ -6,6 +6,7 @@ import { markdownToTelegramHtml } from "../../clients/telegram-format.js";
 import { createLogger } from "../../logger.js";
 import type { Action, Plugin, Provider } from "../../types.js";
 import { roleBrief, type TelegramSender } from "./identity.js";
+import { inChatLanguage } from "./language.js";
 
 const log = createLogger("plugin:telegram");
 
@@ -108,6 +109,7 @@ export function replyKeyboard(buttons: string[]): Record<string, unknown> {
  * with a broken link beats no message.
  */
 export async function deliver(getSetting: GetSetting, chatId: string, text: string, opts: DeliverOptions = {}): Promise<void> {
+  text = await inChatLanguage(getSetting, chatId, text);
   const prefix = getSetting("TELEGRAM_MESSAGE_PREFIX")?.trim();
   if (prefix) text = `${prefix}\n${text}`;
   const token = getSetting("TELEGRAM_BOT_TOKEN") ?? "";

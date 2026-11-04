@@ -22,6 +22,7 @@ import { bootstrapPlugin } from "./plugins/bootstrap/index.js";
 import { channelPlugin } from "./plugins/channel/index.js";
 import { chainPlugin } from "./plugins/chain/index.js";
 import { arenaPlugin } from "./plugins/arena/index.js";
+import { planPlugin } from "./plugins/plan/index.js";
 import { crmPlugin } from "./plugins/crm/index.js";
 import { forgePlugin } from "./plugins/forge/index.js";
 import { githubPlugin } from "./plugins/github/index.js";
@@ -185,6 +186,7 @@ export type { DeskEvent } from "./plugins/desk/index.js";
 export type { TraderEvent } from "./plugins/trader/index.js";
 export { crmPlugin, CrmService } from "./plugins/crm/index.js";
 export { arenaPlugin, ArenaService } from "./plugins/arena/index.js";
+export { planPlugin, PlanService } from "./plugins/plan/index.js";
 export { walletsPlugin } from "./plugins/wallets/index.js";
 export { fomoscanPlugin, Fomoscan, wallsReport } from "./plugins/fomoscan/index.js";
 export { budgetPlugin, usageReport } from "./plugins/budget/index.js";
@@ -229,6 +231,7 @@ const BUILTIN_PLUGINS: Record<string, Plugin> = {
   study: studyPlugin,
   crm: crmPlugin,
   arena: arenaPlugin,
+  plan: planPlugin,
   wallets: walletsPlugin,
   digest: digestPlugin,
   metamask: metamaskPlugin,

@@ -12,6 +12,8 @@ import {
   SwitchableModelProvider,
 } from "../models/routing.js";
 import { TASKS, TaskKind, isTaskKind } from "../models/tasks.js";
+import { RUSSIAN_TRANSLATE_SYSTEM, isRussianChat, inChatLanguage, setRussianTranslator } from "../plugins/telegram/language.js";
+import { claimTelegramText, dispatchTelegramCallback } from "../plugins/telegram/callbacks.js";
 import { formatForgeJobs, type ForgeService } from "../plugins/forge/index.js";
 import { describeNetworks, switchNetwork } from "../plugins/chain/networks.js";
 import { digestCommand } from "../plugins/digest/index.js";
@@ -23,7 +25,7 @@ import { isLainOsChat, isTalkChat, lainChatReply, overhear, overheardIn, replyIn
 import { htmlToText, replyKeyboard } from "../plugins/telegram/index.js";
 import { defang, resolveTelegramSender, senderHeader, senderTag } from "../plugins/telegram/identity.js";
 import { markdownToTelegramHtml } from "./telegram-format.js";
-import type { IAgentRuntime } from "../types.js";
+import { ModelTier, type IAgentRuntime } from "../types.js";
 import { isNodeChat, relayNodeMessage } from "./node-relay.js";
 import { describeTelegramImage } from "./telegram-vision.js";
 import { twitterContext } from "../plugins/web/twitter.js";
@@ -107,6 +109,12 @@ interface TgMessage {
 interface TgUpdate {
   update_id: number;
   message?: TgMessage;
+  callback_query?: {
+    id: string;
+    from: TgUser;
+    data?: string;
+    message?: { message_id: number; chat: { id: number }; text?: string };
+  };
 }
 
 const MAX_MESSAGE = 4000; // Telegram hard limit is 4096; leave headroom.
@@ -193,6 +201,19 @@ export class TelegramClient {
 
   constructor(runtime: IAgentRuntime, opts: TelegramOptions = {}) {
     this.runtime = runtime;
+    // Messages bound for a Russian-only chat in another language are translated
+    // on the cheap translate route on their way out (plugins/telegram/language.ts).
+    setRussianTranslator(async (text) => {
+      const res = await runtime.model.generate({
+        tier: ModelTier.SMALL,
+        task: TaskKind.TRANSLATE,
+        system: RUSSIAN_TRANSLATE_SYSTEM,
+        messages: [{ role: "user", content: text }],
+        maxTokens: 3000,
+        temperature: 0.2,
+      });
+      return res.text ?? "";
+    });
     this.token = opts.token ?? runtime.getSetting("TELEGRAM_BOT_TOKEN") ?? "";
     const allowRaw = opts.allowedChats ?? runtime.getSetting("TELEGRAM_ALLOWED_CHATS") ?? "";
     this.allowed = new Set(
@@ -343,7 +364,7 @@ export class TelegramClient {
         this.abort = new AbortController();
         const updates = await this.api<TgUpdate[]>(
           "getUpdates",
-          { offset: this.offset, timeout: 50, allowed_updates: ["message"] },
+          { offset: this.offset, timeout: 50, allowed_updates: ["message", "callback_query"] },
           this.abort.signal,
           55_000,
         );
@@ -353,6 +374,10 @@ export class TelegramClient {
             // Sequential on purpose: the runtime/memory isn't reentrant-safe.
             await this.handleMessage(update.message).catch((err) =>
               log.error("message handling failed", err),
+            );
+          } else if (update.callback_query) {
+            await this.handleCallback(update.callback_query).catch((err) =>
+              log.error("button press handling failed", err),
             );
           }
         }
@@ -369,6 +394,30 @@ export class TelegramClient {
     }
   }
 
+  /** An inline button was pressed: the plugin that owns its prefix answers it. */
+  private async handleCallback(query: NonNullable<TgUpdate["callback_query"]>): Promise<void> {
+    const chatId = query.message?.chat.id;
+    if (!query.data || chatId === undefined || !this.isUserAllowed(query.from)) {
+      await this.api("answerCallbackQuery", { callback_query_id: query.id }).catch(() => undefined);
+      return;
+    }
+    const answer = await dispatchTelegramCallback(query.data, {
+      chatId,
+      messageId: query.message?.message_id,
+      fromId: query.from.id,
+      fromUsername: query.from.username,
+    });
+    await this.api("answerCallbackQuery", { callback_query_id: query.id, ...(answer?.toast ? { text: answer.toast } : {}) }).catch(() => undefined);
+    if (answer?.note && query.message) {
+      await this.api("editMessageText", {
+        chat_id: chatId,
+        message_id: query.message.message_id,
+        text: `${query.message.text ?? ""}\n\n${answer.note}`.slice(0, MAX_MESSAGE),
+      }).catch(() => undefined);
+    }
+    if (answer?.reply) await this.sendChunked(chatId, answer.reply);
+  }
+
   private async handleMessage(msg: TgMessage): Promise<void> {
     const image = this.imageFrom(msg) ?? this.imageFrom(msg.reply_to_message);
     const text = (msg.text ?? msg.caption)?.trim() || (image ? "Please look at the attached image." : "");
@@ -376,6 +425,15 @@ export class TelegramClient {
 
     const chatId = msg.chat.id;
     const isGroup = msg.chat.type === "group" || msg.chat.type === "supergroup";
+    // A plugin waiting for a free-text answer in this private chat (the plan's
+    // "what is in the way?") takes it before any agent turn.
+    if (!isGroup && !text.startsWith("/") && this.isUserAllowed(msg.from)) {
+      const claimed = await claimTelegramText(chatId, text);
+      if (claimed !== null) {
+        await this.sendChunked(chatId, claimed);
+        return;
+      }
+    }
     const talkChat = isGroup && isTalkChat((k) => this.runtime.getSetting(k), chatId, msg.chat.username);
     const chatAllowed = this.isAllowed(chatId);
     const userAllowed = this.isUserAllowed(msg.from);
@@ -609,7 +667,12 @@ export class TelegramClient {
         roomId: `tg-${chatId}`,
         userId: `tg:${msg.from.username ?? msg.from.id}`,
         text: lines.join("\n"),
-        metadata: { telegram: sender, taskText: content, ...(isGroup && isLainOsChat(chatId, msg.chat.username) ? { englishOnly: true, lainOsChat: true } : {}) },
+        metadata: {
+          telegram: sender,
+          taskText: content,
+          ...(isGroup && isLainOsChat(chatId, msg.chat.username) ? { englishOnly: true, lainOsChat: true } : {}),
+          ...(isRussianChat(getSetting, chatId, msg.chat.username) ? { russianOnly: true } : {}),
+        },
       });
       // Provenance receipt: what kind of work this was taken as, and which
       // model actually answered it (the operator must be able to see it's the
@@ -932,6 +995,7 @@ export class TelegramClient {
   }
 
   private async sendChunked(chatId: number, text: string, opts: SendOptions = {}): Promise<void> {
+    text = await inChatLanguage((k) => this.runtime.getSetting(k), chatId, text);
     const safeText = lainChatReply(chatId, text);
     if (safeText !== text || opts.buttons?.some((button) => lainChatReply(chatId, button) !== button)) {
       text = safeText;
