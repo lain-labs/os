@@ -49,6 +49,7 @@ function clip(s: string): string {
 
 const runShellAction: Action = {
   name: "run_shell",
+  operatorOnly: true,
   similes: ["shell", "bash", "terminal", "exec", "command", "run_command"],
   description:
     "Run a shell command inside the agent's workspace and return its output. Use it to inspect the project, run scripts, git, build tools, etc.",
@@ -102,6 +103,7 @@ const runShellAction: Action = {
 
 const readFileAction: Action = {
   name: "read_file",
+  operatorOnly: true,
   similes: ["cat", "open_file", "view_file"],
   description: "Read a UTF-8 text file from the workspace.",
   parameters: {
@@ -130,6 +132,7 @@ const readFileAction: Action = {
 
 const writeFileAction: Action = {
   name: "write_file",
+  operatorOnly: true,
   similes: ["save_file", "create_file", "edit_file"],
   description:
     "Write (create or overwrite) a UTF-8 text file in the workspace. Parent directories are created as needed.",
@@ -166,6 +169,7 @@ const writeFileAction: Action = {
 
 const listDirAction: Action = {
   name: "list_dir",
+  operatorOnly: true,
   similes: ["ls", "dir", "list_files", "tree"],
   description: "List the entries of a directory in the workspace.",
   parameters: {

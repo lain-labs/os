@@ -2,8 +2,10 @@ import { createHash } from "node:crypto";
 import { chmod, readFile, writeFile } from "node:fs/promises";
 import { envFile } from "../../env.js";
 import type { ChainService } from "../chain/service.js";
-import type { TelegramSender } from "../telegram/identity.js";
 import type { Action, IAgentRuntime, State } from "../../types.js";
+import { isOperator } from "../../operator.js";
+
+export { isOperator };
 
 /**
  * set_setting writes KEY=value lines into the settings file this process
@@ -29,21 +31,6 @@ const SECRET_RE = /(KEY|TOKEN|SECRET|MNEMONIC|SEED|COOKIE|PASSWORD|PASS|_PK$|PRI
 const pending = new Map<string, { digest: string; askedIn: string }>();
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex").slice(0, 12);
-
-export function isOperator(state: State, allowedUsers: string | undefined): boolean {
-  const who = state.message.userId;
-  if (who === "user") return true; // the TUI / CLI on this machine
-  if (!who.startsWith("tg:")) return false;
-  // Once the operator is named, the client's code-matched role decides: a
-  // guest on the allowlist may talk, not configure.
-  const sender = state.message.metadata?.telegram as TelegramSender | undefined;
-  if (sender?.operatorKnown) return sender.role === "operator";
-  const allowed = (allowedUsers ?? "")
-    .split(",")
-    .map((s) => s.trim().replace(/^@/, "").toLowerCase())
-    .filter(Boolean);
-  return allowed.includes(who.slice(3).toLowerCase());
-}
 
 /** dotenv reads an unquoted `#` or space as the end of the value. */
 function encode(value: string): string | null {

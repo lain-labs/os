@@ -236,7 +236,7 @@ const cutRuntime = new AgentRuntime({
 });
 cutRuntime.use({ ...skillsPlugin, services: [new SkillsService(), new RoutineService()] });
 await cutRuntime.start();
-await cutRuntime.handleMessage({ roomId: "cut", userId: "tester", text: "build me a tool" });
+await cutRuntime.handleMessage({ roomId: "cut", userId: "user", text: "build me a tool" });
 check("a cut-off tool call is asked for again with an 8192-token budget", budgets[0] === 1024 && budgets[1] === 8192);
 check("…and the full module becomes a live skill", cutRuntime.actions.some((a) => a.name === "roomy_tool"));
 await cutRuntime.stop();
@@ -281,9 +281,9 @@ outageRuntime.use({
   ],
 });
 await outageRuntime.start();
-await outageRuntime.handleMessage({ roomId: "outage", userId: "tester", text: "make a new test working tool" });
+await outageRuntime.handleMessage({ roomId: "outage", userId: "user", text: "make a new test working tool" });
 check("an RPC outage in the reply does not start a self-upgrade", forged.length === 0);
-await outageRuntime.handleMessage({ roomId: "outage", userId: "tester", text: "make a new test working tool" });
+await outageRuntime.handleMessage({ roomId: "outage", userId: "user", text: "make a new test working tool" });
 check("a \"can't\" that is not her refusal does not start a self-upgrade", forged.length === 0);
 await outageRuntime.stop();
 
@@ -635,7 +635,7 @@ const keepProbe = (name: string, keep: boolean, marker: string) => ({
 });
 keepRuntime.use({ name: "keep-probe", description: "keep", actions: [keepProbe("source_probe", true, "LAST-LINE-OF-SOURCE"), keepProbe("noise_probe", false, "END-OF-NOISE")] });
 await keepRuntime.start();
-await keepRuntime.handleMessage({ roomId: "keep", userId: "tester", text: "edit the tool" });
+await keepRuntime.handleMessage({ roomId: "keep", userId: "user", text: "edit the tool" });
 check("a kept result is still whole two rounds later", roundsSeen.length === 3 && roundsSeen[2].includes("LAST-LINE-OF-SOURCE"));
 check("…while an ordinary one from that round is cut to its gist", (roundsSeen[2].match(/END-OF-NOISE/g) ?? []).length === 1);
 await keepRuntime.stop();

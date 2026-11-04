@@ -350,6 +350,7 @@ export const findSkillsAction: Action = {
 
 export const installAgentSkillAction: Action = {
   name: "install_agent_skill",
+  operatorOnly: true,
   similes: ["add_agent_skill", "install_skill_sh", "skills_add"],
   description:
     "Install an Agent Skill from skills.sh onto your shelf (data/agent-skills/), so its playbook is at hand in every later " +
@@ -443,6 +444,7 @@ export const useAgentSkillAction: Action = {
 
 export const removeAgentSkillAction: Action = {
   name: "remove_agent_skill",
+  operatorOnly: true,
   similes: ["uninstall_agent_skill", "delete_agent_skill"],
   description: "Remove an installed Agent Skill (from skills.sh) from your shelf.",
   parameters: {

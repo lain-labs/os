@@ -34,6 +34,7 @@ interface BasketCandidate {
 
 export const speculateTokenAction: Action = {
   name: "speculate_token",
+  operatorOnly: true,
   similes: ["autonomous_buy", "agent_buy", "ape_token", "take_position", "buy_without_amount"],
   description:
     "Autonomously take a small speculative position in a token on the configured DEX when the user asks to buy without specifying an amount or explicitly wants the agent to decide. Chooses spend from wallet balance, gas reserve, max-risk cap and pool-liquidity cap, then executes with slippage protection. In paper mode it sizes against the paper balance and simulates the fill.",
@@ -137,6 +138,7 @@ export const speculateTokenAction: Action = {
 
 export const speculateBasketAction: Action = {
   name: "speculate_basket",
+  operatorOnly: true,
   similes: ["buy_basket", "autonomous_basket", "buy_several_tokens", "spend_budget", "portfolio_buy"],
   description:
     "Autonomously spend a user-approved native-currency budget across several tokens on the configured DEX. Use this when the user says to buy several tokens, spend a total budget, or choose tokens at the agent's discretion. By default the action scans all live wrapped-native pairs on the DEX factory, splits the budget, skips unsafe pools, and executes multiple swaps with slippage protection. In paper mode the budget comes from the paper balance and every swap is simulated.",

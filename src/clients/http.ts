@@ -1,6 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { createServer, type Server } from "node:http";
-import { handleAcpTool } from "../acp/tools.js";
+import { bearerMatches, handleAcpTool } from "../acp/tools.js";
 import { createLogger } from "../logger.js";
 import {
   CHAT_PROVIDER_CHOICES,
@@ -40,38 +40,73 @@ export interface HttpOptions {
  *   POST /chat {roomId,userId,text,task} -> { text, actions, model, provider, task }
  *   POST /acp/tools {tool,arguments} -> report (bearer LAINOS_ACP_API_KEY; see src/acp/tools.ts)
  *
- * Loopback is not a boundary for a browser: any page the operator opens can
- * POST here. So a request carrying an Origin is served only when that origin
- * is listed in LAINOS_HTTP_ORIGINS (comma-separated), and gets its own origin
- * back rather than "*". Local tools (curl, the console, the Godot game) send
- * no Origin. An HTTP caller may also never speak as a privileged identity —
- * see callerIdentity() — unless it holds LAINOS_HTTP_KEY as a bearer, which
- * is how a gateway that already authenticated a Telegram sender relays them.
+ * The bridge drives an agent that has a shell and a wallet, so who may reach it
+ * is decided here, not by the model:
+ *   - a browser request (one carrying an Origin) is refused unless its origin
+ *     is on LAINOS_HTTP_ORIGINS (or LAINOS_HTTP_ALLOWED_ORIGINS) — any web page
+ *     the operator opens can otherwise POST to localhost — and gets its own
+ *     origin back rather than "*". Clients without an Origin (curl, the
+ *     console, the Godot game) are unaffected;
+ *   - bound to loopback, a request whose Host is not a loopback name (or on
+ *     LAINOS_HTTP_ALLOWED_HOSTS) is refused, which defeats DNS rebinding;
+ *   - LAINOS_HTTP_TOKEN, when set, is required as a bearer on every route but
+ *     /health (and /acp/tools, which has its own key); LAINOS_HTTP_KEY passes
+ *     too. Set one before binding anywhere but loopback;
+ *   - an HTTP caller may never speak as a privileged identity — see
+ *     callerIdentity() — unless it holds LAINOS_HTTP_KEY as a bearer, which is
+ *     how a gateway that already authenticated a Telegram sender relays them.
  */
 export function createHttpServer(runtime: IAgentRuntime, opts: HttpOptions = {}): Server {
   const host = opts.host ?? process.env.LAINOS_HTTP_HOST ?? "127.0.0.1";
   const port = Number(opts.port ?? process.env.LAINOS_HTTP_PORT ?? 7777);
+  const token = runtime.getSetting("LAINOS_HTTP_TOKEN")?.trim() ?? "";
+  const origins = new Set([
+    ...csv(runtime.getSetting("LAINOS_HTTP_ORIGINS")),
+    ...csv(runtime.getSetting("LAINOS_HTTP_ALLOWED_ORIGINS")),
+  ]);
+  const hosts = new Set(csv(runtime.getSetting("LAINOS_HTTP_ALLOWED_HOSTS")).map((h) => h.toLowerCase()));
+  const loopback = isLoopbackName(host);
+  if (!loopback && !token) {
+    log.warn(
+      `HTTP bridge bound to ${host} without LAINOS_HTTP_TOKEN — anyone who can reach this port ` +
+        `can talk to ${runtime.character.name}. Set LAINOS_HTTP_TOKEN.`,
+    );
+  }
 
   const server = createServer(async (req, res) => {
-    if (req.method === "GET" && req.url === "/health") {
-      return json(res, 200, { ok: true, agent: runtime.character.name });
-    }
-
     const origin = req.headers.origin;
+    const health = req.method === "GET" && req.url === "/health";
     if (origin !== undefined) {
-      const allowed = String(runtime.getSetting("LAINOS_HTTP_ORIGINS") ?? "")
-        .split(",")
-        .map((o) => o.trim())
-        .filter(Boolean);
-      if (!allowed.includes(origin)) return json(res, 403, { error: "origin not allowed" });
-      res.setHeader("Access-Control-Allow-Origin", origin);
-      res.setHeader("Vary", "Origin");
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-      res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+      // /health answers any page (it says only the agent's name); without the
+      // CORS headers a foreign page still cannot read it.
+      if (!origins.has(origin) && !health) return json(res, 403, { error: "origin not allowed" });
+      if (origins.has(origin)) {
+        res.setHeader("Access-Control-Allow-Origin", origin);
+        res.setHeader("Vary", "Origin");
+        res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+        res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+      }
     }
     if (req.method === "OPTIONS") {
       res.writeHead(204).end();
       return;
+    }
+    if (loopback && req.headers.host) {
+      const name = hostName(req.headers.host);
+      if (!isLoopbackName(name) && !hosts.has(name)) return json(res, 403, { error: "host not allowed" });
+    }
+
+    if (health) {
+      return json(res, 200, { ok: true, agent: runtime.character.name });
+    }
+
+    if (
+      token &&
+      req.url !== "/acp/tools" &&
+      !bearerMatches(req.headers.authorization, token) &&
+      !trustedCaller(runtime, req.headers.authorization)
+    ) {
+      return json(res, 401, { error: "unauthorized" });
     }
 
     if (req.method === "GET" && req.url?.startsWith("/alerts")) {
@@ -270,6 +305,26 @@ export function callerIdentity(userId: unknown): string | null {
   const lower = id.toLowerCase();
   if (lower === "user" || lower === "agent" || lower.startsWith("tg:")) return null;
   return id;
+}
+
+const LOOPBACK_NAMES = ["localhost", "127.0.0.1", "::1"];
+
+function isLoopbackName(name: string): boolean {
+  return LOOPBACK_NAMES.includes(name.toLowerCase()) || /^127\./.test(name);
+}
+
+/** `localhost:7777` -> `localhost`, `[::1]:7777` -> `::1`. */
+function hostName(header: string): string {
+  const h = header.trim().toLowerCase();
+  if (h.startsWith("[")) return h.slice(1, h.indexOf("]"));
+  return h.split(":")[0];
+}
+
+function csv(raw: string | undefined): string[] {
+  return (raw ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 function readBody(req: import("node:http").IncomingMessage): Promise<string> {
