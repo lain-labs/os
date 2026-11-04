@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+    <title>Lain OS — no connection</title>
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        background: #07060b;
+        color: #d9d4ee;
+        font: 15px/1.6 ui-monospace, "JetBrains Mono", Menlo, monospace;
+      }
+      body {
+        display: grid;
+        place-items: center;
+        background-image: repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.025) 0 1px, transparent 1px 4px);
+      }
+      main {
+        max-width: 460px;
+        padding: 24px;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 18px;
+        font-weight: 600;
+        color: #f2a6ff;
+      }
+      p {
+        margin: 0 0 18px;
+        color: #a69fc0;
+      }
+      button {
+        padding: 9px 18px;
+        border: 1px solid #8fd3ff;
+        border-radius: 4px;
+        background: transparent;
+        color: #8fd3ff;
+        font: inherit;
+        cursor: pointer;
+      }
+      button:hover {
+        background: rgba(143, 211, 255, 0.08);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>no carrier</h1>
+      <p>Lain OS could not reach the Wired. Check the connection, then try again — nothing was lost.</p>
+      <button id="retry" type="button" autofocus>connect again</button>
+    </main>
+    <script>
+      const target = new URLSearchParams(location.search).get("url") || "https://chat.lain-os.com/";
+      document.getElementById("retry").addEventListener("click", () => location.assign(target));
+    </script>
+  </body>
+</html>

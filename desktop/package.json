@@ -1,0 +1,25 @@
+{
+  "name": "lain-os-desktop",
+  "version": "0.1.1",
+  "private": true,
+  "description": "Lain OS chat in a desktop window",
+  "homepage": "https://chat.lain-os.com",
+  "author": "Lain Labs <noreply@lain-os.com>",
+  "desktopName": "LainOS.desktop",
+  "license": "BUSL-1.1",
+  "type": "commonjs",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.js",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder",
+    "dist:linux": "electron-builder --linux",
+    "dist:win": "electron-builder --win",
+    "dist:mac": "electron-builder --mac"
+  },
+  "devDependencies": {
+    "electron": "^43.2.0",
+    "electron-builder": "^26.15.3"
+  }
+}
