@@ -230,13 +230,15 @@ export class ArenaBook {
       task: TaskKind.ANALYSIS,
       system: BOOK_PROMPT,
       messages: [{ role: "user", content: boardText(board, this.state) }],
-      maxTokens: 400,
+      // gpt-oss reasons before it answers; a tight cap leaves no answer.
+      maxTokens: 2000,
       temperature: 0.7,
     });
     const decision = parseDecision(res.text ?? "");
     this.state.lastAt = now;
     if (!decision) {
       await this.persist();
+      log.warn(`arena book: no decision from ${res.provider ?? "?"}/${res.model ?? "?"}: ${(res.text ?? "").slice(0, 160) || "(empty)"}`);
       return "no decision";
     }
     const outcome = fill(this.state, decision, board, now);
