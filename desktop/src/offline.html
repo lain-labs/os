@@ -53,7 +53,7 @@
       <button id="retry" type="button" autofocus>connect again</button>
     </main>
     <script>
-      const target = new URLSearchParams(location.search).get("url") || "https://lain-os.com/";
+      const target = new URLSearchParams(location.search).get("url") || "https://chat.lain-os.com/";
       document.getElementById("retry").addEventListener("click", () => location.assign(target));
     </script>
   </body>

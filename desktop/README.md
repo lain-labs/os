@@ -1,14 +1,23 @@
 # Lain OS desktop
 
-The lain-os.com desktop — windows, taskbar, start menu, `lain.exe` — in a
-window of its own, so Lain lives in the dock and the app switcher rather than
-in a browser tab.
+The full chat at **https://chat.lain-os.com/** in a window of its own, so Lain
+lives in the dock and the app switcher rather than in a browser tab.
 
-The shell adds nothing the site does not have, on purpose:
+Lain herself stands on the desktop beside it, the way the Codex app keeps its
+pet: the TUI's 16×16 pixel Lain in a small transparent window above the others.
+A click pokes her (a hop, a glitch, a line), a double click or ◆ opens the chat,
+she goes where she is dragged, and ✕ or **View → Lain on the Desktop** hides
+and shows her. Her page is a local file with its own narrow preload; the chat
+page gets none of it. Where she stands and whether she is shown survive a
+restart.
+
+Otherwise the shell adds nothing the site does not have, on purpose:
 
 - the page runs sandboxed and context-isolated, with no Node and no IPC;
-- lain-os.com stays in the window, every other link opens in the system
+- chat.lain-os.com and its OpenID sign-in at lain-os.com stay in the same
+  window and session, including server redirects; every other link opens in the system
   browser, and only `https:`, `http:` and `mailto:` ever leave the app;
+- login's home link and logout return to chat;
 - no permission is granted beyond clipboard writes and fullscreen;
 - a page that cannot load shows a "no carrier" screen with a retry;
 - window size, position, maximised and fullscreen state survive a restart,

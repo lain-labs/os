@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self' file:" />
+    <title>Lain</title>
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background: transparent;
+        font: 12px/1.4 ui-monospace, "JetBrains Mono", Menlo, monospace;
+        user-select: none;
+      }
+      body {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: flex-end;
+        padding-bottom: 6px;
+        box-sizing: border-box;
+      }
+      #pet {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+      }
+      #bubble {
+        max-width: 200px;
+        padding: 6px 10px;
+        border: 1px solid #5d557c;
+        border-radius: 10px;
+        background: rgba(22, 19, 31, 0.94);
+        color: #e8e8f2;
+        text-align: center;
+        opacity: 0;
+        transform: translateY(4px);
+        transition: opacity 0.18s, transform 0.18s;
+      }
+      #bubble.on {
+        opacity: 1;
+        transform: none;
+      }
+      canvas {
+        width: 96px;
+        height: 102px;
+        image-rendering: pixelated;
+        cursor: grab;
+        filter: drop-shadow(0 0 6px rgba(255, 95, 160, 0.35));
+      }
+      canvas:active {
+        cursor: grabbing;
+      }
+      #actions {
+        display: flex;
+        border: 1px solid #5d557c;
+        border-radius: 8px;
+        background: rgba(22, 19, 31, 0.94);
+        visibility: hidden;
+      }
+      #pet:hover #actions {
+        visibility: visible;
+      }
+      #actions button {
+        width: 30px;
+        height: 24px;
+        border: 0;
+        background: transparent;
+        color: #a7aec2;
+        font: inherit;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      #actions button + button {
+        border-left: 1px solid #3a3350;
+      }
+      #actions button:hover {
+        color: #5fd0ff;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="pet">
+      <div id="bubble"></div>
+      <canvas id="sprite" width="16" height="17" title="poke her · double-click for chat · drag to move"></canvas>
+      <div id="actions">
+        <button id="chat" type="button" title="Open the chat">◆</button>
+        <button id="hide" type="button" title="Hide Lain (View → Lain on the desktop brings her back)">✕</button>
+      </div>
+    </div>
+    <script src="pet-sprite.js"></script>
+    <script src="pet.js"></script>
+  </body>
+</html>

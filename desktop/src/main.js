@@ -1,12 +1,12 @@
 "use strict";
 
 /**
- * Lain OS on the desktop: the lain-os.com desktop — windows, taskbar, start
- * menu, lain.exe — in a window of its own, so it lives in the dock and the
- * app switcher instead of in a browser tab.
+ * Lain OS chat on the desktop: chat.lain-os.com in a window of its own,
+ * with OpenID sign-in kept in the same browser session.
  *
- * The shell adds nothing the site does not have, on purpose. The page runs
- * sandboxed with no Node, one origin stays inside the window and every other
+ * Lain herself stands on the desktop beside it (pet-window.js). Otherwise
+ * the shell adds nothing the site does not have, on purpose. The page runs
+ * sandboxed with no Node, the chat and sign-in stay inside the window and every other
  * link goes to the system browser, no permission the site has not needed so
  * far is granted, and a page that cannot load says so with a retry instead of
  * a blank window. The site can tell it is in the app from the user agent
@@ -17,7 +17,8 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { app, BrowserWindow, Menu, screen, session, shell } = require("electron");
-const { appUrl, externalTarget, isInternal, restoredBounds } = require("./config");
+const { appUrl, externalTarget, navigationUrl, restoredBounds } = require("./config");
+const { createPet } = require("./pet-window");
 
 const URL_TO_OPEN = appUrl();
 const OFFLINE_PAGE = path.join(__dirname, "offline.html");
@@ -26,6 +27,8 @@ const ICON = app.isPackaged ? path.join(process.resourcesPath, "icon.png") : pat
 
 /** @type {BrowserWindow | null} */
 let win = null;
+/** Lain on the desktop, beside the chat window rather than in it. */
+let pet = null;
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -43,7 +46,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("activate", () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  if (!win) createWindow();
 });
 
 function start() {
@@ -55,8 +58,18 @@ function start() {
   });
   session.defaultSession.setUserAgent(`${session.defaultSession.getUserAgent()} LainOSDesktop/${app.getVersion()}`);
 
+  pet = createPet({ openChat, onVisibility: () => Menu.setApplicationMenu(buildMenu()) });
   Menu.setApplicationMenu(buildMenu());
   createWindow();
+  if (pet.wanted()) pet.show();
+}
+
+/** Bring the chat forward, opening it again if it was closed. */
+function openChat() {
+  if (!win) return createWindow();
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
 }
 
 function createWindow() {
@@ -87,27 +100,34 @@ function createWindow() {
 
   const contents = win.webContents;
 
-  // A new window is a link out: lain-os.com stays here, the rest goes to the browser.
+  // Chat and OpenID sign-in share cookies inside this window.
   contents.setWindowOpenHandler(({ url }) => {
-    if (isInternal(url, URL_TO_OPEN)) {
-      void contents.loadURL(url);
+    const target = navigationUrl(url, URL_TO_OPEN);
+    if (target) {
+      void contents.loadURL(target);
     } else {
       openOutside(url);
     }
     return { action: "deny" };
   });
 
-  contents.on("will-navigate", (event, url) => {
-    if (isInternal(url, URL_TO_OPEN) || url.split("?")[0] === OFFLINE_URL) return;
+  const guardNavigation = (event) => {
+    if (!event.isMainFrame) return;
+    const url = event.url;
+    const target = navigationUrl(url, URL_TO_OPEN);
+    if (target === url || url.split("?")[0] === OFFLINE_URL) return;
     event.preventDefault();
-    openOutside(url);
-  });
+    if (target) void contents.loadURL(target);
+    else openOutside(url);
+  };
+  contents.on("will-navigate", guardNavigation);
+  contents.on("will-redirect", guardNavigation);
 
   // The offline page is the only local file the window shows; its retry
   // button navigates back to the site, which passes the guard above.
   contents.on("did-fail-load", (_event, code, _description, url, isMainFrame) => {
     if (!isMainFrame || code === -3 /* aborted: a navigation replaced it */) return;
-    void win?.loadFile(OFFLINE_PAGE, { query: { url: isInternal(url, URL_TO_OPEN) ? url : URL_TO_OPEN } });
+    void win?.loadFile(OFFLINE_PAGE, { query: { url: navigationUrl(url, URL_TO_OPEN) || URL_TO_OPEN } });
   });
 
   for (const event of ["resize", "move", "maximize", "unmaximize", "enter-full-screen", "leave-full-screen", "close"]) {
@@ -115,6 +135,8 @@ function createWindow() {
   }
   win.on("closed", () => {
     win = null;
+    // The pet is not the app: closing the chat closes both, except on a Mac.
+    if (process.platform !== "darwin") app.quit();
   });
 
   void win.loadURL(URL_TO_OPEN);
@@ -135,6 +157,12 @@ function buildMenu() {
       submenu: [
         { label: "Home", accelerator: "CmdOrCtrl+Shift+H", click: () => void win?.loadURL(URL_TO_OPEN) },
         { role: "reload" },
+        {
+          label: "Lain on the Desktop",
+          type: "checkbox",
+          checked: Boolean(pet?.isShown()),
+          click: () => pet?.toggle(),
+        },
         { type: "separator" },
         { role: "resetZoom" },
         { role: "zoomIn" },

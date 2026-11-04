@@ -5,10 +5,11 @@
  * the system browser. Pure — pinned by test/config.test.js without Electron.
  */
 
-const DEFAULT_URL = "https://lain-os.com/";
+const DEFAULT_URL = "https://chat.lain-os.com/";
+const LOGIN_ORIGIN = "https://lain-os.com";
 
 /**
- * The desktop to open. LAIN_OS_URL points the shell at a staging or local
+ * The chat to open. LAIN_OS_URL points the shell at a staging or local
  * copy of the site; anything that is not https (or http on this machine) is
  * ignored, because the window would otherwise load a page over the open
  * network with the user's session in it.
@@ -26,13 +27,29 @@ function appUrl(env = process.env) {
   return DEFAULT_URL;
 }
 
-/** Same origin as the desktop: stays in the window. */
+/** Keep the chat and its OpenID sign-in in the same browser session. */
 function isInternal(target, base) {
   try {
-    return new URL(target).origin === new URL(base).origin;
+    const origin = new URL(target).origin;
+    const baseOrigin = new URL(base).origin;
+    return origin === baseOrigin || (baseOrigin === new URL(DEFAULT_URL).origin && origin === LOGIN_ORIGIN);
   } catch {
     return false;
   }
+}
+
+/** Login's home link and logout return to chat instead of the old web desktop. */
+function navigationUrl(target, base) {
+  if (!isInternal(target, base)) return null;
+  const url = new URL(target);
+  if (
+    new URL(base).origin === new URL(DEFAULT_URL).origin &&
+    url.origin === LOGIN_ORIGIN &&
+    ["/", "/desktop", "/desktop/"].includes(url.pathname)
+  ) {
+    return DEFAULT_URL;
+  }
+  return url.href;
 }
 
 /**
@@ -76,4 +93,21 @@ function restoredBounds(stored, workAreas, fallback = { width: 1280, height: 820
   return bounds;
 }
 
-module.exports = { DEFAULT_URL, appUrl, isInternal, externalTarget, restoredBounds };
+/**
+ * Where the desktop pet stands: where she was left, if all of her is still on
+ * a display that exists now, else the bottom-right corner of the first one.
+ */
+function petPosition(stored, workAreas, size, margin = 24) {
+  const fits = (area) =>
+    stored.x >= area.x &&
+    stored.y >= area.y &&
+    stored.x + size.width <= area.x + area.width &&
+    stored.y + size.height <= area.y + area.height;
+  if (stored && Number.isFinite(stored.x) && Number.isFinite(stored.y) && workAreas.some(fits)) {
+    return { x: Math.round(stored.x), y: Math.round(stored.y) };
+  }
+  const area = workAreas[0] ?? { x: 0, y: 0, width: 1280, height: 820 };
+  return { x: area.x + area.width - size.width - margin, y: area.y + area.height - size.height - margin };
+}
+
+module.exports = { DEFAULT_URL, appUrl, isInternal, navigationUrl, externalTarget, restoredBounds, petPosition };

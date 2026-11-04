@@ -1,9 +1,9 @@
 {
   "name": "lain-os-desktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
-  "description": "Lain OS on the desktop: the lain-os.com desktop in a window of its own",
-  "homepage": "https://lain-os.com",
+  "description": "Lain OS chat in a desktop window",
+  "homepage": "https://chat.lain-os.com",
   "author": "Lain Labs <noreply@lain-os.com>",
   "desktopName": "LainOS.desktop",
   "license": "BUSL-1.1",
