@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fetch as undiciFetch, ProxyAgent } from "undici";
 import { createLogger } from "../../logger.js";
 import type { Action, IAgentRuntime, Plugin, Service } from "../../types.js";
+import type { RemoteMcpService } from "../mcp/index.js";
 import { onTelegramCallback, onTelegramText } from "../telegram/callbacks.js";
 import { SEED_PLAN } from "./seed.js";
 
@@ -141,6 +142,29 @@ export function summaryText(plan: PlanFile, today: string): string {
   return lines.join("\n").trim();
 }
 
+/** The context section: a table for people, and the JSON the hub reads. */
+export function planSection(plan: PlanFile, today: string): string {
+  const people = Object.fromEntries(Object.entries(plan.people).map(([key, person]) => [key, { name: person.name }]));
+  const rows = [...plan.items]
+    .sort((a, b) => a.owner.localeCompare(b.owner) || a.due.localeCompare(b.due))
+    .map((item) => `| ${plan.people[item.owner]?.name ?? item.owner} | ${item.title} | ${item.due} | ${STATUS_WORDS[item.status]}${item.note ? ` — ${item.note}` : ""} |`);
+  const items = plan.items.map(({ id, owner, title, due, status, why, note, updatedAt }) => ({ id, owner, title, due, status, why, note, updatedAt }));
+  return [
+    "# План команды",
+    "",
+    `Ведёт Лейн: по будням в 11:00 МСК спрашивает Льва и Орфея с кнопками. Обновлено ${today}. Пульт: https://chaos.fm/hub`,
+    "",
+    "| Кто | Пункт | Срок | Статус |",
+    "| --- | --- | --- | --- |",
+    ...rows,
+    "",
+    "```json",
+    JSON.stringify({ people, items }),
+    "```",
+    "",
+  ].join("\n");
+}
+
 export class PlanService implements Service {
   readonly name = "plan";
   private runtime?: IAgentRuntime;
@@ -155,6 +179,7 @@ export class PlanService implements Service {
     this.runtime = runtime;
     this.file = join(runtime.getSetting("LAINOS_DATA_DIR") ?? "./data", "plan.json");
     await this.load();
+    setTimeout(() => void this.publish().catch(() => undefined), 60_000).unref?.();
     onTelegramCallback("plan", async (press) => {
       const [itemId, action] = press.data.split(":");
       if (!itemId || !action || !this.plan) return null;
@@ -257,6 +282,25 @@ export class PlanService implements Service {
     if (!this.plan) return;
     await mkdir(dirname(this.file), { recursive: true });
     await writeFile(this.file, JSON.stringify(this.plan, null, 2));
+    await this.publish();
+  }
+
+  /**
+   * The plan on chaos.fm: the shared context's "plan" section, which the hub
+   * (chaos.fm/hub) draws and every AI on chaos-mcp can read. Names and items
+   * only — no chat ids. Skipped when nothing changed since the last copy.
+   */
+  private lastPublished = "";
+  private async publish(): Promise<void> {
+    if (!this.plan || this.runtime?.getSetting("LAINOS_PLAN_PUBLISH") === "0") return;
+    const mcp = this.runtime?.getService<RemoteMcpService>("mcp");
+    if (!mcp) return;
+    const text = planSection(this.plan, moscow(new Date()).day);
+    const body = text.slice(text.indexOf("```json"));
+    if (body === this.lastPublished) return;
+    const result = await mcp.call("chaos", "context_write", { section: "plan", mode: "replace", text, via: "Lain" }).catch((err: unknown) => ({ ok: false, text: String(err) }));
+    if (result.ok) this.lastPublished = body;
+    else log.warn(`plan not published to chaos.fm: ${String(result.text).slice(0, 200)}`);
   }
 }
 

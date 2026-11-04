@@ -2,7 +2,7 @@
  * Plan smoke: who is asked about what, in Russian, and what each button does;
  * and which chats get every message in Russian.
  */
-import { applyAnswer, moscow, nextItem, questionText, summaryText, type PlanFile } from "../src/plugins/plan/index.js";
+import { applyAnswer, moscow, nextItem, planSection, questionText, summaryText, type PlanFile } from "../src/plugins/plan/index.js";
 import { isRussianChat, inChatLanguage, looksRussian, setRussianTranslator } from "../src/plugins/telegram/language.js";
 
 const results: [string, boolean][] = [];
@@ -42,6 +42,10 @@ check("every answer is logged", p.log.length === 3);
 p.items[3]!.note = "нет доступа к аккаунту";
 const summary = summaryText(p, "2026-11-09");
 check("the Monday summary lists open items with their blockers", summary.includes("Лев: 2 из 3 сделано") && summary.includes("мешает: нет доступа к аккаунту"));
+
+const section = planSection(p, "2026-11-09");
+const json = JSON.parse(section.slice(section.indexOf("```json") + 7, section.lastIndexOf("```")));
+check("the chaos.fm copy has a table and the hub's JSON, without chat ids", section.includes("| Лев | Поднять Guard Mode |") && json.items.length === 4 && !section.includes('"chatId"') && json.people.lev.name === "Лев");
 
 const env: Record<string, string> = { TELEGRAM_RUSSIAN_CHATS: "-1003904310783" };
 const g = (k: string) => env[k];
