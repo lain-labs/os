@@ -97,7 +97,8 @@ const bridgeRuntime = {
   model: {},
   getSetting: (k: string) => ({ LAINOS_HTTP_KEY: HTTP_KEY })[k as "LAINOS_HTTP_KEY"],
 } as unknown as IAgentRuntime;
-const server = createHttpServer(bridgeRuntime, { host: "127.0.0.1", port: 0 });
+// Bound as the node binds it in its container: off loopback the key is the door.
+const server = createHttpServer(bridgeRuntime, { host: "0.0.0.0", port: 0 });
 await new Promise<void>((r) => server.once("listening", () => r()));
 const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 check("/health needs no key", (await fetch(`${base}/health`)).status === 200);
