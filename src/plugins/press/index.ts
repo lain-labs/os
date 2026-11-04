@@ -677,6 +677,11 @@ export class PressService implements Service {
     if (!mcp) throw new Error("Chaos MCP is unavailable");
     record.chaosScheduleState = "sending"; await this.persist();
     const result = await mcp.call("chaos", "press_schedule", { id: record.chaosDraftId });
+    if (!result.ok && /rate-limited; nothing was created/i.test(result.text ?? "")) {
+      // The desk says Buffer refused outright and the draft is back: a later try is safe.
+      record.chaosScheduleState = undefined; await this.persist();
+      throw new Error("Buffer is rate-limited; the post will be scheduled on a later try");
+    }
     if (!result.ok) throw new Error(`Chaos scheduling outcome is unknown: ${result.text}`);
     let scheduled: { status?: string; buffer_post_id?: string; due_at?: string };
     try { scheduled = JSON.parse(result.text ?? ""); } catch { throw new Error("Chaos returned an unreadable schedule result"); }

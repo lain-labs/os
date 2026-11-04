@@ -441,6 +441,25 @@ await automaticChaos.press.tick(new Date("2026-08-25T12:30:00"));
 check("uncertain Chaos schedule is never retried", scheduleCalls === 1 && automaticChaos.press.recordOn("2026-08-24")?.chaosScheduleState === "sending");
 await automaticChaos.press.stop();
 
+let limitedCalls = 0;
+const limitedChaos = await pressRoom(window, { LAINOS_PRESS_DELIVERY: "chaos", LAINOS_PRESS_CHAOS_AUTO: "1" }, {
+  services: (tmp) => ({
+    image: { configured: () => true, async generate() { const path = join(tmp, "image.png"); await writeFile(path, "test-image"); return { path, mime: "image/png" }; } },
+    mcp: { async call(_server: string, tool: string) {
+      if (tool === "press_queue") return { ok: true, text: '{"queue":[]}' };
+      if (tool === "press_draft") return { ok: true, text: '{"id":789}' };
+      limitedCalls++;
+      return limitedCalls === 1
+        ? { ok: false, text: "Buffer is rate-limited; nothing was created and the draft is back on the desk. Retry later." }
+        : { ok: true, text: '{"status":"approved","buffer_post_id":"b-1","due_at":"2026-08-26T00:00:00Z"}' };
+    } },
+  }),
+});
+await limitedChaos.press.tick(new Date("2026-08-25T12:00:00"));
+await limitedChaos.press.tick(new Date("2026-08-25T12:30:00"));
+check("a rate-limited schedule is tried again and lands", limitedCalls === 2 && limitedChaos.press.recordOn("2026-08-24")?.chaosScheduleState === "scheduled");
+await limitedChaos.press.stop();
+
 // A writer that cannot answer is said out loud once a day. Silence here reads
 // exactly like a day with no work in it, which is what this room removes.
 const mute = await pressRoom(window, {}, { writerFails: true });
