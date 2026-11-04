@@ -36,7 +36,43 @@ export interface OpenRouterProviderOptions {
   title?: string;
   /** Optional HTTP(S) proxy for API traffic (hosts where openrouter.ai is blocked). */
   proxy?: string;
+  /** The most tools one request may carry (Groq refuses more than 128). */
+  maxTools?: number;
 }
+
+/**
+ * At most `max` tools, for a host that caps the list: the ones the latest user
+ * message names come first, the rest keep their registration order (core
+ * plugins register first). Without a cap the list is returned as it is.
+ */
+export function fitTools<T extends { name: string; description?: string }>(
+  tools: readonly T[] | undefined,
+  max: number | undefined,
+  lastText: string,
+): T[] | undefined {
+  if (!tools || !max || tools.length <= max) return tools ? [...tools] : tools;
+  const words = new Set(lastText.toLowerCase().match(/[\p{L}\p{N}_]{4,}/gu) ?? []);
+  const score = (tool: T): number => {
+    const hay = `${tool.name.replace(/_/g, " ")} ${tool.description ?? ""}`.toLowerCase();
+    let hits = 0;
+    for (const w of words) if (hay.includes(w)) hits++;
+    return hits;
+  };
+  return tools
+    .map((tool, index) => ({ tool, index, hits: score(tool) }))
+    .sort((a, b) => b.hits - a.hits || a.index - b.index)
+    .slice(0, max)
+    .sort((a, b) => a.index - b.index)
+    .map((entry) => entry.tool);
+}
+
+const lastUserText = (messages: readonly { role: string; content: unknown }[]): string => {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages.at(i);
+    if (m?.role === "user") return typeof m.content === "string" ? m.content : JSON.stringify(m.content);
+  }
+  return "";
+};
 // Minimal shapes of the OpenAI-compatible chat completion response.
 // `reasoning`/`reasoning_content` carry a reasoning model's chain of thought;
 // it must never reach the user, so both are read and dropped.
@@ -265,6 +301,7 @@ export async function fetchFreeModels(opts: {
  * LainOS (which speaks the Anthropic-style ToolSchema) is unchanged.
  */
 export class OpenRouterModelProvider implements ModelProvider {
+  private readonly maxTools?: number;
   readonly name: string;
   private apiKey: string;
   private baseUrl: string;
@@ -280,6 +317,7 @@ export class OpenRouterModelProvider implements ModelProvider {
     this.models = { ...DEFAULT_OPENROUTER_MODELS, ...opts.models };
     this.referer = opts.referer;
     this.title = opts.title ?? "LainOS";
+    this.maxTools = opts.maxTools;
     if (opts.proxy) {
       this.dispatcher = new ProxyAgent(opts.proxy);
       log.info(`routing ${this.name} traffic via proxy ${opts.proxy}`);
@@ -305,7 +343,7 @@ export class OpenRouterModelProvider implements ModelProvider {
       ...request.messages.map((m) => ({ role: m.role, content: m.content })),
     ];
 
-    const tools = request.tools?.map((t) => ({
+    const tools = fitTools(request.tools, this.maxTools, lastUserText(request.messages))?.map((t) => ({
       type: "function" as const,
       function: {
         name: t.name,
@@ -373,7 +411,7 @@ export class OpenRouterModelProvider implements ModelProvider {
       { role: "system", content: request.system },
       ...request.messages.map((m) => ({ role: m.role, content: m.content })),
     ];
-    const tools = request.tools?.map((t) => ({
+    const tools = fitTools(request.tools, this.maxTools, lastUserText(request.messages))?.map((t) => ({
       type: "function" as const,
       function: { name: t.name, description: t.description, parameters: t.input_schema },
     }));

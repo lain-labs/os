@@ -336,6 +336,7 @@ export function createModelProvider(
               models: { [ModelTier.SMALL]: model, [ModelTier.MEDIUM]: model, [ModelTier.LARGE]: model },
               title: getSetting("OPENROUTER_TITLE"),
               proxy,
+              maxTools: compatible.maxTools,
             }),
           });
           const tierModels = Object.values(compatible.models);
@@ -350,6 +351,7 @@ export function createModelProvider(
             models: pin(pinned, compatible.models),
             title: getSetting("OPENROUTER_TITLE"),
             proxy,
+            maxTools: compatible.maxTools,
           });
         }
         log.warn(`unknown model provider "${kind}" (or its ${kind.toUpperCase()}_API_KEY is missing).`);

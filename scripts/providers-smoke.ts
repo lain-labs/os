@@ -16,6 +16,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createModelProvider, resolveEnvTaskRoutes } from "../src/models/index.js";
+import { fitTools } from "../src/models/openrouter.js";
 import {
   configuredOpenAiCompatible,
   parseModelList,
@@ -140,4 +141,11 @@ if (failures) {
   console.error(`\n${failures} check(s) failed`);
   process.exit(1);
 }
+// Groq refuses a request with more than 128 tools; Lain registers more.
+check("groq caps tools at 128", groq?.maxTools === 128, groq);
+const many = Array.from({ length: 200 }, (_, i) => ({ name: `tool_${i}`, description: i === 150 ? "arena trades and the paper cup" : "other" }));
+const fitted = fitTools(many, 128, "how is my arena doing?") ?? [];
+check("fitTools keeps 128, the one the message names among them", fitted.length === 128 && fitted.some((t) => t.name === "tool_150"));
+check("fitTools leaves a short list alone", fitTools(many.slice(0, 5), 128, "x")?.length === 5);
+
 console.log("\nproviders smoke: all checks passed");

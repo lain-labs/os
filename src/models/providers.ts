@@ -25,6 +25,8 @@ export interface OpenAiCompatibleSpec {
   models: Record<ModelTier, string>;
   /** Its keys come with a free tier (rate-limited, no per-token bill). */
   free: boolean;
+  /** The most tools one request may carry, when the host caps it. */
+  maxTools?: number;
 }
 
 export const OPENAI_COMPATIBLE_PROVIDERS: Record<string, OpenAiCompatibleSpec> = {
@@ -39,6 +41,7 @@ export const OPENAI_COMPATIBLE_PROVIDERS: Record<string, OpenAiCompatibleSpec> =
       [ModelTier.LARGE]: "openai/gpt-oss-120b",
     },
     free: true,
+    maxTools: 128,
   },
   cerebras: {
     id: "cerebras",
@@ -111,6 +114,8 @@ export interface ResolvedProvider {
   baseUrl: string;
   models: Record<ModelTier, string>;
   free: boolean;
+  /** The most tools one request may carry (`<ID>_MAX_TOOLS` overrides the spec). */
+  maxTools?: number;
 }
 
 /**
@@ -142,6 +147,7 @@ export function resolveOpenAiCompatible(id: string, getSetting: Settings): Resol
     baseUrl,
     models: { [ModelTier.SMALL]: small, [ModelTier.MEDIUM]: medium, [ModelTier.LARGE]: large },
     free,
+    maxTools: Number(getSetting(`${p}_MAX_TOOLS`)) || spec?.maxTools,
   };
 }
 
