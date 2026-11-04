@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Lain OS</string>
+    <string name="title_activity_main">Lain OS</string>
+    <string name="package_name">lain.os</string>
+    <string name="custom_url_scheme">lain.os</string>
+</resources>

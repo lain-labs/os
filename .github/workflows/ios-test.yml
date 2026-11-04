@@ -1,0 +1,53 @@
+name: iOS test build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['codex/ios-test-*']
+
+permissions:
+  contents: read
+
+jobs:
+  unsigned-ipa:
+    name: Build LainOS for personal testing
+    runs-on: macos-15
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Prepare iOS project
+        run: npm run sync:ios
+      - name: Build without signing
+        run: |
+          xcodebuild -project ios/App/App.xcodeproj -scheme App \
+            -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/LainOS-build" \
+            CODE_SIGNING_ALLOWED=NO build
+      - name: Package unsigned IPA
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/LainOS-build/Build/Products/Release-iphoneos/App.app"
+          test -x "$APP/App"
+          mkdir -p "$RUNNER_TEMP/LainOS-package/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/LainOS-package/Payload/"
+          cd "$RUNNER_TEMP/LainOS-package"
+          zip -qry LainOS-unsigned.ipa Payload
+          shasum -a 256 LainOS-unsigned.ipa > SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LainOS-ios-unsigned
+          path: |
+            ${{ runner.temp }}/LainOS-package/LainOS-unsigned.ipa
+            ${{ runner.temp }}/LainOS-package/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 7

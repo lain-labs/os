@@ -11,3 +11,11 @@ content-plan.json
 content-distribution.json
 content-trends.json
 /brag-output*/
+# Local demo fixtures, press stills and plans written by the content tools
+/data-demo/
+/content-assets-*/
+/content-plan-*.json
+__pycache__/
+# Signing material for the packed Chrome extension never goes in git
+/extensions/*.pem
+/extensions/*.crx

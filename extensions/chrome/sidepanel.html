@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LainOS</title>
+  <link rel="stylesheet" href="sidepanel.css">
+  <script src="sidepanel.js" defer></script>
+</head>
+<body>
+  <header>
+    <div class="brand"><span class="mark">✳</span><div><strong>lain<span>os</span></strong><small>your agent, here</small></div></div>
+    <div class="header-actions"><button id="open-web" class="web-link" title="Open the full Lain OS website in a new tab">Web ↗</button><button id="new-chat" class="icon" title="New conversation" aria-label="New conversation">＋</button><button id="settings-toggle" class="icon" title="Connection settings" aria-label="Connection settings" aria-expanded="false">⚙</button></div>
+  </header>
+  <section id="settings" hidden aria-label="Connection settings">
+    <label for="server">Local server</label>
+    <input id="server" type="url" placeholder="http://127.0.0.1:7777" spellcheck="false">
+    <label for="key">HTTP key <span class="optional">optional</span></label>
+    <input id="key" type="password" autocomplete="off" placeholder="LAINOS_HTTP_KEY">
+    <p>With a key, the panel can act as the local operator. It is stored in Chrome's local extension storage.</p>
+    <p>Allow this extension in the daemon's <code>LAINOS_HTTP_ORIGINS</code> and restart it:</p>
+    <code id="origin"></code>
+    <button id="save-settings" class="secondary">Save connection</button>
+    <p id="settings-message" role="status"></p>
+  </section>
+  <main id="messages" aria-live="polite"></main>
+  <div id="notice" role="status"></div>
+  <form id="composer">
+    <textarea id="input" rows="3" placeholder="Talk to Lain…" aria-label="Message" required></textarea>
+    <div class="composer-actions"><button id="attach" type="button" class="attach" title="Add selected text from the current page">＋ Selection</button><button id="send" type="submit" class="send">Send <span>↗</span></button></div>
+  </form>
+  <footer>LOCAL FIRST <span>·</span> LAINOS</footer>
+</body>
+</html>

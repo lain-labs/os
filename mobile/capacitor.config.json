@@ -1,0 +1,14 @@
+{
+  "appId": "lain.os",
+  "appName": "Lain OS",
+  "webDir": "www",
+  "backgroundColor": "#101014",
+  "appendUserAgent": "LainOSMobile/0.1.0",
+  "server": {
+    "url": "https://chat.lain-os.com/",
+    "androidScheme": "https",
+    "errorPath": "error.html",
+    "allowNavigation": ["chat.lain-os.com", "lain-os.com"]
+  },
+  "android": { "allowMixedContent": false, "webContentsDebuggingEnabled": false }
+}

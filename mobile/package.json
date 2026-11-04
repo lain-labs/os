@@ -1,0 +1,20 @@
+{
+  "name": "lain-os-mobile",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Mobile shell for Lain OS chat (Android + iOS)",
+  "license": "BUSL-1.1",
+  "scripts": {
+    "sync:android": "cap sync android",
+    "android:apk": "npm run sync:android && cd android && ./gradlew assembleDebug",
+    "sync:ios": "cap sync ios"
+  },
+  "dependencies": {
+    "@capacitor/android": "8.5.1",
+    "@capacitor/core": "8.5.1",
+    "@capacitor/ios": "8.5.1"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.5.1"
+  }
+}
