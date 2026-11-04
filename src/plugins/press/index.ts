@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { createLogger } from "../../logger.js";
+import { bufferWebEnabled, postViaBufferWeb } from "./buffer-web.js";
 import { TaskKind } from "../../models/tasks.js";
 import {
   ModelTier,
@@ -678,7 +679,9 @@ export class PressService implements Service {
     record.chaosScheduleState = "sending"; await this.persist();
     const result = await mcp.call("chaos", "press_schedule", { id: record.chaosDraftId });
     if (!result.ok && /rate-limited; nothing was created/i.test(result.text ?? "")) {
-      // The desk says Buffer refused outright and the draft is back: a later try is safe.
+      // The desk says Buffer refused outright and the draft is back. With the API spent, the
+      // website still takes posts: queue it there and tell the desk; otherwise try later.
+      if (bufferWebEnabled(this.runtime) && (await this.queueOnBufferWeb(record, mcp))) return;
       record.chaosScheduleState = undefined; await this.persist();
       throw new Error("Buffer is rate-limited; the post will be scheduled on a later try");
     }
@@ -687,6 +690,22 @@ export class PressService implements Service {
     try { scheduled = JSON.parse(result.text ?? ""); } catch { throw new Error("Chaos returned an unreadable schedule result"); }
     if (!['approved', 'sent'].includes(scheduled.status ?? "") || !scheduled.buffer_post_id) throw new Error("Chaos did not confirm a Buffer post ID");
     record.chaosScheduleState = "scheduled"; record.chaosBufferId = scheduled.buffer_post_id; record.chaosDueAt = scheduled.due_at; await this.persist();
+  }
+
+  /** Queue the post through publish.buffer.com and mark the desk draft scheduled. */
+  private async queueOnBufferWeb(record: PostRecord, mcp: RemoteMcpService): Promise<boolean> {
+    if (!this.runtime || !record.chaosDraftId) return false;
+    const posted = await postViaBufferWeb(this.runtime, { channel: "lain___os", text: record.text, imagePath: record.imagePath });
+    if (!posted.ok) {
+      log.warn(`Buffer website did not take ${record.date}: ${posted.reason}`);
+      return false;
+    }
+    // Next Available puts it in the queue's next slot; the desk only needs to know it is out of
+    // its hands, so it is marked scheduled now and Buffer's own queue says the hour.
+    record.chaosScheduleState = "scheduled"; record.chaosBufferId = "web"; await this.persist();
+    const marked = await mcp.call("chaos", "press_mark", { id: record.chaosDraftId, status: "scheduled", due_at: new Date().toISOString() });
+    if (!marked.ok) log.warn(`queued ${record.date} on the Buffer website but the desk mark failed: ${marked.text}`);
+    return true;
   }
 
   private async weeklyEditorial(day: string): Promise<void> {

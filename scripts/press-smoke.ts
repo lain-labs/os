@@ -460,6 +460,23 @@ await limitedChaos.press.tick(new Date("2026-08-25T12:30:00"));
 check("a rate-limited schedule is tried again and lands", limitedCalls === 2 && limitedChaos.press.recordOn("2026-08-24")?.chaosScheduleState === "scheduled");
 await limitedChaos.press.stop();
 
+let webCalls = 0;
+const webChaos = await pressRoom(window, { LAINOS_PRESS_DELIVERY: "chaos", LAINOS_PRESS_CHAOS_AUTO: "1", LAINOS_BUFFER_WEB: "1", LAINOS_PLAYWRIGHT_CORE: "/nonexistent/playwright-core/index.mjs" }, {
+  services: (tmp) => ({
+    image: { configured: () => true, async generate() { const path = join(tmp, "image.png"); await writeFile(path, "test-image"); return { path, mime: "image/png" }; } },
+    mcp: { async call(_server: string, tool: string) {
+      if (tool === "press_queue") return { ok: true, text: '{"queue":[]}' };
+      if (tool === "press_draft") return { ok: true, text: '{"id":790}' };
+      if (tool === "press_mark") throw new Error("nothing was posted, so nothing may be marked");
+      webCalls++;
+      return { ok: false, text: "Buffer is rate-limited; nothing was created and the draft is back on the desk. Retry later." };
+    } },
+  }),
+});
+await webChaos.press.tick(new Date("2026-08-25T12:00:00"));
+check("without a browser the Buffer website fallback leaves the post to retry", webCalls === 1 && webChaos.press.recordOn("2026-08-24")?.chaosScheduleState === undefined);
+await webChaos.press.stop();
+
 // A writer that cannot answer is said out loud once a day. Silence here reads
 // exactly like a day with no work in it, which is what this room removes.
 const mute = await pressRoom(window, {}, { writerFails: true });
