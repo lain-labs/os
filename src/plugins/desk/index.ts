@@ -404,6 +404,12 @@ export class PaperDeskService implements Service {
     );
   }
 
+  /** Every fill the desk has booked, oldest first; empty before its first read. */
+  allFills(): Fill[] {
+    if (!this.state) return [];
+    return this.totals(this.currentViews()).fills;
+  }
+
   private currentViews(): SleeveView[] {
     return MARKET_IDS.map((id) => this.views[id]).filter((v): v is SleeveView => Boolean(v));
   }

@@ -5,6 +5,7 @@ import { createLogger } from "../../logger.js";
 import type { IAgentRuntime, Plugin, Provider, Service, State } from "../../types.js";
 import type { ChainService } from "../chain/index.js";
 import type { TradeRecord } from "../chain/journal.js";
+import type { PaperDeskService } from "../desk/index.js";
 
 const log = createLogger("plugin:arena");
 
@@ -26,7 +27,9 @@ const log = createLogger("plugin:arena");
  *     hold, so the page starts with a record instead of a blank.
  *
  * Paper trades are reported as paper. Nothing here can make a trade look
- * on-chain that was not.
+ * on-chain that was not. The paper desk's $100 demo account is reported too:
+ * its fills are in dollars, on the token each market prices (XMR has none on
+ * a chain the arena reads, so it stays off the board).
  */
 
 interface ArenaFile {
@@ -41,9 +44,11 @@ interface ArenaTrade {
   chain: string;
   token: string;
   symbol: string;
-  qty_raw: string;
-  decimals: number;
-  quote: { symbol: string; amount_raw: string; decimals: number };
+  qty_raw?: string;
+  decimals?: number;
+  /** Whole units, for the desk's dollar fills. */
+  qty?: string;
+  quote: { symbol: string; amount_raw?: string; decimals?: number; amount?: string };
   realized?: string;
   tx?: string;
   paper: boolean;
@@ -57,6 +62,23 @@ const SENT_CAP = 20_000;
 const BATCH = 100;
 const PONS_CHAIN_ID = 4663;
 const NATIVE: Record<number, string> = { 49406: "CYBER", 4663: "ETH", 8453: "ETH", 56: "BNB", 1: "ETH" };
+/** The token each paper-desk market prices, as the arena names chains. */
+const DESK_TOKENS: Record<string, { chain: string; token: string }> = {
+  LAIN: { chain: "robinhood", token: "0x2b79a071a75dd40f1aca68146d7978204efd156a" },
+  ETH: { chain: "ethereum", token: "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2" },
+  SOL: { chain: "solana", token: "So11111111111111111111111111111111111111112" },
+  BTC: { chain: "base", token: "0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf" },
+};
+
+/** A positive amount as the arena's decimal string: at most 18 places, no exponent. */
+export function decimalString(value: number): string | null {
+  if (!Number.isFinite(value) || value <= 0) return null;
+  // Fifteen significant digits: a double holds no more, and the rest is noise.
+  const intDigits = Math.max(1, Math.floor(Math.log10(value)) + 1);
+  const places = Math.min(18, Math.max(0, 15 - intDigits));
+  const text = value.toFixed(places).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+  return /^[0-9]{1,30}(\.[0-9]{1,18})?$/.test(text) && Number(text) > 0 ? text : null;
+}
 
 /** A wei amount as a signed decimal string with 18 places, for `realized`. */
 function weiToDecimal(wei: string): string {
@@ -153,8 +175,19 @@ export class ArenaService implements Service {
         throw new Error("arena key refused; will register again");
       }
       if (response.status === 422) {
-        // A malformed record must not wedge the queue behind it forever.
+        // A malformed record must not wedge the queue behind it forever, nor
+        // take the good ones in its batch down with it: send those one by one.
         log.warn(`arena refused a batch: ${(await response.text()).slice(0, 300)}`);
+        if (batch.length > 1) {
+          for (const trade of batch) {
+            const one = await this.post("/api/arena/trades", { trades: [trade] }, this.state.key);
+            if (one.status === 422) log.warn(`arena refused trade ${trade.id}`);
+            else if (!one.ok) throw new Error(`arena answered ${one.status}`);
+            this.sent.add(trade.id);
+          }
+          await this.persist();
+          continue;
+        }
       } else if (!response.ok) {
         throw new Error(`arena answered ${response.status}`);
       }
@@ -210,9 +243,16 @@ export class ArenaService implements Service {
         }
       }
     }
-    return out
-      .filter((trade) => NATIVE[Number(trade.chain)] && /^0x[0-9a-fA-F]{40}$/.test(trade.token) && /^[0-9]+$/.test(trade.qty_raw) && BigInt(trade.qty_raw) > 0n)
-      .sort((a, b) => a.at - b.at);
+    const onChain = out.filter(
+      (trade) =>
+        NATIVE[Number(trade.chain)] &&
+        /^0x[0-9a-fA-F]{40}$/.test(trade.token) &&
+        /^[0-9]+$/.test(trade.qty_raw ?? "") &&
+        BigInt(trade.qty_raw ?? "0") > 0n &&
+        /^[0-9]+$/.test(trade.quote.amount_raw ?? ""),
+    );
+    const desk = this.runtime?.getService<PaperDeskService>("desk");
+    return [...onChain, ...(desk ? deskTrades(desk.allFills()) : [])].sort((a, b) => a.at - b.at);
   }
 
   private async shape(trade: TradeRecord, chainId: number, wallet: string, paper: boolean): Promise<ArenaTrade> {
@@ -268,6 +308,41 @@ export class ArenaService implements Service {
     await mkdir(dirname(this.file), { recursive: true });
     await writeFile(this.file, JSON.stringify(this.state, null, 2), { mode: 0o600 });
   }
+}
+
+/**
+ * The paper desk's fills as arena trades: dollars as the quote, the quantity
+ * worked out from the fill price. Each market is long or flat, so a sale
+ * closes the whole position the buys before it opened.
+ */
+export function deskTrades(
+  fills: { key: string; market: string; side: "buy" | "sell"; at: number; px: number; usd: number; strategy: string; reason: string; pnlUsd?: number }[],
+): ArenaTrade[] {
+  const held = new Map<string, number>();
+  const out: ArenaTrade[] = [];
+  for (const fill of [...fills].sort((a, b) => a.at - b.at)) {
+    const where = DESK_TOKENS[fill.market];
+    if (!where || !(fill.px > 0)) continue;
+    const qtyNum = fill.side === "buy" ? fill.usd / fill.px : (held.get(fill.market) ?? 0);
+    held.set(fill.market, fill.side === "buy" ? (held.get(fill.market) ?? 0) + qtyNum : 0);
+    const qty = decimalString(qtyNum);
+    const amount = decimalString(fill.usd);
+    if (!qty || !amount) continue;
+    out.push({
+      id: `desk:${fill.key}`.slice(0, 100),
+      side: fill.side,
+      chain: where.chain,
+      token: where.token,
+      symbol: fill.market,
+      qty,
+      quote: { symbol: "USD", amount },
+      realized: fill.side === "sell" && fill.pnlUsd !== undefined && Number.isFinite(fill.pnlUsd) ? fill.pnlUsd.toFixed(6) : undefined,
+      paper: true,
+      reason: `paper desk · ${fill.strategy}: ${fill.reason}`.slice(0, 2000),
+      at: fill.at,
+    });
+  }
+  return out;
 }
 
 const arenaProvider: Provider = {
