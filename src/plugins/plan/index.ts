@@ -34,6 +34,8 @@ export interface PlanItem {
   status: PlanStatus;
   /** Why it matters, one line — said in the question. */
   why?: string;
+  /** Where to read about it (a doc, a page). */
+  link?: string;
   note?: string;
   askedAt?: number;
   updatedAt?: number;
@@ -96,6 +98,7 @@ export function questionText(person: PlanPerson, item: PlanItem, today: string):
     "",
     `«${item.title}» — ${whenWords(today, item.due)}.${status}`,
     ...(item.why ? [`Зачем: ${item.why}`] : []),
+    ...(item.link ? [`Ссылка: ${item.link}`] : []),
     "",
     "Как с этим?",
   ].join("\n");
@@ -148,7 +151,7 @@ export function planSection(plan: PlanFile, today: string): string {
   const rows = [...plan.items]
     .sort((a, b) => a.owner.localeCompare(b.owner) || a.due.localeCompare(b.due))
     .map((item) => `| ${plan.people[item.owner]?.name ?? item.owner} | ${item.title} | ${item.due} | ${STATUS_WORDS[item.status]}${item.note ? ` — ${item.note}` : ""} |`);
-  const items = plan.items.map(({ id, owner, title, due, status, why, note, updatedAt }) => ({ id, owner, title, due, status, why, note, updatedAt }));
+  const items = plan.items.map(({ id, owner, title, due, status, why, link, note, updatedAt }) => ({ id, owner, title, due, status, why, link, note, updatedAt }));
   return [
     "# План команды",
     "",

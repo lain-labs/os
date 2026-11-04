@@ -11,7 +11,7 @@ const check = (name: string, pass: boolean) => results.push([name, pass]);
 const plan = (): PlanFile => ({
   people: { lev: { name: "Лев", chatId: "1" }, orpheus: { name: "Орфей", chatId: "2" } },
   items: [
-    { id: "a", owner: "lev", title: "Поднять Guard Mode", due: "2026-11-07", status: "todo", why: "живые сделки" },
+    { id: "a", owner: "lev", title: "Поднять Guard Mode", due: "2026-11-07", status: "todo", why: "живые сделки", link: "https://chaos.fm/hub" },
     { id: "b", owner: "lev", title: "Решить про главную", due: "2026-11-08", status: "todo" },
     { id: "c", owner: "lev", title: "Уже сделано", due: "2026-11-01", status: "done" },
     { id: "d", owner: "orpheus", title: "Пост в @cyberia_chain", due: "2026-11-09", status: "todo" },
@@ -28,7 +28,7 @@ p.items[0]!.askedAt = now.getTime();
 check("not the same item two days running", nextItem(p, "lev", new Date(now.getTime() + 86_400_000))?.id === "b");
 
 const q = questionText(p.people.lev!, p.items[0]!, "2026-11-06");
-check("the question names the person, the item and the deadline", q.startsWith("Лев,") && q.includes("«Поднять Guard Mode» — срок завтра") && q.includes("Зачем: живые сделки"));
+check("the question names the person, the item and the deadline", q.startsWith("Лев,") && q.includes("«Поднять Guard Mode» — срок завтра") && q.includes("Зачем: живые сделки") && q.includes("Ссылка: https://chaos.fm/hub"));
 
 const done = applyAnswer(p, "a", "done", "lev", now);
 check("done marks it and names what is next", p.items[0]!.status === "done" && done?.reply?.includes("«Решить про главную»") === true);

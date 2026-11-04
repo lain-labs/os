@@ -20,7 +20,7 @@ export const SEED_PLAN: PlanFile = {
     { id: "hatcher-letter", owner: "lev", title: "Написать Кристиану (HatcherLabs): их агент в лиге и итог Hatcher Cup 17 ноября", due: "2026-11-10", status: "todo", why: "сезон идёт с их брендом, а совместных постов нет" },
     { id: "x-analytics", owner: "lev", title: "Выгрузить X Analytics по обоим аккаунтам", due: "2026-11-10", status: "todo", why: "без выгрузки разбор KPI идёт вслепую" },
     { id: "cyberguard-offer", owner: "lev", title: "Решить, что предлагаем CyberGuard (Вик) за ревью протокола", due: "2026-11-12", status: "todo", why: "внешнее ревью — условие мейннета" },
-    { id: "kpi-onboarding", owner: "orpheus", title: "Прочитать документ KPI и прийти на первый разбор в понедельник", due: "2026-11-09", status: "todo", why: "с 9 ноября меряем привычки" },
+    { id: "kpi-onboarding", owner: "orpheus", title: "Прочитать документ KPI и прийти на первый разбор в понедельник", due: "2026-11-09", status: "todo", why: "с 9 ноября меряем привычки", link: "https://claude.ai/artifact/MRCK2aD1E4cMpjVAyBpWQq (как работаем: https://chaos.fm/hub/docs/07-kak-rabotaem)" },
     { id: "cyberia-chain-daily", owner: "orpheus", title: "Каждый день пост в @cyberia_chain", due: "2026-11-09", status: "todo", why: "с 26 октября аккаунт молчит в X" },
     { id: "scenario-daily", owner: "orpheus", title: "Один сценарий продукта в день глазами новичка, баги — на доску /crm", due: "2026-11-09", status: "todo", why: "так находим, где люди спотыкаются" },
     { id: "arena-score", owner: "orpheus", title: "Ежедневный счёт арены: Лейн против Challenger", due: "2026-11-10", status: "todo", why: "арене нужны зрители" },
