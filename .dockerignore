@@ -1,0 +1,13 @@
+node_modules
+dist
+data
+workspace
+.env
+.env.*
+*.log
+.lainos
+brag-output*
+content-plan.json
+content-distribution.json
+content-trends.json
+.git

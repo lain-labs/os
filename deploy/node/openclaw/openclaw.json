@@ -1,0 +1,66 @@
+{
+  "gateway": {
+    "mode": "local",
+    "bind": "lan",
+    "port": 18789,
+    "auth": {
+      "mode": "token"
+    },
+    "http": {
+      "endpoints": {
+        "chatCompletions": {
+          "enabled": true
+        }
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "openrouter/google/gemma-4-31b-it:free",
+        "fallbacks": [
+          "openrouter/nvidia/nemotron-3.5-super-vl:free",
+          "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free"
+        ]
+      },
+      "models": {
+        "openrouter/google/gemma-4-31b-it:free": {},
+        "openrouter/nvidia/nemotron-3.5-super-vl:free": {},
+        "openrouter/nvidia/nemotron-3-ultra-550b-a55b:free": {}
+      },
+      "workspace": "/home/node/.openclaw/workspace"
+    }
+  },
+  "mcp": {
+    "servers": {
+      "chaos": {
+        "url": "https://chaos.fm/mcp",
+        "transport": "streamable-http",
+        "headers": {
+          "Authorization": "Bearer ${CHAOS_MCP_KEY}"
+        }
+      }
+    }
+  },
+  "plugins": {
+    "deny": [
+      "browser",
+      "canvas",
+      "cua-computer",
+      "device-pair",
+      "file-transfer",
+      "geolocation",
+      "linux-node",
+      "ollama",
+      "talk-voice",
+      "anthropic",
+      "openai",
+      "xai"
+    ]
+  },
+  "memory": {
+    "search": {
+      "provider": "none"
+    }
+  }
+}

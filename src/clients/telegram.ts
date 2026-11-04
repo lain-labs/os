@@ -937,6 +937,8 @@ export class TelegramClient {
       text = safeText;
       opts = { ...opts, buttons: undefined };
     }
+    const prefix = this.runtime.getSetting("TELEGRAM_MESSAGE_PREFIX")?.trim();
+    if (prefix) text = `${prefix}\n${text}`;
     // Markdown is split before it is converted, so a tag never straddles two
     // messages; the margin leaves room for what escaping and tags add.
     const chunks = opts.markdown

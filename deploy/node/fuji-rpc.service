@@ -1,0 +1,12 @@
+[Unit]
+Description=Proxy from /var/lib/lain-node/fuji.sock to the validator's node API
+Requires=fuji-rpc.socket
+After=fuji-rpc.socket avalanchego.service
+
+[Service]
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd 127.0.0.1:9650
+DynamicUser=yes
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes

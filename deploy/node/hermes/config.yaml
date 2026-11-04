@@ -1,0 +1,37 @@
+# Hermes on the Lain node: free OpenRouter models in every slot — the main
+# model, each auxiliary task (an "auto" provider would look for Nous Portal
+# first, then a default that may cost money) and delegation — and no fallback
+# provider, so nothing can land on a paid model.
+model:
+  default: nvidia/nemotron-3-ultra-550b-a55b:free
+  provider: openrouter
+  base_url: https://openrouter.ai/api/v1
+  api_mode: chat_completions
+fallback_providers: []
+
+auxiliary:
+  vision: { provider: openrouter, model: "nvidia/nemotron-3.5-super-vl:free" }
+  web_extract: { provider: openrouter, model: "nvidia/nemotron-3.5-lightning:free" }
+  compression: { provider: openrouter, model: "nvidia/nemotron-3.5-lightning:free" }
+  skills_hub: { provider: openrouter, model: "nvidia/nemotron-3.5-lightning:free" }
+  approval: { provider: openrouter, model: "nvidia/nemotron-3.5-lightning:free" }
+  mcp: { provider: openrouter, model: "nvidia/nemotron-3.5-lightning:free" }
+  title_generation: { provider: openrouter, model: "nvidia/nemotron-3.5-lightning:free" }
+  triage_specifier: { provider: openrouter, model: "nvidia/nemotron-3.5-lightning:free" }
+  kanban_decomposer: { provider: openrouter, model: "nvidia/nemotron-3.5-lightning:free" }
+  profile_describer: { provider: openrouter, model: "nvidia/nemotron-3.5-lightning:free" }
+  curator: { provider: openrouter, model: "nvidia/nemotron-3.5-lightning:free" }
+delegation:
+  provider: openrouter
+  model: nvidia/nemotron-3-ultra-550b-a55b:free
+
+terminal:
+  backend: local
+  cwd: /opt/data/workspace
+
+mcp_servers:
+  chaos:
+    url: https://chaos.fm/mcp
+    headers:
+      Authorization: "Bearer ${CHAOS_MCP_KEY}"
+    timeout: 120

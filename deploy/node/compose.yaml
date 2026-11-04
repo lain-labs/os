@@ -1,0 +1,96 @@
+# Lain OS on a node of its own, with Hermes Agent and OpenClaw as her subagents.
+# Rootless Docker, run from the node directory (see README, "A node of your own"):
+#
+#   lainos/            a clone of this repo, mounted over /app — the forge commits here
+#   secrets/*.env      mode 0600, never in git (templates: deploy/node/*.env.example)
+#   hermes/ openclaw/  each agent's own state
+#
+# Only Lain's HTTP bridge is published, on the host's loopback and behind
+# LAINOS_HTTP_KEY; the subagents are reachable from her alone, on this network.
+# Every model is a free OpenRouter one (`:free`), with no paid fallback anywhere.
+#
+# OpenClaw is opt-in (profile "openclaw"): idle, it grows past 1.3 GB, more than
+# a 4 GB host shared with a validator can give. To run it, put in ./.env:
+#   COMPOSE_PROFILES=openclaw
+#   LAINOS_SUBAGENTS=hermes,openclaw
+name: lain-node
+
+x-defaults: &defaults
+  restart: unless-stopped
+  # A validator shares this host: when memory runs out, these go first.
+  oom_score_adj: 500
+  logging:
+    driver: local
+    options: { max-size: 10m, max-file: "3" }
+
+services:
+  lainos:
+    <<: *defaults
+    build: ./lainos
+    image: lainos-node
+    env_file: secrets/lainos.env
+    environment:
+      LAINOS_SUBAGENTS: ${LAINOS_SUBAGENTS:-hermes}
+      PATH: /usr/local/bin:/home/lain/.local/bin:/usr/bin:/bin
+      LAINOS_FORGE_OPENCODE_MODEL: openrouter/nvidia/nemotron-3-ultra-550b-a55b:free
+      # Also pin background titles/compaction: OpenCode's default small model can be paid.
+      OPENCODE_CONFIG_CONTENT: >-
+        {"model":"openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+        "small_model":"openrouter/nvidia/nemotron-3-ultra-550b-a55b:free",
+        "enabled_providers":["openrouter"],"autoupdate":false}
+      LAINOS_SUBAGENT_HERMES_URL: http://hermes:8642/v1
+      LAINOS_SUBAGENT_HERMES_MODEL: hermes-agent
+      LAINOS_SUBAGENT_HERMES_ABOUT: >-
+        Hermes Agent by Nous Research. Watches this node's Avalanche validator (health, peers,
+        P-Chain balance, the Fuji L1's blocks) and runs its own skills, cron jobs and shell.
+      LAINOS_SUBAGENT_OPENCLAW_URL: http://openclaw:18789/v1
+      LAINOS_SUBAGENT_OPENCLAW_MODEL: openclaw
+      LAINOS_SUBAGENT_OPENCLAW_ABOUT: >-
+        OpenClaw. A general assistant with its own workspace, skills and web tools; good for
+        research and multi-step chores you can describe in one message.
+    volumes:
+      - ./lainos:/app
+      # Reuse the host's installed CLIs without granting access to the host home.
+      - /home/lain/.local:/home/lain/.local:ro
+      - /home/lain/.opencode:/home/lain/.opencode:ro
+      # CLI logins and sessions survive container recreation, isolated from the host.
+      - ./agent-home:/root
+    ports:
+      - "127.0.0.1:7777:7777"
+    # Runs in ~150 MB; the build before every start (tsc) needs the rest.
+    mem_limit: 1g
+    depends_on:
+      hermes: { condition: service_started }
+      openclaw: { condition: service_started, required: false }
+
+  hermes:
+    <<: *defaults
+    image: nousresearch/hermes-agent@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d
+    command: ["gateway", "run"]
+    env_file: secrets/hermes.env
+    environment:
+      API_SERVER_ENABLED: "true"
+      API_SERVER_HOST: 0.0.0.0
+      API_SERVER_PORT: "8642"
+    volumes:
+      - ./hermes:/opt/data
+      # The validator's node API (127.0.0.1:9650 on the host), as a socket: see fuji-rpc.socket.
+      - /var/lib/lain-node:/var/lib/lain-node:ro
+    mem_limit: 700m
+
+  openclaw:
+    <<: *defaults
+    profiles: [openclaw]
+    image: ghcr.io/openclaw/openclaw@sha256:7dbff0fe5f5359b1badefe90a23efa9f203cd0d3c36bee095f4896c7a1d3864b
+    # Worker pools are sized from the CPUs Node sees (up to 8 per pool, 512 MB of
+    # V8 old space each): one CPU of affinity keeps a run under the memory limit.
+    entrypoint: ["tini", "-s", "--", "taskset", "-c", "0", "node", "/app/docker-entrypoint.mjs"]
+    command: ["node", "openclaw.mjs", "gateway", "--bind", "lan", "--port", "18789"]
+    env_file: secrets/openclaw.env
+    environment:
+      # A run peaks past 800 MB; a smaller old space makes V8 collect before the cgroup kills it.
+      NODE_OPTIONS: --max-old-space-size=640
+    volumes:
+      - ./openclaw:/home/node/.openclaw
+    mem_limit: 1400m
+    memswap_limit: 1800m
