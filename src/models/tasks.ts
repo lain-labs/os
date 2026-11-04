@@ -277,8 +277,10 @@ const RULES: { kind: TaskKind; re: RegExp }[] = [
         "python",
         "solidity",
         "implement",
-        "tests?",
       ),
+      // "test" alone is everyday English ("a real-world test of risks"); a
+      // coding job names what is done to the tests.
+      `${word("run", "write", "add", "fix", "failing", "unit")}\\s+(?:the\\s+)?${word("tests?")}`,
       "pull request",
       stem("compil"),
     ),

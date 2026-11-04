@@ -411,7 +411,11 @@ export class AgentRuntime implements IAgentRuntime {
     // words — it costs no tokens, answers the same way every time, and is the
     // whole basis on which a provider is chosen. A caller that already knows
     // (the scout's digests, a recap) declares the kind instead of guessing.
-    const classified = classifyTask(input.text);
+    // A client that wraps the sender's words in context (a quoted message, a
+    // group recap) names those words in metadata.taskText: a "test" inside a
+    // quoted digest must not turn a question into a coding job.
+    const ownWords = typeof input.metadata?.taskText === "string" ? input.metadata.taskText : input.text;
+    const classified = classifyTask(ownWords);
     let task = input.task ?? classified.kind;
     const taskSignal = input.task ? "declared by the caller" : classified.signal;
     let tier = this.tierFor(task);

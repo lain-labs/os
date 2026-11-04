@@ -609,7 +609,7 @@ export class TelegramClient {
         roomId: `tg-${chatId}`,
         userId: `tg:${msg.from.username ?? msg.from.id}`,
         text: lines.join("\n"),
-        metadata: { telegram: sender, ...(isGroup && isLainOsChat(chatId, msg.chat.username) ? { englishOnly: true, lainOsChat: true } : {}) },
+        metadata: { telegram: sender, taskText: content, ...(isGroup && isLainOsChat(chatId, msg.chat.username) ? { englishOnly: true, lainOsChat: true } : {}) },
       });
       // Provenance receipt: what kind of work this was taken as, and which
       // model actually answered it (the operator must be able to see it's the

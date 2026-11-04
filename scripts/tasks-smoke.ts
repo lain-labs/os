@@ -57,6 +57,9 @@ const cases: [string, TaskKind][] = [
   ["analyze this week's metrics", TaskKind.ANALYSIS],
   ["compare the reports from the last two months", TaskKind.ANALYSIS],
   ["how are you? did you miss me?", TaskKind.CHAT],
+  ["treating it as a real-world test of risks", TaskKind.CHAT],
+  ["run the tests before you merge", TaskKind.CODE],
+  ["Расскажи про молтбук", TaskKind.CHAT],
   ["put the kettle on", TaskKind.CHAT],
   ["", TaskKind.CHAT],
 ];
