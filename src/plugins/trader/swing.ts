@@ -26,6 +26,11 @@ const log = createLogger("plugin:swing");
  *   - a stop-loss and a momentum exit on every position it opened, and buys
  *     pause for a day after a bad day of realised losses.
  *
+ * Momentum only counts what the market did: price history from before the
+ * desk's own last swap in a pool is dropped (its arbitrage and buys move thin
+ * pools, and buying that move back is chasing itself), stablecoins are never
+ * bought on momentum, and a position is never added to.
+ *
  * Only positions the desk opened itself are ever sold by it. Real trading is
  * daemon-only (or LAINOS_SWING=1), like the take-profit loop.
  */
@@ -56,6 +61,8 @@ interface SwingState {
   realized: { t: number; wei: string }[];
   /** Arbitrage cycles sent, with what they made. */
   arbs?: { t: number; label: string; inWei: string; profitWei: string; tx: string }[];
+  /** When the desk's own swaps last moved a token's pool: price history before that is not the market's. */
+  touched?: Record<string, number>;
   pausedUntil?: number;
   lastRunAt?: number;
   lastReport?: string;
@@ -78,6 +85,10 @@ interface SwingConfig {
   minArbProfitWei: bigint;
   dry: boolean;
   chatId?: number;
+  /** Symbols never bought on momentum (stablecoins: their "trend" in a thin pool is noise). */
+  skip: RegExp;
+  holdHours: number;
+  startWei?: bigint;
 }
 
 export interface Signal {
@@ -149,7 +160,7 @@ export class SwingService implements Service {
       maxImpactBps: num(get("LAINOS_SWING_MAX_IMPACT_BPS"), 150, 10, 2_000),
       slippageBps: num(get("LAINOS_SWING_SLIPPAGE_BPS"), 150, 10, 2_000),
       minLiq: num(get("LAINOS_SWING_MIN_LIQUIDITY_NATIVE"), 100, 0, 1e12),
-      stopLossBps: num(get("LAINOS_SWING_STOP_LOSS_BPS"), 1_500, 100, 9_000),
+      stopLossBps: num(get("LAINOS_SWING_STOP_LOSS_BPS"), 800, 100, 9_000),
       partialTakeBps: num(get("LAINOS_SWING_PARTIAL_TAKE_BPS"), 1_200, 100, 50_000),
       skipChance: num(get("LAINOS_SWING_SKIP_CHANCE"), 0.25, 0, 1),
       dailyLossWei: native(get("LAINOS_SWING_DAILY_LOSS_NATIVE"), "10"),
@@ -157,6 +168,9 @@ export class SwingService implements Service {
       minArbProfitWei: native(get("LAINOS_SWING_MIN_ARB_PROFIT_NATIVE"), "0.03"),
       dry: get("LAINOS_SWING_DRY") === "1",
       chatId: Number.isFinite(chat) && chat !== 0 ? chat : undefined,
+      skip: new RegExp(get("LAINOS_SWING_SKIP_PATTERN") || "USD|RUB|EUR|DAI", "i"),
+      holdHours: num(get("LAINOS_SWING_MAX_HOLD_HOURS"), 24, 1, 24 * 30),
+      startWei: get("LAINOS_SWING_START_NATIVE") ? native(get("LAINOS_SWING_START_NATIVE"), "0") : undefined,
     };
   }
 
@@ -255,7 +269,8 @@ export class SwingService implements Service {
     if (!chain) return [];
     const out: Signal[] = [];
     for (const [symbol, token] of Object.entries(chain.tokens)) {
-      const list = this.state.samples[token.toLowerCase()];
+      const since = this.state.touched?.[token.toLowerCase()] ?? 0;
+      const list = this.state.samples[token.toLowerCase()]?.filter((x) => x.t > since);
       if (!list || list.length < 2) continue;
       const last = list[list.length - 1]!;
       const at = (ago: number) => {
@@ -269,7 +284,7 @@ export class SwingService implements Service {
       const h6 = at(6 * HOUR) ?? first;
       const h24 = at(24 * HOUR);
       const span = (last.t - h6.t) / HOUR;
-      if (span < 0.2) continue;
+      if (span < 2) continue;
       out.push({
         token,
         symbol,
@@ -323,7 +338,10 @@ export class SwingService implements Service {
           const sig = bySym.get(key);
           let share = 0;
           let why = "";
+          const ageH = (now - own.openedAt) / HOUR;
           if (gainBps <= -cfg.stopLossBps) [share, why] = [1, `stop-loss ${gainBps / 100}%`];
+          else if (cfg.skip.test(own.symbol) && gainBps > -500) [share, why] = [1, `not a momentum asset, closed at ${gainBps / 100}%`];
+          else if (ageH >= cfg.holdHours && gainBps < 0) [share, why] = [1, `held ${Math.round(ageH)}h without profit (${gainBps / 100}%)`];
           else if (sig && sig.r6 <= -6 && gainBps < 0) [share, why] = [1, `momentum turned (${fmtPct(sig.r6)}/6h)`];
           else if (gainBps >= cfg.partialTakeBps && Math.random() < 0.5) {
             share = 0.3 + Math.random() * 0.3;
@@ -345,6 +363,7 @@ export class SwingService implements Service {
           }
           const realized = fill.realizedWei ?? 0n;
           this.state.realized.push({ t: now, wei: realized.toString() });
+          this.touch(key, Date.now());
           did.push(
             `sold ${trim(formatUnits(qty, quote.decimals))} ${own.symbol} → ${trim(formatEther(quote.amountOut))} ${chain.nativeSymbol}, ${why}, ` +
               `realised ${realized >= 0n ? "+" : ""}${trim(formatEther(realized))}`,
@@ -376,6 +395,7 @@ export class SwingService implements Service {
             const minOut = amountIn + (routerOut - amountIn) / 2n;
             const fill = await executeCycle(chain, pick, amountIn, minOut);
             const profit = fill.received - amountIn;
+            for (const t of pick.path.slice(1, 3)) this.touch(t.toLowerCase(), Date.now());
             (this.state.arbs ??= []).push({ t: now, label: pick.label, inWei: amountIn.toString(), profitWei: profit.toString(), tx: fill.hash });
             this.state.arbs = this.state.arbs.slice(-200);
             this.state.realized.push({ t: now, wei: profit.toString() });
@@ -388,7 +408,7 @@ export class SwingService implements Service {
       }
 
       // Maybe one buy.
-      const ideas = buyIdeas(sigs, cfg.minLiq);
+      const ideas = buyIdeas(sigs, cfg.minLiq).filter((x) => !cfg.skip.test(x.symbol) && !this.state.owned[x.token.toLowerCase()]);
       const balance = trading ? await chain.tradingBalance() : 0n;
       const spent = this.state.buys.reduce((a, b) => a + BigInt(b.nativeWei), 0n);
       const lost = this.state.realized.reduce((a, r) => a + BigInt(r.wei), 0n);
@@ -427,6 +447,7 @@ export class SwingService implements Service {
               if (fill.status === "success") {
                 this.state.buys.push({ t: now, nativeWei: amount.toString() });
                 this.state.owned[pick.token.toLowerCase()] ??= { symbol: pick.symbol, openedAt: now };
+                this.touch(pick.token.toLowerCase(), Date.now());
                 did.push(`bought ${trim(formatEther(amount))} ${chain.nativeSymbol} of ${pick.symbol} (${why})${fill.explorer ? ` ${fill.explorer}` : ""}`);
               } else did.push(`buy ${pick.symbol} reverted (${fill.hash})`);
             }
@@ -437,7 +458,8 @@ export class SwingService implements Service {
       }
 
       const after = trading ? await chain.tradingBalance() : balance;
-      const text = this.report(sigs, ideas, did, skipped, after, trading, leftover);
+      const held = trading ? await this.positionsValue() : 0n;
+      const text = this.report(sigs, ideas, did, skipped, after, held, trading, leftover);
       this.state.lastRunAt = now;
       this.state.lastReport = text;
       await this.save();
@@ -448,7 +470,27 @@ export class SwingService implements Service {
     }
   }
 
-  private report(sigs: Signal[], ideas: Signal[], did: string[], skipped: string, balance: bigint, trading: boolean, cycles: Cycle[]): string {
+  private touch(token: string, t: number): void {
+    (this.state.touched ??= {})[token] = t;
+  }
+
+  /** What the desk's open positions would sell for now. */
+  private async positionsValue(): Promise<bigint> {
+    const chain = this.chain();
+    if (!chain) return 0n;
+    let total = 0n;
+    for (const key of Object.keys(this.state.owned)) {
+      try {
+        const { raw } = await chain.tradingHolding(key as Address);
+        if (raw > 0n) total += (await chain.quoteNativeSell(key as Address, raw)).amountOut;
+      } catch {
+        // An unquotable position counts as nothing.
+      }
+    }
+    return total;
+  }
+
+  private report(sigs: Signal[], ideas: Signal[], did: string[], skipped: string, balance: bigint, held: bigint, trading: boolean, cycles: Cycle[]): string {
     const chain = this.chain()!;
     const sym = chain.nativeSymbol;
     const owned = Object.values(this.state.owned).map((o) => o.symbol);
@@ -456,7 +498,13 @@ export class SwingService implements Service {
     const line = (s: Signal) =>
       `${s.symbol} ${fmtPct(s.r6)}/${s.span >= 5.5 ? "6" : s.span.toFixed(1)}h, ${fmtPct(s.r1)}/1h${s.r24 !== undefined ? `, ${fmtPct(s.r24)}/24h` : ""} · pool ${Math.round(s.liq)} ${sym}`;
     const out = [`🎲 Lain · hourly desk on ${this.runtime?.getSetting("CHAIN_NAME") || "chain"}`];
-    if (trading) out.push(`Balance ${trim(formatEther(balance))} ${sym} · desk positions: ${owned.length ? owned.join(", ") : "none"}`);
+    if (trading) {
+      const equity = balance + held;
+      const start = this.config().startWei;
+      const since = start ? ` · ${equity >= start ? "+" : ""}${trim(formatEther(equity - start))} ${sym} since the ${trim(formatEther(start))} start` : "";
+      out.push(`Equity ${trim(formatEther(equity))} ${sym} (cash ${trim(formatEther(balance))} + positions ${trim(formatEther(held))})${since}`);
+      out.push(`Desk positions: ${owned.length ? owned.join(", ") : "none"}`);
+    }
     out.push(did.length ? `Did: ${did.join("; ")}` : `Did: nothing${skipped ? ` (${skipped})` : ""}`);
     if (did.length && skipped) out.push(`No buy: ${skipped}`);
     out.push(ideas.length ? `Looks good to buy:\n${ideas.slice(0, 3).map((s) => `• ${line(s)}`).join("\n")}` : "Looks good to buy: nothing with clean upward momentum yet");
@@ -514,7 +562,7 @@ export class SwingService implements Service {
 /** Upward momentum that is not a spike in progress, in pools deep enough to exit. */
 export function buyIdeas(sigs: Signal[], minLiq: number): Signal[] {
   return sigs
-    .filter((s) => s.liq >= minLiq && s.r6 >= 1 && s.r1 > -2 && s.r1 < 10 && (s.r24 === undefined || s.r24 < 60))
+    .filter((s) => s.liq >= minLiq && s.r6 >= 3 && s.r1 > -2 && s.r1 < 10 && (s.r24 === undefined || s.r24 < 60))
     .sort((a, b) => score(b) - score(a));
 }
 
